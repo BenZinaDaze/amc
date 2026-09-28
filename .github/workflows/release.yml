@@ -1,0 +1,66 @@
+name: Release macOS DMG
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: DMG (${{ matrix.arch }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            target: aarch64-apple-darwin
+          - arch: x86_64
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Check tag matches app version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node -e 'const pkg = require("./package.json").version; const tauri = require("./src-tauri/tauri.conf.json").version; const metadata = JSON.parse(require("node:child_process").execFileSync("cargo", ["metadata", "--no-deps", "--format-version", "1", "--manifest-path", "src-tauri/Cargo.toml"])); const cargo = metadata.packages.find(p => p.name === "amc").version; if (`v${pkg}` !== process.env.RELEASE_TAG || pkg !== tauri || pkg !== cargo) { console.error(`Version mismatch: tag=${process.env.RELEASE_TAG}, package=${pkg}, tauri=${tauri}, cargo=${cargo}`); process.exit(1); }'
+      - run: npm ci
+      - name: Build DMG
+        run: npm run tauri build -- --target ${{ matrix.target }} --bundles dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ matrix.arch }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dmg-*
+          path: dmg
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: AMC ${{ github.ref_name }}
+          body: 'Unsigned macOS builds for testing. macOS may require manual approval on first launch.'
+          files: dmg/*.dmg
+          fail_on_unmatched_files: true
