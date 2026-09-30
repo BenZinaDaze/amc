@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import ompIcon from "./assets/omp.svg";
+import zaiIcon from "./assets/zai.svg";
 import { version } from "../package.json";
-import { api, type McpServer, type Plan, type Repository, type RepositorySkill, type State, type UsageRange, type UsageStats, type Workspace } from "./api";
+import { api, type McpServer, type Plan, type Repository, type RepositorySkill, type State, type SubscriptionKind, type SubscriptionStatus, type UsageRange, type UsageStats, type Workspace } from "./api";
 import "./App.css";
 
 type Page = "overview" | "agents" | "omp" | "mcp" | "skills" | "repositories";
@@ -132,6 +133,8 @@ function Glyph({ name, size = 20 }: { name: string; size?: number }) {
     code: <path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 18" />,
     branch: <><circle cx="7" cy="5" r="2" /><circle cx="17" cy="7" r="2" /><circle cx="17" cy="18" r="2" /><path d="M7 7v8a3 3 0 0 0 3 3h5M7 10a3 3 0 0 0 3-3h5" /></>,
     warning: <><path d="M12 3 2 21h20L12 3Z" /><path d="M12 9v5m0 3h.01" /></>,
+    edit: <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />,
+    trash: <><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></>,
     external: <><path d="M14 4h6v6M20 4l-9 9" /><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5" /></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
@@ -181,7 +184,66 @@ function App() {
   const [usageError, setUsageError] = useState("");
   const usageLoadId = useRef(0);
   const usageRangeRef = useRef<UsageRange>("24h");
+  const [agentsUsage, setAgentsUsage] = useState<UsageStats | null>(null);
+  const [agentsUsageLoading, setAgentsUsageLoading] = useState<"sync" | "read" | null>(null);
+  const [agentsUsageError, setAgentsUsageError] = useState("");
+  const [agentsPricingNote, setAgentsPricingNote] = useState("");
+  const [agentsUsageSelection, setAgentsUsageSelection] = useState<{ range: UsageRange; label: string; choice: UsageChoice }>({ range: "24h", label: "近24小时", choice: "24h" });
+  const agentsUsageLoadId = useRef(0);
+  const agentsUsageRangeRef = useRef<UsageRange>("24h");
+  const [subscriptions, setSubscriptions] = useState<SubscriptionStatus[] | null>(null);
+  const [subscriptionsLoading, setSubscriptionsLoading] = useState(false);
+  const [subscriptionsError, setSubscriptionsError] = useState("");
+  const subscriptionsLoadId = useRef(0);
+  const subscriptionsFetchedAt = useRef(0);
   const pendingUsageSync = useRef<Promise<UsageStats> | null>(null);
+  const [planForm, setPlanForm] = useState<{ mode: "add" } | { mode: "edit"; status: SubscriptionStatus } | null>(null);
+  const [cardMenu, setCardMenu] = useState<{ x: number; y: number; status: SubscriptionStatus; confirming: boolean } | null>(null);
+
+  const loadSubscriptions = useCallback(async (force: boolean) => {
+    if (!force && Date.now() - subscriptionsFetchedAt.current < 60_000) return;
+    const request = ++subscriptionsLoadId.current;
+    subscriptionsFetchedAt.current = Date.now();
+    setSubscriptionsLoading(true);
+    setSubscriptionsError("");
+    try {
+      const next = await api.fetchSubscriptions();
+      if (request === subscriptionsLoadId.current) setSubscriptions(next);
+    } catch (reason) {
+      if (request === subscriptionsLoadId.current) setSubscriptionsError(`读取订阅配额失败：${errorText(reason)}`);
+    } finally {
+      if (request === subscriptionsLoadId.current) setSubscriptionsLoading(false);
+    }
+  }, []);
+
+  const removeSubscription = useCallback(async (id: string) => {
+    setCardMenu(null);
+    try {
+      await api.removeSubscriptionPlan(id);
+      await loadSubscriptions(true);
+    } catch (reason) {
+      setSubscriptionsError(`删除订阅套餐失败：${errorText(reason)}`);
+    }
+  }, [loadSubscriptions]);
+
+  // Any press, key or scroll outside the card menu dismisses it; menu items
+  // stop the mousedown propagation so they still fire.
+  useEffect(() => {
+    if (!cardMenu) return;
+    const close = () => setCardMenu(null);
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [cardMenu]);
+
   const loadId = useRef(0);
   const repositoryLoadId = useRef(0);
 
@@ -219,6 +281,60 @@ function App() {
     if (page === "omp") void loadUsage("sync", usageRangeRef.current);
     return () => { ++usageLoadId.current; pendingUsageSync.current = null; };
   }, [page, loadUsage]);
+
+  useEffect(() => {
+    if (page === "overview") void loadSubscriptions(false);
+  }, [page, loadSubscriptions]);
+
+  const loadAgentsUsage = useCallback(async (mode: "sync" | "read", range: UsageRange) => {
+    const request = ++agentsUsageLoadId.current;
+    setAgentsUsage(null);
+    setAgentsUsageError("");
+    setAgentsUsageLoading(mode);
+    try {
+      const stats = mode === "sync" ? await api.syncAgentsUsage(range) : await api.getAgentsUsage(range);
+      if (request === agentsUsageLoadId.current) setAgentsUsage(stats);
+    } catch (reason) {
+      if (request === agentsUsageLoadId.current) setAgentsUsageError(`${mode === "sync" ? "Agent 用量同步" : "Agent 用量读取"}失败：${errorText(reason)}`);
+    } finally {
+      if (request === agentsUsageLoadId.current) setAgentsUsageLoading(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (page === "agents") void loadAgentsUsage("sync", agentsUsageRangeRef.current);
+    return () => { ++agentsUsageLoadId.current; };
+  }, [page, loadAgentsUsage]);
+
+  function changeAgentsUsageRange(range: UsageRange, label: string, choice: UsageChoice) {
+    const changed = range !== agentsUsageRangeRef.current;
+    agentsUsageRangeRef.current = range;
+    setAgentsUsageSelection({ range, label, choice });
+    if (changed) void loadAgentsUsage("read", range);
+  }
+
+  // 刷新状态会先从远程仓库根目录拉取定价配置，再同步所有 Agent 用量；
+  // 定价拉取失败不阻塞统计，只提示已改用本地缓存定价。整段流程从入口
+  // 就是互斥的：定价请求在途时按钮保持禁用，避免重复点击叠加命令。
+  const [agentsRefreshBusy, setAgentsRefreshBusy] = useState(false);
+
+  function refreshAgentsUsage() {
+    if (agentsRefreshBusy || agentsUsageLoading !== null) return;
+    setAgentsRefreshBusy(true);
+    void (async () => {
+      setAgentsPricingNote("");
+      try {
+        setAgentsPricingNote(await api.refreshPricing());
+      } catch (reason) {
+        setAgentsPricingNote(`定价配置刷新失败：${errorText(reason)}，已使用本地缓存定价。`);
+      }
+      try {
+        await loadAgentsUsage("sync", agentsUsageRangeRef.current);
+      } finally {
+        setAgentsRefreshBusy(false);
+      }
+    })();
+  }
 
   function changeUsageRange(range: UsageRange, label: string, choice: UsageChoice) {
     const changed = range !== usageRangeRef.current;
@@ -451,8 +567,6 @@ function App() {
     skill: state?.skills.find((skill) => skill.path === installation.targetPath),
   }));
   const detectedOnlySkills = (state?.skills || []).filter((skill) => !activeInstallations.some((installation) => installation.targetPath === skill.path));
-  const updatesCount = activeInstallations.filter((item) => item.updateAvailable).length;
-  const modifiedCount = activeInstallations.filter((item) => item.modified).length;
   const discoveredSkills: DiscoveredSkill[] = state?.repositories.flatMap((repository) => (repositorySkills[repository.id] || []).map((skill) => ({ ...skill, repositoryId: repository.id }))) || [];
   const normalizedDiscoverSearch = discoverSearch.trim().toLocaleLowerCase();
   const filteredDiscoveredSkills = normalizedDiscoverSearch ? discoveredSkills.filter((skill) => {
@@ -487,7 +601,7 @@ function App() {
       </aside>
       <main className="main-area">
         <div className="content">
-          <div className="page-heading"><div><h1>{contentHeader[0]}{page === "omp" && state && <span className={`omp-version-pill ${state.agent.installed && state.agent.version ? "available" : "missing"}`}>{state.agent.installed && state.agent.version ? state.agent.version.replace(/^omp\//i, "") : "未检测到"}</span>}</h1>{page !== "omp" && <p>{contentHeader[1]}</p>}</div><button className="button button-muted refresh-button" aria-label={page === "omp" ? "刷新 OMP 用量" : "刷新状态"} onClick={() => { if (page === "omp") void loadUsage("sync", usageRangeRef.current); else if (selectedWorkspace) void reload(selectedWorkspace); }} disabled={page === "omp" ? usageLoading !== null : loading || isBusy}><Glyph name="refresh" size={16} />{page === "omp" ? "刷新用量" : "刷新状态"}</button></div>
+          <div className="page-heading"><div><h1>{contentHeader[0]}{page === "omp" && state && <span className={`omp-version-pill ${state.agent.installed && state.agent.version ? "available" : "missing"}`}>{state.agent.installed && state.agent.version ? state.agent.version.replace(/^omp\//i, "") : "未检测到"}</span>}</h1>{page !== "omp" && <p>{contentHeader[1]}</p>}</div><button className="button button-muted refresh-button" aria-label={page === "omp" ? "刷新 OMP 用量" : "刷新状态"} onClick={() => { if (page === "omp") void loadUsage("sync", usageRangeRef.current); else { if (page === "agents") refreshAgentsUsage(); if (selectedWorkspace) void reload(selectedWorkspace); } }} disabled={page === "omp" ? usageLoading !== null : page === "agents" ? agentsRefreshBusy || agentsUsageLoading !== null : loading || isBusy}><Glyph name="refresh" size={16} />{page === "omp" ? "刷新用量" : "刷新状态"}</button></div>
           {error && <div className="alert alert-error" role="alert"><Glyph name="warning" size={18} /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><Glyph name="close" size={16} /></button></div>}
           {notice && <div className="alert alert-success" role="status"><Glyph name="check" size={18} /><span>{notice}</span><button aria-label="关闭成功提示" onClick={() => setNotice("")}><Glyph name="close" size={16} /></button></div>}
           {page !== "omp" && loading && <div className="loading-panel" role="status"><span className="spinner" />正在自动发现通用来源…</div>}
@@ -496,15 +610,10 @@ function App() {
           {!loading && state && <>
             {page === "overview" && <>
               <div className="stat-grid"><button className="stat-card" onClick={() => setPage("mcp")}><span className="stat-icon purple"><Glyph name="plug" /></span><span className="stat-value">{state.mcp.length}</span><span className="stat-title">MCP 服务</span><small>查看配置来源 <Glyph name="arrow" size={13} /></small></button><button className="stat-card" onClick={() => setPage("skills")}><span className="stat-icon amber"><Glyph name="spark" /></span><span className="stat-value">{state.skills.length}</span><span className="stat-title">检测到的 Skills</span><small>查看技能来源 <Glyph name="arrow" size={13} /></small></button><button className="stat-card" onClick={() => setPage("repositories")}><span className="stat-icon mint"><Glyph name="repo" /></span><span className="stat-value">{state.repositories.length}</span><span className="stat-title">Git 仓库</span><small>发现更多技能 <Glyph name="arrow" size={13} /></small></button></div>
-              <section className="section-block">
-                <div className="section-heading"><div><h2>需要关注</h2><p>来自自动发现来源的实时状态</p></div></div>
-                <div className="attention-list">
-                  <div className="attention-row"><span className="attention-icon"><Glyph name="refresh" size={18} /></span><div><strong>技能更新</strong><small>{updatesCount ? "有可更新的技能" : "暂无已发现的更新"}</small></div><span className={`tag ${updatesCount ? "tag-warn" : "tag-good"}`}>{updatesCount} 项更新</span></div>
-                  <div className="attention-row"><span className="attention-icon"><Glyph name="shield" size={18} /></span><div><strong>本地修改</strong><small>更新前请检查已修改的技能</small></div><span className={`tag ${modifiedCount ? "tag-warn" : "tag-good"}`}>{modifiedCount} 项修改</span></div>
-                </div>
-              </section>
+              <SubscriptionSection statuses={subscriptions} loading={subscriptionsLoading} error={subscriptionsError} onRefresh={() => void loadSubscriptions(true)} onAddPlan={() => setPlanForm({ mode: "add" })} onMenu={(status, x, y) => setCardMenu({ x, y, status, confirming: false })} />
             </>}
             {page === "agents" && <>
+              <AgentsUsagePanel stats={agentsUsage} range={agentsUsageSelection.range} rangeLabel={agentsUsageSelection.label} activeChoice={agentsUsageSelection.choice} loading={agentsUsageLoading} error={agentsUsageError} pricingNote={agentsPricingNote} onRangeChange={changeAgentsUsageRange} onRefresh={refreshAgentsUsage} />
               <section className="section-block">
                 <div className="section-heading"><div><h2>已接入 Agent</h2><p>只读检测本机可用的 Agent 运行时，不修改其配置。</p></div></div>
                 <div className="card-list">
@@ -730,6 +839,15 @@ function App() {
           </div>
         </div>
       </div>}
+      {planForm && <PlanFormModal form={planForm} onClose={() => setPlanForm(null)} onSaved={() => { setPlanForm(null); void loadSubscriptions(true); }} />}
+      {cardMenu && <div className="card-menu" role="menu" style={{ left: Math.max(8, Math.min(cardMenu.x, window.innerWidth - 156)), top: Math.max(8, Math.min(cardMenu.y, window.innerHeight - 98)) }}>
+        <button role="menuitem" onMouseDown={(event) => { event.stopPropagation(); setCardMenu(null); setPlanForm({ mode: "edit", status: cardMenu.status }); }}>
+          <Glyph name="edit" size={15} />编辑
+        </button>
+        {cardMenu.confirming
+          ? <button role="menuitem" className="danger" onMouseDown={(event) => { event.stopPropagation(); void removeSubscription(cardMenu.status.id); }}><Glyph name="trash" size={15} />确认删除</button>
+          : <button role="menuitem" className="danger" onMouseDown={(event) => { event.stopPropagation(); setCardMenu({ ...cardMenu, confirming: true }); }}><Glyph name="trash" size={15} />删除</button>}
+      </div>}
     </div>
   );
 }
@@ -750,6 +868,176 @@ function formatUsageTime(timestamp: number, hourly: boolean) {
   return new Intl.DateTimeFormat("zh-CN", hourly
     ? { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }
     : { year: "numeric", month: "numeric", day: "numeric" }).format(new Date(timestamp));
+}
+
+function formatResetCountdown(resetsAt: number): string {
+  const minutes = Math.floor((resetsAt - Date.now()) / 60_000);
+  if (minutes <= 0) return "即将重置";
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const rest = minutes % 60;
+  if (days > 0) return `${days} 天 ${hours} 小时后重置`;
+  if (hours > 0) return `${hours} 小时 ${rest} 分后重置`;
+  return `${minutes} 分后重置`;
+}
+
+function formatQuotaCount(kind: string, value: number): string {
+  return kind === "tokens" ? usageTokenNumber.format(value) : usageNumber.format(value);
+}
+
+function metricIcon(id: string): string {
+  if (id === "tokens" || id === "model") return "spark";
+  if (id === "requests") return "agents";
+  if (id === "search") return "search";
+  if (id === "zread") return "code";
+  return "plug";
+}
+
+function PlanFormModal({ form, onClose, onSaved }: {
+  form: { mode: "add" } | { mode: "edit"; status: SubscriptionStatus };
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const editing = form.mode === "edit" ? form.status : null;
+  const [kinds, setKinds] = useState<SubscriptionKind[]>([]);
+  const [kind, setKind] = useState(editing?.provider ?? "glm");
+  const [name, setName] = useState(editing?.title ?? "");
+  const [nameTouched, setNameTouched] = useState(editing !== null);
+  const [platform, setPlatform] = useState(editing?.platform ?? "zai");
+  const [key, setKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const selected = kinds.find((entry) => entry.id === kind);
+
+  // Catalog from the backend drives the kind picker and the credential
+  // fields; the name follows the picked kind until the user edits it.
+  useEffect(() => {
+    let cancelled = false;
+    api.listSubscriptionKinds().then((list) => {
+      if (cancelled || list.length === 0) return;
+      setKinds(list);
+      if (!editing) {
+        setKind(list[0].id);
+        setName((current) => current || list[0].title);
+      }
+    }).catch(() => { /* keep the glm default; add validates server-side */ });
+    return () => { cancelled = true; };
+  }, [editing]);
+  const submit = async () => {
+    if (saving || !name.trim() || (!editing && !key.trim())) return;
+    setSaving(true);
+    setError("");
+    try {
+      if (editing) await api.updateSubscriptionPlan(editing.id, name.trim(), platform, key.trim());
+      else await api.addSubscriptionPlan(kind, name.trim(), platform, key.trim());
+      onSaved();
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="modal" role="dialog" aria-modal="true" aria-labelledby="plan-form-title">
+      <div className="modal-head">
+        <div><div className="eyebrow">订阅与配额</div><h2 id="plan-form-title">{editing ? "编辑订阅套餐" : "添加订阅套餐"}</h2></div>
+        <button className="icon-button" aria-label="关闭" onClick={onClose}><Glyph name="close" size={20} /></button>
+      </div>
+      <form className="modal-body" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        <small className="form-hint">同一个订阅可以添加多份，用名称区分；凭据只保存在本机。</small>
+        <div className="subscription-form">
+          {!editing && kinds.length > 0 && <label>套餐类型
+            <select value={kind} onChange={(event) => {
+              const next = kinds.find((entry) => entry.id === event.target.value);
+              setKind(event.target.value);
+              if (next) {
+                if (!nameTouched) setName(next.title);
+                if (next.platforms[0]) setPlatform(next.platforms[0][0]);
+              }
+            }}>
+              {kinds.map((entry) => <option key={entry.id} value={entry.id}>{entry.title}</option>)}
+            </select>
+          </label>}
+          <label>名称
+            <input value={name} maxLength={100} placeholder="例如：主力账号" autoFocus onChange={(event) => { setNameTouched(true); setName(event.target.value); }} />
+          </label>
+          {/* 平台与凭据字段随所选套餐类型切换 */}
+          <label>平台
+            <select value={platform} onChange={(event) => setPlatform(event.target.value)}>
+              {(selected?.platforms ?? []).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+          <label>{selected?.keyLabel ?? "凭据 Key"}
+            <input type="password" value={key} autoComplete="off" placeholder={editing ? `留空则保留现有 Key（${editing.keyHint ?? "已保存"}）` : selected?.keyPlaceholder ?? "粘贴凭据 Key"} onChange={(event) => setKey(event.target.value)} />
+          </label>
+        </div>
+        {error && <small className="subscription-form-error" role="alert">{error}</small>}
+        <div className="modal-actions">
+          <button className="button button-muted" type="button" onClick={onClose}>取消</button>
+          <button className="button button-primary" type="submit" disabled={saving || !name.trim() || (!editing && !key.trim())}>{saving ? "保存中…" : editing ? "保存" : "添加"}</button>
+        </div>
+      </form>
+    </div>
+  </div>;
+}
+
+function SubscriptionCard({ status, onMenu }: { status: SubscriptionStatus; onMenu: (status: SubscriptionStatus, x: number, y: number) => void }) {
+  return <article className="subscription-card" onContextMenu={(event) => { event.preventDefault(); onMenu(status, event.clientX, event.clientY); }}>
+    <div className="subscription-head">
+      <span className="subscription-icon"><img src={zaiIcon} alt="" /></span>
+      <div className="subscription-title">
+        <h3>{status.title}{status.plan && <span className="tag tag-muted">{status.plan}</span>}</h3>
+      </div>
+    </div>
+    {status.error
+      ? <div className="subscription-error" role="alert"><Glyph name="warning" size={16} /><span>{status.error}</span></div>
+      : <>
+        <div className="quota-list">
+          {status.quotas.map((quota) => {
+            const tone = quota.usedPercent >= 90 ? "danger" : quota.usedPercent >= 70 ? "warn" : "ok";
+            const counts = quota.used !== null && quota.total !== null
+              ? `${formatQuotaCount(quota.kind, quota.used)} / ${formatQuotaCount(quota.kind, quota.total)}`
+              : null;
+            return <div key={quota.label} className="quota-row">
+              <div className="quota-top">
+                <strong>{quota.label}</strong>
+                <span className={`quota-state ${tone}`}>{quota.usedPercent.toFixed(1)}%{counts ? ` · ${counts}` : ""}{quota.resetsAt ? ` · ${formatResetCountdown(quota.resetsAt)}` : ""}</span>
+              </div>
+              <div className="quota-bar" role="img" aria-label={`${quota.label}已用 ${quota.usedPercent.toFixed(1)}%`}><span className={tone} style={{ width: `${Math.min(100, Math.max(2, quota.usedPercent))}%` }} /></div>
+              {quota.details.length > 0 && <small className="quota-details">{quota.details.map((detail) => `${detail.name} ${usageNumber.format(detail.usage)}`).join(" · ")}</small>}
+            </div>;
+          })}
+        </div>
+        {status.metrics.length > 0 && <div className="metric-row">
+          {status.metrics.map((metric) => <span key={metric.id + metric.label} className="metric-chip"><Glyph name={metricIcon(metric.id)} size={14} /><span>{metric.label}</span><strong>{formatQuotaCount(metric.id === "tokens" || metric.id === "model" ? "tokens" : "plain", metric.value)}</strong></span>)}
+        </div>}
+      </>}
+  </article>;
+}
+
+function SubscriptionSection({ statuses, loading, error, onRefresh, onAddPlan, onMenu }: {
+  statuses: SubscriptionStatus[] | null;
+  loading: boolean;
+  error: string;
+  onRefresh: () => void;
+  onAddPlan: () => void;
+  onMenu: (status: SubscriptionStatus, x: number, y: number) => void;
+}) {
+  return <section className="section-block">
+    <div className="section-heading">
+      <div><h2>订阅与配额</h2><p>通过官方查询接口读取订阅余量与用量。</p></div>
+      <div className="section-actions">
+        <button className="button button-muted" onClick={onRefresh} disabled={loading}><Glyph name="refresh" size={16} />{loading ? "查询中…" : "刷新"}</button>
+        <button className="button button-muted" onClick={onAddPlan}><Glyph name="plus" size={16} />添加套餐</button>
+      </div>
+    </div>
+    {error && <div className="subscription-error" role="alert"><Glyph name="warning" size={16} /><span>{error}</span></div>}
+    <div className="subscription-list">
+      {(statuses || []).map((status) => <SubscriptionCard key={status.id} status={status} onMenu={onMenu} />)}
+      {statuses && statuses.length === 0 && <Empty icon="spark" title="尚未添加订阅套餐" description="添加套餐并填写名称与 Key 后，即可在此查看对应订阅的配额窗口与用量统计；同一个订阅可添加多份，用名称区分。" action="添加订阅套餐" onClick={onAddPlan} />}
+      {!statuses && !error && loading && <div className="loading-panel" role="status"><span className="spinner" />正在查询订阅配额…</div>}
+    </div>
+  </section>;
 }
 
 function UsageTrend({ trend, range }: { trend: UsageStats["trend"]; range: UsageRange }) {
@@ -887,6 +1175,41 @@ function UsageRangePicker({ range, label, activeChoice, onApply }: {
       </div>
     </div>}
   </div>;
+}
+
+function AgentsUsagePanel({ stats, range, rangeLabel, activeChoice, loading, error, pricingNote, onRangeChange, onRefresh }: {
+  stats: UsageStats | null;
+  range: UsageRange;
+  rangeLabel: string;
+  activeChoice: UsageChoice;
+  loading: "sync" | "read" | null;
+  error: string;
+  pricingNote: string;
+  onRangeChange: (range: UsageRange, label: string, choice: UsageChoice) => void;
+  onRefresh: () => void;
+}) {
+  return <section className="section-block agents-usage" aria-label="Agent 用量统计">
+    <div className="omp-usage-toolbar">
+      <div><h2>用量统计</h2><p>所有 Agent 的本机会话汇总 · {stats?.syncedAt ? `上次同步：${new Date(stats.syncedAt).toLocaleString("zh-CN")}` : "尚未同步"}</p></div>
+      <div className="section-actions">
+        <UsageRangePicker range={range} label={rangeLabel} activeChoice={activeChoice} onApply={onRangeChange} />
+      </div>
+    </div>
+    {pricingNote && <p className="omp-pricing-note" role="status"><Glyph name="check" size={14} />{pricingNote}</p>}
+    {loading && <div className="loading-panel" role="status"><span className="spinner" />{loading === "sync" ? "正在同步所有 Agent 本地用量…" : "正在读取此时间范围的用量…"}</div>}
+    {!loading && error && <div className="alert alert-error" role="alert"><Glyph name="warning" size={18} /><span>{error}。当前没有可显示的最新数据。</span><button className="button button-muted" type="button" onClick={onRefresh}>重试同步</button></div>}
+    {!loading && !error && stats && (stats.totalRequests === 0
+      ? <Empty icon="grid" title="所选时间范围内没有用量" description="已完成同步，但所有 Agent 在此时间范围内都没有请求。可选择其他时间范围，或点击右上角「刷新状态」重新同步。" />
+      : <>
+        <div className="omp-summary" aria-label="Agent 用量汇总">
+          <div className="omp-summary-card"><span>请求数</span><strong>{usageNumber.format(stats.totalRequests)}</strong><small>次请求</small></div>
+          <div className="omp-summary-card"><span>总 Token</span><strong>{usageTokenNumber.format(stats.totalTokens)}</strong><small>输入 {usageTokenNumber.format(stats.inputTokens)} · 输出 {usageTokenNumber.format(stats.outputTokens)}</small></div>
+          <div className="omp-summary-card"><span>{stats.unpricedRequests > 0 ? "已计价费用小计" : "估算费用"}</span><strong>{formatUsageCost(stats.totalCost)}</strong><small>USD{stats.unpricedRequests > 0 ? ` · ${usageNumber.format(stats.unpricedRequests)} 次未计价` : ""}</small></div>
+        </div>
+        <div className="section-heading model-breakdown-heading"><div><h2>模型明细 <span className="count">{stats.byModel.length}</span></h2><p>各模型的请求数、Token 总量与已计价费用小计；未计价请求不并入费用。</p></div></div>
+        {stats.byModel.length ? <div className="omp-table-wrap"><table className="omp-table"><thead><tr><th scope="col">提供方 / 模型</th><th scope="col">请求数</th><th scope="col">总 Token</th><th scope="col">已计价费用 (USD)</th></tr></thead><tbody>{stats.byModel.map((model) => <tr key={`${model.provider}:${model.model}`}><th scope="row"><span>{model.provider || "未知提供方"}</span><strong>{model.model || "未知模型"}</strong></th><td>{usageNumber.format(model.requests)}</td><td>{usageTokenNumber.format(model.totalTokens)}</td><td>{formatUsageCost(model.cost)}{model.unpricedRequests > 0 && <small className="omp-unpriced">（{usageNumber.format(model.unpricedRequests)} 次未计价）</small>}</td></tr>)}</tbody></table></div> : null}
+      </>)}
+  </section>;
 }
 
 function AgentUsagePanel({ agentId, stats, range, rangeLabel, activeChoice, loading, error, onRangeChange, onRefresh }: {

@@ -12,8 +12,8 @@ use std::{
 // The adapter owns source-specific sync, storage resolution and interpretation. Other
 // agents can implement this interface without putting OMP paths in the commands/UI.
 trait AgentUsageAdapter {
-    fn sync(&self, range: UsageRange, prices: &Pricing) -> omp::Result<UsageStats>;
-    fn read(&self, range: UsageRange, prices: &Pricing) -> omp::Result<UsageStats>;
+    fn sync(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage>;
+    fn read(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage>;
 }
 
 #[derive(Serialize)]
@@ -71,6 +71,83 @@ impl Totals {
         } else {
             (self.cache_read_tokens as f64 / prompt as f64).clamp(0.0, 1.0)
         }
+    }
+
+    fn absorb(&mut self, other: &Totals) {
+        self.requests += other.requests;
+        self.total_tokens += other.total_tokens;
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cache_read_tokens += other.cache_read_tokens;
+        self.cost += other.cost;
+        self.unpriced_requests += other.unpriced_requests;
+    }
+}
+
+/// Aggregatable usage without derived fields; [`RawUsage::finish`] renders it.
+struct RawUsage {
+    totals: Totals,
+    models: BTreeMap<(String, String), Totals>,
+    trend: BTreeMap<i64, (i64, i64)>,
+    synced_at: i64,
+}
+
+impl RawUsage {
+    fn finish(self) -> UsageStats {
+        UsageStats {
+            total_requests: self.totals.requests,
+            total_tokens: self.totals.total_tokens,
+            input_tokens: self.totals.input_tokens,
+            output_tokens: self.totals.output_tokens,
+            cache_read_tokens: self.totals.cache_read_tokens,
+            cache_rate: self.totals.cache_rate(),
+            total_cost: (self.totals.requests > self.totals.unpriced_requests)
+                .then_some(self.totals.cost),
+            unpriced_requests: self.totals.unpriced_requests,
+            by_model: self
+                .models
+                .into_iter()
+                .map(|((provider, model), item)| ModelUsage {
+                    provider,
+                    model,
+                    requests: item.requests,
+                    total_tokens: item.total_tokens,
+                    cache_rate: item.cache_rate(),
+                    cost: (item.requests > item.unpriced_requests).then_some(item.cost),
+                    unpriced_requests: item.unpriced_requests,
+                })
+                .collect(),
+            trend: self
+                .trend
+                .into_iter()
+                .map(|(bucket, (requests, total_tokens))| TrendPoint {
+                    bucket,
+                    requests,
+                    total_tokens,
+                })
+                .collect(),
+            synced_at: self.synced_at,
+        }
+    }
+
+    fn merge(&mut self, other: RawUsage) {
+        self.totals.absorb(&other.totals);
+        for (key, totals) in other.models {
+            self.models.entry(key).or_default().absorb(&totals);
+        }
+        for (bucket, (requests, total_tokens)) in other.trend {
+            let point = self.trend.entry(bucket).or_default();
+            point.0 += requests;
+            point.1 += total_tokens;
+        }
+        self.synced_at = self.synced_at.max(other.synced_at);
+    }
+}
+
+fn merge_into(merged: &mut Option<RawUsage>, raw: RawUsage) {
+    match merged {
+        Some(merged) => merged.merge(raw),
+        None => *merged = Some(raw),
     }
 }
 
@@ -445,7 +522,7 @@ impl OmpUsageAdapter {
         Ok(())
     }
 
-    fn read_db(&self, range: UsageRange, prices: &Pricing) -> omp::Result<UsageStats> {
+    fn read_db(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage> {
         let db = Connection::open_with_flags(&self.stats_db, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|e| {
                 format!(
@@ -519,53 +596,26 @@ impl OmpUsageAdapter {
             .max()
             .unwrap_or(0),
         );
-        Ok(UsageStats {
-            total_requests: totals.requests,
-            total_tokens: totals.total_tokens,
-            input_tokens: totals.input_tokens,
-            output_tokens: totals.output_tokens,
-            cache_read_tokens: totals.cache_read_tokens,
-            cache_rate: totals.cache_rate(),
-            total_cost: (totals.requests > totals.unpriced_requests).then_some(totals.cost),
-            unpriced_requests: totals.unpriced_requests,
-            by_model: models
-                .into_iter()
-                .map(|((provider, model), item)| ModelUsage {
-                    provider,
-                    model,
-                    requests: item.requests,
-                    total_tokens: item.total_tokens,
-                    cache_rate: item.cache_rate(),
-                    cost: (item.requests > item.unpriced_requests).then_some(item.cost),
-                    unpriced_requests: item.unpriced_requests,
-                })
-                .collect(),
-            trend: trend
-                .into_iter()
-                .map(|(bucket, (requests, total_tokens))| TrendPoint {
-                    bucket,
-                    requests,
-                    total_tokens,
-                })
-                .collect(),
+        Ok(RawUsage {
+            totals,
+            models,
+            trend,
             synced_at,
         })
     }
 }
 
 impl AgentUsageAdapter for OmpUsageAdapter {
-    fn sync(&self, range: UsageRange, prices: &Pricing) -> omp::Result<UsageStats> {
+    fn sync(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage> {
         self.sync_cli()?;
-        let stats = self.read_db(range, prices)?;
+        let mut raw = self.read_db(range, prices)?;
         let now = now_millis()?;
         LAST_SUCCESSFUL_SYNC.store(now, Ordering::Relaxed);
-        Ok(UsageStats {
-            synced_at: now,
-            ..stats
-        })
+        raw.synced_at = now;
+        Ok(raw)
     }
 
-    fn read(&self, range: UsageRange, prices: &Pricing) -> omp::Result<UsageStats> {
+    fn read(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage> {
         self.read_db(range, prices)
     }
 }
@@ -595,22 +645,52 @@ fn normalize_profile(value: &str) -> omp::Result<Option<String>> {
     Ok(Some(value.to_owned()))
 }
 
-fn with_adapter(
-    agent_id: &str,
-    price_file: &Path,
-    operation: impl FnOnce(&dyn AgentUsageAdapter, &Pricing) -> omp::Result<UsageStats>,
-) -> omp::Result<UsageStats> {
+/// Every agent AMC collects usage from; a new source registers here and
+/// implements [`AgentUsageAdapter`], nothing else.
+const AGENT_IDS: &[&str] = &["omp"];
+
+fn adapter_for(agent_id: &str) -> omp::Result<Box<dyn AgentUsageAdapter>> {
     match agent_id {
         "omp" => {
             if omp::omp_executable().is_none() {
                 return Err("找不到 OMP 可执行文件；请安装 omp 后重试".into());
             }
-            operation(
-                &OmpUsageAdapter::from_environment()?,
-                &Pricing::load(price_file)?,
-            )
+            Ok(Box::new(OmpUsageAdapter::from_environment()?))
         }
         _ => Err(format!("不支持的 Agent 用量来源: {agent_id}")),
+    }
+}
+
+fn with_adapter(
+    agent_id: &str,
+    price_file: &Path,
+    operation: impl FnOnce(&dyn AgentUsageAdapter, &Pricing) -> omp::Result<RawUsage>,
+) -> omp::Result<UsageStats> {
+    let raw = operation(adapter_for(agent_id)?.as_ref(), &Pricing::load(price_file)?)?;
+    Ok(raw.finish())
+}
+
+/// Agents that cannot provide usage (e.g. not installed) are skipped as long
+/// as at least one source succeeds; only a total failure is reported.
+fn collect(
+    price_file: &Path,
+    operation: impl Fn(&dyn AgentUsageAdapter, &Pricing) -> omp::Result<RawUsage>,
+) -> omp::Result<UsageStats> {
+    let prices = Pricing::load(price_file)?;
+    let mut merged: Option<RawUsage> = None;
+    let mut first_error: Option<String> = None;
+    for agent_id in AGENT_IDS {
+        match adapter_for(agent_id).and_then(|adapter| operation(adapter.as_ref(), &prices)) {
+            Ok(raw) => merge_into(&mut merged, raw),
+            Err(error) => {
+                let _ = first_error.get_or_insert(error);
+            }
+        }
+    }
+    match merged {
+        Some(raw) => Ok(raw.finish()),
+        None => Err(first_error
+            .unwrap_or_else(|| "没有可统计的 Agent 用量来源".to_owned())),
     }
 }
 
@@ -628,6 +708,16 @@ pub fn get_agent_usage(agent_id: &str, range: &str, price_file: &Path) -> omp::R
     })
 }
 
+pub fn sync_agents_usage(range: &str, price_file: &Path) -> omp::Result<UsageStats> {
+    let range = UsageRange::parse(range, now_millis()?)?;
+    collect(price_file, |adapter, prices| adapter.sync(range, prices))
+}
+
+pub fn get_agents_usage(range: &str, price_file: &Path) -> omp::Result<UsageStats> {
+    let range = UsageRange::parse(range, now_millis()?)?;
+    collect(price_file, |adapter, prices| adapter.read(range, prices))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,7 +725,7 @@ mod tests {
     fn prices() -> Pricing {
         Pricing::load(Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/resources/model_prices_and_context_window.json"
+            "/../model-pricing.json"
         )))
         .unwrap()
     }
@@ -719,7 +809,7 @@ mod tests {
         drop(db);
         let adapter = OmpUsageAdapter { stats_db };
         let range = UsageRange::parse(&format!("custom:{start}:{end}"), end + 1).unwrap();
-        let stats = adapter.read_db(range, &prices()).unwrap();
+        let stats = adapter.read_db(range, &prices()).unwrap().finish();
         assert_eq!(stats.total_requests, 2);
         assert_eq!(stats.total_tokens, 24);
         assert_eq!(stats.input_tokens, 2);
@@ -763,7 +853,8 @@ mod tests {
                 UsageRange::parse("all", now_millis().unwrap()).unwrap(),
                 &prices(),
             )
-            .unwrap();
+            .unwrap()
+            .finish();
         assert_eq!(stats.total_requests, 2);
         assert_eq!(stats.unpriced_requests, 1);
         assert_eq!(stats.total_cost, Some(4.0));
@@ -796,18 +887,64 @@ mod tests {
         let price_file = root.join(crate::pricing::FILE_NAME);
         let adapter = OmpUsageAdapter { stats_db };
         let range = UsageRange::parse("all", now_millis().unwrap()).unwrap();
-        fs::write(&price_file, r#"{"model":{"litellm_provider":"fixture","mode":"chat","input_cost_per_token":0.01,"output_cost_per_token":0.02,"cache_read_input_token_cost":0.03}}"#).unwrap();
+        fs::write(&price_file, r#"{"models":{"model":{"providers":["fixture"],"input":10000,"output":20000,"cache_read":30000}}}"#).unwrap();
         let first = adapter
             .read_db(range, &Pricing::load(&price_file).unwrap())
-            .unwrap();
+            .unwrap()
+            .finish();
         assert!((first.total_cost.unwrap() - 0.14).abs() < 1e-12);
         assert_eq!(first.unpriced_requests, 0);
-        fs::write(&price_file, r#"{"model":{"litellm_provider":"fixture","mode":"chat","input_cost_per_token":0.02,"output_cost_per_token":0.03,"cache_read_input_token_cost":0.04}}"#).unwrap();
+        fs::write(&price_file, r#"{"models":{"model":{"providers":["fixture"],"input":20000,"output":30000,"cache_read":40000}}}"#).unwrap();
         let second = adapter
             .read_db(range, &Pricing::load(&price_file).unwrap())
-            .unwrap();
+            .unwrap()
+            .finish();
         assert!((second.total_cost.unwrap() - 0.20).abs() < 1e-12);
         assert!((second.by_model[0].cost.unwrap() - 0.20).abs() < 1e-12);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn merged_agents_usage_sums_each_metric_per_model() {
+        let root = env::temp_dir().join(format!("amc-usage-merge-{}", uuid::Uuid::new_v4()));
+        let first_db = root.join("a/stats.db");
+        let second_db = root.join("b/stats.db");
+        fixture_stats(&first_db, 10);
+        fixture_stats(&second_db, 20);
+        let db = Connection::open(&second_db).unwrap();
+        db.execute(
+            "INSERT INTO messages VALUES ('openai', 'gpt-6-sol', 1700000000000, 1, 2, 3, 0, 40)",
+            [],
+        )
+        .unwrap();
+        drop(db);
+        let range = UsageRange::parse("all", now_millis().unwrap()).unwrap();
+        let prices = prices();
+        let first = OmpUsageAdapter { stats_db: first_db }
+            .read_db(range, &prices)
+            .unwrap();
+        let second = OmpUsageAdapter { stats_db: second_db }
+            .read_db(range, &prices)
+            .unwrap();
+        let expected_synced_at = first.synced_at.max(second.synced_at);
+        let mut merged: Option<RawUsage> = None;
+        merge_into(&mut merged, first);
+        merge_into(&mut merged, second);
+        let stats = merged.unwrap().finish();
+        assert_eq!(stats.total_requests, 3);
+        assert_eq!(stats.total_tokens, 70);
+        assert_eq!(stats.unpriced_requests, 2);
+        assert_eq!(stats.total_cost, Some(22.6e-6));
+        assert_eq!(stats.by_model.len(), 2);
+        assert_eq!(stats.by_model[0].provider, "fixture");
+        assert_eq!(stats.by_model[0].requests, 2);
+        assert_eq!(stats.by_model[0].cost, None);
+        assert_eq!(stats.by_model[1].model, "gpt-6-sol");
+        assert_eq!(stats.by_model[1].requests, 1);
+        assert_eq!(stats.by_model[1].cost, Some(22.6e-6));
+        assert_eq!(stats.trend.len(), 1);
+        assert_eq!(stats.trend[0].requests, 3);
+        assert_eq!(stats.synced_at, expected_synced_at);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -926,7 +1063,8 @@ mod tests {
                 UsageRange::parse("all", now_millis().unwrap()).unwrap(),
                 &prices(),
             )
-            .unwrap();
+            .unwrap()
+            .finish();
         assert_eq!(adapter.stats_db, db);
         assert_eq!(stats.total_tokens, 321);
         assert_eq!(stats.total_requests, 1);
@@ -970,7 +1108,8 @@ mod tests {
                 UsageRange::parse("all", now_millis().unwrap()).unwrap(),
                 &prices(),
             )
-            .unwrap();
+            .unwrap()
+            .finish();
         assert_eq!(stats.total_tokens, 654);
         fs::remove_dir_all(root).unwrap();
     }
@@ -1011,6 +1150,7 @@ mod tests {
                     &prices()
                 )
                 .unwrap()
+                .finish()
                 .total_tokens,
             987,
         );
@@ -1089,6 +1229,7 @@ mod tests {
                     &prices()
                 )
                 .unwrap()
+                .finish()
                 .total_requests,
             0
         );

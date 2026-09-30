@@ -3,6 +3,7 @@ mod omp_usage;
 mod operations;
 mod pricing;
 mod store;
+mod subscription;
 mod workspace;
 
 use std::sync::{Arc, Mutex};
@@ -166,13 +167,136 @@ async fn get_agent_usage(
     .map_err(|e| format!("后台操作失败: {e}"))?
 }
 
+#[tauri::command]
+async fn sync_agents_usage(
+    app: tauri::AppHandle,
+    range: String,
+) -> omp::Result<omp_usage::UsageStats> {
+    let price_file = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join(pricing::FILE_NAME);
+    tauri::async_runtime::spawn_blocking(move || {
+        omp_usage::sync_agents_usage(&range, &price_file)
+    })
+    .await
+    .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
+#[tauri::command]
+async fn get_agents_usage(
+    app: tauri::AppHandle,
+    range: String,
+) -> omp::Result<omp_usage::UsageStats> {
+    let price_file = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join(pricing::FILE_NAME);
+    tauri::async_runtime::spawn_blocking(move || {
+        omp_usage::get_agents_usage(&range, &price_file)
+    })
+    .await
+    .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
+#[tauri::command]
+async fn refresh_pricing(app: tauri::AppHandle) -> omp::Result<String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || pricing::refresh(&data_dir))
+        .await
+        .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
+#[tauri::command]
+async fn fetch_subscriptions(
+    app: tauri::AppHandle,
+) -> omp::Result<Vec<subscription::SubscriptionStatus>> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || Ok(subscription::fetch_all(&data_dir)))
+        .await
+        .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
+#[tauri::command]
+async fn list_subscription_kinds() -> omp::Result<Vec<subscription::SubscriptionKind>> {
+    Ok(subscription::list_kinds())
+}
+
+#[tauri::command]
+async fn add_subscription_plan(
+    app: tauri::AppHandle,
+    kind: String,
+    name: String,
+    platform: String,
+    key: String,
+) -> omp::Result<subscription::Message> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        subscription::add_plan(&data_dir, &kind, &name, &platform, &key)?;
+        Ok(subscription::Message {
+            message: format!("已添加订阅套餐 {name}"),
+        })
+    })
+    .await
+    .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
+#[tauri::command]
+async fn update_subscription_plan(
+    app: tauri::AppHandle,
+    id: String,
+    name: String,
+    platform: String,
+    key: Option<String>,
+) -> omp::Result<subscription::Message> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        subscription::update_plan(&data_dir, &id, &name, &platform, key.as_deref())?;
+        Ok(subscription::Message {
+            message: format!("已更新订阅套餐 {name}"),
+        })
+    })
+    .await
+    .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
+#[tauri::command]
+async fn remove_subscription_plan(
+    app: tauri::AppHandle,
+    id: String,
+) -> omp::Result<subscription::Message> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        subscription::remove_plan(&data_dir, &id)?;
+        Ok(subscription::Message {
+            message: "已移除订阅套餐".to_owned(),
+        })
+    })
+    .await
+    .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
-            pricing::ensure_file(&data_dir).map_err(std::io::Error::other)?;
+            pricing::ensure_cache(&data_dir).map_err(std::io::Error::other)?;
             let core = operations::Core::new(data_dir).map_err(std::io::Error::other)?;
             app.manage(Arc::new(Mutex::new(core)));
             Ok(())
@@ -192,7 +316,15 @@ pub fn run() {
             plan_remove_skill,
             rollback_skill,
             sync_agent_usage,
-            get_agent_usage
+            get_agent_usage,
+            sync_agents_usage,
+            get_agents_usage,
+            refresh_pricing,
+            fetch_subscriptions,
+            list_subscription_kinds,
+            add_subscription_plan,
+            update_subscription_plan,
+            remove_subscription_plan
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
