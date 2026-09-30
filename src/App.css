@@ -218,6 +218,7 @@ textarea{resize:vertical;line-height:1.55}
 .omp-nav-icon{width:19px;height:19px;object-fit:contain;flex-shrink:0}
 .omp-icon-tile{background:#18182c}
 .omp-icon-tile img{width:32px;height:28px;object-fit:contain}
+.claude-icon-tile{background:#2b1f19;color:#e8a287}
 .omp-usage{min-width:0}
 .omp-usage-toolbar{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;flex-wrap:wrap;margin-bottom:22px}
 .omp-usage-toolbar h2{font-size:21px;margin:0 0 4px}

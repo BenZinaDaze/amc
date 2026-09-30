@@ -16,7 +16,7 @@ xattr -cr /Applications/AMC.app
 
 ## 主要功能
 
-- **Agents**：检测本机 OMP；Agents 页汇总所有 Agent 的请求数、Token 总量与已计价费用，并按模型列出明细。
+- **Agents**：检测本机 OMP 与 Claude Code CLI；Agents 页汇总所有 Agent 的请求数、Token 总量与已计价费用，并按模型列出明细。OMP 用量读取本地 stats.db，Claude Code 用量解析 `~/.claude/projects` 下的会话转录（支持 `CLAUDE_CONFIG_DIR`），同一请求经 resume/重试产生的重复行只计一次。
 - **订阅与配额**：概览页卡片展示 GLM Coding Plan 的窗口配额与近 24 小时用量，凭据仅在本地使用。
 - **Skills**：添加远程 Git 仓库或本地来源，发现并选择安装技能；支持刷新、更新、回滚和卸载。
 - **MCP**：查看已发现的服务及配置来源，预览并管理可编辑的 MCP 服务。

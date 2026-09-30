@@ -159,6 +159,13 @@ impl Pricing {
         Ok(Self { models })
     }
 
+    /// First provider listed for a model. Sources that record no provider of
+    /// their own (e.g. Claude Code transcripts only name the model, which may
+    /// be routed to non-Anthropic backends) use it to stay priceable.
+    pub fn primary_provider(&self, model: &str) -> Option<&str> {
+        self.models.get(model).map(|entry| entry.providers[0].as_str())
+    }
+
     pub fn cost(
         &self,
         provider: &str,

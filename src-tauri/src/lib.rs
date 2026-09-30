@@ -202,6 +202,13 @@ async fn get_agents_usage(
 }
 
 #[tauri::command]
+async fn get_claude_code_status() -> omp::Result<omp_usage::ClaudeCodeStatus> {
+    tauri::async_runtime::spawn_blocking(omp_usage::claude_code_status)
+        .await
+        .map_err(|e| format!("后台操作失败: {e}"))
+}
+
+#[tauri::command]
 async fn refresh_pricing(app: tauri::AppHandle) -> omp::Result<String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || pricing::refresh(&data_dir))
@@ -319,6 +326,7 @@ pub fn run() {
             get_agent_usage,
             sync_agents_usage,
             get_agents_usage,
+            get_claude_code_status,
             refresh_pricing,
             fetch_subscriptions,
             list_subscription_kinds,
