@@ -1,0 +1,40 @@
+name: Release notes check
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Version bump carries release notes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          version() { node -p "require('$1').version"; }
+          V=$(version ./package.json)
+          NOTES="docs/releases/v${V}.md"
+          if [ -s "$NOTES" ] && grep -q '[^[:space:]]' "$NOTES"; then
+            echo "OK: ${NOTES} present"
+            exit 0
+          fi
+          if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            OLDV="$V"
+          else
+            git show "$BEFORE_SHA:package.json" > /tmp/old-package.json || { echo "cannot read $BEFORE_SHA:package.json"; exit 1; }
+            OLDV=$(version /tmp/old-package.json)
+          fi
+          if [ "$OLDV" != "$V" ]; then
+            echo "::error::Version bumped ${OLDV} -> ${V} but ${NOTES} is missing or empty. Write the release notes (features and fixes) and push them together with the version bump."
+            exit 1
+          fi
+          echo "OK: version unchanged (${V}), no notes required"

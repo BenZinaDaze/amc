@@ -9,8 +9,25 @@ permissions:
   contents: read
 
 jobs:
+  preflight:
+    name: Release notes check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          NOTES="docs/releases/${RELEASE_TAG}.md"
+          if [ ! -s "$NOTES" ] || ! grep -q '[^[:space:]]' "$NOTES"; then
+            echo "::error::Missing or empty ${NOTES} — write the release notes (features and fixes) before tagging."
+            exit 1
+          fi
+          echo "Release notes OK: ${NOTES}"
+
   build:
     name: DMG (${{ matrix.arch }})
+    needs: preflight
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -54,12 +71,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Resolve release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if [ ! -f "docs/releases/${GITHUB_REF_NAME}.md" ]; then
-            echo "::error::Missing docs/releases/${GITHUB_REF_NAME}.md — write the release notes (features and fixes) before tagging."
+          NOTES="docs/releases/${RELEASE_TAG}.md"
+          if [ ! -s "$NOTES" ] || ! grep -q '[^[:space:]]' "$NOTES"; then
+            echo "::error::Missing or empty ${NOTES}."
             exit 1
           fi
-          echo "RELEASE_NOTES=docs/releases/${GITHUB_REF_NAME}.md" >> "$GITHUB_ENV"
+          echo "RELEASE_NOTES=${NOTES}" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
           pattern: dmg-*

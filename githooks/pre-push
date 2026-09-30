@@ -1,0 +1,16 @@
+#!/bin/sh
+# Blocks tag pushes when the release notes file is missing or empty.
+# Enable once per clone: git config core.hooksPath githooks
+zero=0000000000000000000000000000000000000000
+status=0
+while read -r _old new ref; do
+  case "$ref" in refs/tags/v*) ;; *) continue ;; esac
+  [ "$new" = "$zero" ] && continue
+  tag=${ref#refs/tags/}
+  notes="docs/releases/$tag.md"
+  if [ ! -s "$notes" ] || ! grep -q '[^[:space:]]' "$notes"; then
+    echo "push declined: $notes is missing or empty — write the release notes before pushing $tag" >&2
+    status=1
+  fi
+done
+exit $status
