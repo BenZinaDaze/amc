@@ -7,12 +7,15 @@ zero=0000000000000000000000000000000000000000
 status=0
 
 # git sends one "<local-ref> <local-oid> <remote-ref> <remote-oid>" line
-# per ref. A deletion empties the LOCAL side; creating or updating a tag
-# keeps a real local oid, and that is the push the gate must verify.
-while read -r local_ref local_oid _remote_ref _remote_oid; do
-  case "$local_ref" in refs/tags/v*) ;; *) continue ;; esac
+# per ref. The REMOTE ref is what will be created — the release tag and
+# notes file follow it, even when the source is a renamed refspec
+# ("git push origin HEAD:refs/tags/v0.4.0" sends local-ref "HEAD"). A
+# deletion empties the LOCAL side; creating or updating a tag keeps a
+# real local oid, and that is the push the gate must verify.
+while read -r _local_ref local_oid remote_ref _remote_oid; do
+  case "$remote_ref" in refs/tags/v*) ;; *) continue ;; esac
   [ "$local_oid" = "$zero" ] && continue
-  tag=${local_ref#refs/tags/}
+  tag=${remote_ref#refs/tags/}
   notes="docs/releases/$tag.md"
   if [ ! -s "$notes" ] || ! grep -q '[^[:space:]]' "$notes"; then
     echo "push declined: $notes is missing or empty — write the release notes before pushing $tag" >&2
