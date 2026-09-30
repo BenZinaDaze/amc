@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0.12" y1="0" x2="0.88" y2="1">
+      <stop offset="0" stop-color="#A79BFF"/>
+      <stop offset="0.55" stop-color="#7263E9"/>
+      <stop offset="1" stop-color="#4F44C9"/>
+    </linearGradient>
+    <radialGradient id="hi" cx="0.3" cy="0.16" r="0.9">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="lo" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#1B1254" stop-opacity="0.22"/>
+      <stop offset="0.45" stop-color="#1B1254" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="sq"><rect x="100" y="100" width="824" height="824" rx="184"/></clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="url(#bg)"/>
+  <g clip-path="url(#sq)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#hi)"/>
+    <rect x="100" y="100" width="824" height="824" fill="url(#lo)"/>
+  </g>
+  <!-- A: two legs -->
+  <path d="M512 292 340 730 M512 292 684 730" fill="none" stroke="#FFFFFF" stroke-width="78" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- crossbar as rising trend line -->
+  <path d="M426 592 492 544 538 572 596 508" fill="none" stroke="#FFFFFF" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -34,8 +34,8 @@ svg{flex-shrink:0}
 .app-shell{height:100vh;display:flex}
 .sidebar{width:248px;min-width:248px;background:#151d31;color:#a4b0c7;height:100%;display:flex;flex-direction:column;padding:31px 16px 20px}
 .brand{display:flex;gap:12px;align-items:center;padding:0 12px 48px;color:#fff}
-.brand-mark{width:37px;height:37px;display:grid;place-items:center;background:#756bf6;border-radius:12px;box-shadow:0 7px 18px #6056f347}
-.brand-mark span{font-size:27px;line-height:1}
+.brand-mark{width:37px;height:37px}
+.brand-mark img{width:100%;height:100%;display:block;filter:drop-shadow(0 6px 14px #6056f347)}
 .brand strong{display:block;font-size:20px;letter-spacing:.07em;line-height:1.1}
 .brand small{font-size:10px;color:#8593b0;white-space:nowrap}
 .sidebar-caption{font-size:11px;color:#68768f;font-weight:700;letter-spacing:.13em;margin:0 13px 13px}
@@ -351,8 +351,7 @@ textarea{resize:vertical;line-height:1.55}
   .brand{padding:0;margin:0}
   .brand small{display:none}
   .brand strong{font-size:16px}
-  .brand-mark{width:30px;height:30px;border-radius:9px}
-  .brand-mark span{font-size:21px}
+  .brand-mark{width:30px;height:30px}
   .sidebar-caption,.sidebar-bottom{display:none}
   .navigation{flex:1;display:flex;flex-direction:row;gap:2px;justify-content:flex-end;overflow-x:auto}
   .nav-section.group{margin:0}
