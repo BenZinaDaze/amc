@@ -31,24 +31,31 @@ jobs:
             echo "Release notes OK: ${NOTES} (first tagged release)."
             exit 0
           fi
-          UNCOVERED=$(git log "$PREV..HEAD" --no-merges --pretty=%s \
-            | grep -E '^feat(\(|:)' \
-            | while IFS= read -r subject; do
-                words=$(printf '%s\n' "$subject" \
-                  | sed -E 's/^feat(\([^)]*\))?:[[:space:]]*//' \
-                  | tr '[:upper:]' '[:lower:]' \
-                  | tr -c '[:alnum:]' '\n' \
-                  | awk 'length($0) >= 4')
-                covered=0
-                for word in $words; do
-                  if grep -qiF -- "$word" "$NOTES"; then covered=1; break; fi
-                done
-                [ "$covered" -eq 0 ] && printf '%s\n' "$subject"
+          # Sharing words with the notes is not coverage ("codex" contains
+          # "code"); each feat commit must carry an explicit hidden comment
+          # acknowledging it: <!--feat:<commit-oid>>-->. grep -F keeps the
+          # marker a plain argument (case patterns with "<"/">" misparse).
+          NOTES_BODY=$(cat "$NOTES")
+          MISSING=$(git log "$PREV..HEAD" --no-merges --pretty='%H %s' \
+            | grep -E '^[0-9a-f]{40} feat(\(|:)' \
+            | while IFS= read -r record; do
+                oid=${record%% *}
+                if printf '%s\n' "$NOTES_BODY" | grep -qF -- "<!--feat:$oid-->"; then
+                  :
+                else
+                  printf '%s\n' "$record"
+                fi
               done)
-          if [ -n "$UNCOVERED" ]; then
-            echo "::error::${NOTES} does not cover these feat commits since ${PREV}:"
-            printf '%s\n' "$UNCOVERED"
-            echo "Write a notes section for each feature before tagging."
+          if [ -n "$MISSING" ]; then
+            echo "::error::${NOTES} does not acknowledge these feat commits since ${PREV}:"
+            printf '%s\n' "$MISSING"
+            echo "Append the matching hidden comment for each commit, e.g.:"
+            git log "$PREV..HEAD" --no-merges --pretty='%H %s' \
+              | grep -E '^[0-9a-f]{40} feat(\(|:)' \
+              | while IFS= read -r record; do
+                  oid=${record%% *}
+                  echo "  <!--feat:${oid}-->  # ${record#* }"
+                done
             exit 1
           fi
           echo "Release notes OK: ${NOTES} (covers ${PREV}..${GITHUB_SHA})."
@@ -98,6 +105,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the feat appendix can span the whole release.
+          fetch-depth: 0
       - name: Resolve release notes
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -108,6 +118,23 @@ jobs:
             exit 1
           fi
           echo "RELEASE_NOTES=${NOTES}" >> "$GITHUB_ENV"
+      - name: Append the feat commit list
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          BODY="docs/releases/${RELEASE_TAG}.body.md"
+          cp "$RELEASE_NOTES" "$BODY"
+          PREV=$(git describe --tags --abbrev=0 "HEAD^" 2>/dev/null || true)
+          if [ -n "$PREV" ]; then
+            FEATS=$(git log "$PREV..HEAD" --no-merges --pretty='%h|%s' \
+              | awk -F'|' '$2 ~ /^feat(\(|:)/ {printf "- %s (%s)\n", $2, $1}')
+            if [ -n "$FEATS" ]; then
+              {
+                printf '\n### 功能提交\n\n%s\n' "$FEATS"
+              } >> "$BODY"
+            fi
+          fi
+          echo "RELEASE_NOTES=${BODY}" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
           pattern: dmg-*

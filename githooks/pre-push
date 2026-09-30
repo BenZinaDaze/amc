@@ -1,6 +1,7 @@
 #!/bin/sh
 # Blocks tag pushes when the release notes file is missing, empty, or does
-# not reflect every feat commit added since the previous tag.
+# not explicitly acknowledge every feat commit added since the previous
+# tag.
 # Enable once per clone: git config core.hooksPath githooks
 zero=0000000000000000000000000000000000000000
 status=0
@@ -18,32 +19,38 @@ while read -r local_ref local_oid _remote_ref _remote_oid; do
     status=1
     continue
   fi
-  # The notes must cover every feat commit between the previous tag and
-  # this one — not only the newest feature. Subjects are conventional
-  # commits ("feat: ..."); a feature counts as covered when any
-  # significant word of its subject appears in the notes.
+  # The notes must acknowledge every feat commit between the previous tag
+  # and this one — not only the newest feature. Each acknowledgement is a
+  # hidden HTML comment carrying the commit oid:
+  #
+  #   <!--feat:<commit-oid>-->
+  #
+  # Sharing words with the notes is not coverage: "codex" contains "code",
+  # so a Codex-only file would otherwise pass for a Claude Code feat.
   prev=$(git describe --tags --abbrev=0 "$local_oid"^ 2>/dev/null) || continue
-  uncovered=$(git log "$prev..$local_oid" --no-merges --pretty=%s \
-    | grep -E '^feat(\(|:)' \
-    | while IFS= read -r subject; do
-        words=$(printf '%s\n' "$subject" \
-          | sed -E 's/^feat(\([^)]*\))?:[[:space:]]*//' \
-          | tr '[:upper:]' '[:lower:]' \
-          | tr -c '[:alnum:]' '\n' \
-          | awk 'length($0) >= 4')
-        covered=0
-        for word in $words; do
-          if grep -qiF -- "$word" "$notes"; then
-            covered=1
-            break
-          fi
-        done
-        [ "$covered" -eq 0 ] && printf '%s\n' "$subject"
+  notes_body=$(cat "$notes")
+  missing=$(git log "$prev..$local_oid" --no-merges --pretty='%H %s' \
+    | grep -E '^[0-9a-f]{40} feat(\(|:)' \
+    | while IFS= read -r record; do
+        oid=${record%% *}
+        # grep -F keeps the marker a plain argument: "<" and ">" inside a
+        # case pattern misparse inside command substitution.
+        if printf '%s\n' "$notes_body" | grep -qF -- "<!--feat:$oid-->"; then
+          :
+        else
+          printf '%s\n' "$record"
+        fi
       done)
-  if [ -n "$uncovered" ]; then
-    echo "push declined: $notes does not cover these feat commits since $prev:" >&2
-    printf '%s\n' "$uncovered" >&2
-    echo "write a notes section for each feature before pushing $tag" >&2
+  if [ -n "$missing" ]; then
+    echo "push declined: $notes does not acknowledge these feat commits since $prev:" >&2
+    printf '%s\n' "$missing" >&2
+    echo "append the matching hidden comment for each commit" >&2
+    printf '%s\n' "$missing" \
+      | while IFS= read -r record; do
+          oid=${record%% *}
+          printf '  <!--feat:%s-->\n' "$oid" >&2
+        done
+    echo "(paste the comments anywhere into $notes, e.g. at the end) before pushing $tag" >&2
     status=1
   fi
 done
