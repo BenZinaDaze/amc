@@ -1,8 +1,10 @@
 #!/bin/sh
-# Blocks tag pushes when the release notes file is missing or empty.
+# Blocks tag pushes when the release notes file is missing, empty, or does
+# not reflect every feat commit added since the previous tag.
 # Enable once per clone: git config core.hooksPath githooks
 zero=0000000000000000000000000000000000000000
 status=0
+
 # git sends one "<local-ref> <local-oid> <remote-ref> <remote-oid>" line
 # per ref. A deletion empties the LOCAL side; creating or updating a tag
 # keeps a real local oid, and that is the push the gate must verify.
@@ -13,6 +15,35 @@ while read -r local_ref local_oid _remote_ref _remote_oid; do
   notes="docs/releases/$tag.md"
   if [ ! -s "$notes" ] || ! grep -q '[^[:space:]]' "$notes"; then
     echo "push declined: $notes is missing or empty — write the release notes before pushing $tag" >&2
+    status=1
+    continue
+  fi
+  # The notes must cover every feat commit between the previous tag and
+  # this one — not only the newest feature. Subjects are conventional
+  # commits ("feat: ..."); a feature counts as covered when any
+  # significant word of its subject appears in the notes.
+  prev=$(git describe --tags --abbrev=0 "$local_oid"^ 2>/dev/null) || continue
+  uncovered=$(git log "$prev..$local_oid" --no-merges --pretty=%s \
+    | grep -E '^feat(\(|:)' \
+    | while IFS= read -r subject; do
+        words=$(printf '%s\n' "$subject" \
+          | sed -E 's/^feat(\([^)]*\))?:[[:space:]]*//' \
+          | tr '[:upper:]' '[:lower:]' \
+          | tr -c '[:alnum:]' '\n' \
+          | awk 'length($0) >= 4')
+        covered=0
+        for word in $words; do
+          if grep -qiF -- "$word" "$notes"; then
+            covered=1
+            break
+          fi
+        done
+        [ "$covered" -eq 0 ] && printf '%s\n' "$subject"
+      done)
+  if [ -n "$uncovered" ]; then
+    echo "push declined: $notes does not cover these feat commits since $prev:" >&2
+    printf '%s\n' "$uncovered" >&2
+    echo "write a notes section for each feature before pushing $tag" >&2
     status=1
   fi
 done

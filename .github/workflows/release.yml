@@ -14,7 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Require release notes
+        with:
+          # Full history so the previous tag and the feat range are visible.
+          fetch-depth: 0
+      - name: Require release notes covering new feats
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
@@ -23,7 +26,32 @@ jobs:
             echo "::error::Missing or empty ${NOTES} — write the release notes (features and fixes) before tagging."
             exit 1
           fi
-          echo "Release notes OK: ${NOTES}"
+          PREV=$(git describe --tags --abbrev=0 "HEAD^" 2>/dev/null || true)
+          if [ -z "$PREV" ]; then
+            echo "Release notes OK: ${NOTES} (first tagged release)."
+            exit 0
+          fi
+          UNCOVERED=$(git log "$PREV..HEAD" --no-merges --pretty=%s \
+            | grep -E '^feat(\(|:)' \
+            | while IFS= read -r subject; do
+                words=$(printf '%s\n' "$subject" \
+                  | sed -E 's/^feat(\([^)]*\))?:[[:space:]]*//' \
+                  | tr '[:upper:]' '[:lower:]' \
+                  | tr -c '[:alnum:]' '\n' \
+                  | awk 'length($0) >= 4')
+                covered=0
+                for word in $words; do
+                  if grep -qiF -- "$word" "$NOTES"; then covered=1; break; fi
+                done
+                [ "$covered" -eq 0 ] && printf '%s\n' "$subject"
+              done)
+          if [ -n "$UNCOVERED" ]; then
+            echo "::error::${NOTES} does not cover these feat commits since ${PREV}:"
+            printf '%s\n' "$UNCOVERED"
+            echo "Write a notes section for each feature before tagging."
+            exit 1
+          fi
+          echo "Release notes OK: ${NOTES} (covers ${PREV}..${GITHUB_SHA})."
 
   build:
     name: DMG (${{ matrix.arch }})
