@@ -1605,6 +1605,25 @@
         }
       ]
     },
+    "gpt-6.1-sol": {
+      "providers": [
+        "openai",
+        "openai-free"
+      ],
+      "input": 2,
+      "output": 10,
+      "cache_read": 0.1,
+      "cache_write": 2.5,
+      "tiers": [
+        {
+          "above_tokens": 272000,
+          "input": 4,
+          "output": 15,
+          "cache_read": 0.2,
+          "cache_write": 5
+        }
+      ]
+    },
     "gpt-audio": {
       "providers": [
         "openai",
@@ -1729,6 +1748,13 @@
           "output": 12
         }
       ]
+    },
+    "jev-latest": {
+      "providers": [
+        "typesafe"
+      ],
+      "input": 0.042,
+      "output": 0
     },
     "o1-2024-12-17": {
       "providers": [
