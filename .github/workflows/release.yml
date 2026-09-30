@@ -52,6 +52,14 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+      - name: Resolve release notes
+        run: |
+          if [ -f "docs/releases/${GITHUB_REF_NAME}.md" ]; then
+            echo "RELEASE_NOTES=docs/releases/${GITHUB_REF_NAME}.md" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_NOTES=docs/releases/default.md" >> "$GITHUB_ENV"
+          fi
       - uses: actions/download-artifact@v4
         with:
           pattern: dmg-*
@@ -61,6 +69,6 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: AMC ${{ github.ref_name }}
-          body: 'Unsigned macOS builds for testing. macOS may require manual approval on first launch.'
+          body_path: ${{ env.RELEASE_NOTES }}
           files: dmg/*.dmg
           fail_on_unmatched_files: true
