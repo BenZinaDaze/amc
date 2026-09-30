@@ -3,10 +3,10 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import ompIcon from "./assets/omp.svg";
 import zaiIcon from "./assets/zai.svg";
 import { version } from "../package.json";
-import { api, type ClaudeCodeStatus, type McpServer, type Plan, type Repository, type RepositorySkill, type State, type SubscriptionKind, type SubscriptionStatus, type UsageRange, type UsageStats, type Workspace } from "./api";
+import { api, type ClaudeCodeStatus, type CodexStatus, type McpServer, type Plan, type Repository, type RepositorySkill, type State, type SubscriptionKind, type SubscriptionStatus, type UsageRange, type UsageStats, type Workspace } from "./api";
 import "./App.css";
 
-type Page = "overview" | "agents" | "omp" | "claude" | "mcp" | "skills" | "repositories";
+type Page = "overview" | "agents" | "omp" | "claude" | "codex" | "mcp" | "skills" | "repositories";
 type McpMode = "stdio" | "http" | "sse";
 type SkillTab = "installed" | "discover";
 type DiscoveredSkill = RepositorySkill & { repositoryId: number };
@@ -120,6 +120,7 @@ function Glyph({ name, size = 20 }: { name: string; size?: number }) {
     grid: <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
     agents: <><rect x="4" y="4" width="16" height="16" rx="4" /><path d="M9 10h.01M15 10h.01M9 15c1.7 1.5 4.3 1.5 6 0M12 1v3M8 1h8" /></>,
     claude: <path d="M12 2.5v19M2.5 12h19M5.3 5.3l13.4 13.4M18.7 5.3 5.3 18.7" />,
+    codex: <><path d="M5 6.5 11 12l-6 5.5" /><path d="M13 17.5h6" /></>,
     plug: <><path d="M8 3v5m8-5v5M7 8h10v3a5 5 0 0 1-10 0V8Zm5 8v5m-4 0h8" /></>,
     spark: <><path d="m12 2 1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2ZM19 17l.7 1.3L21 19l-1.3.7L19 21l-.7-1.3L17 19l1.3-.7L19 17Z" /></>,
     repo: <><rect x="3" y="3" width="18" height="18" rx="3" /><path d="M8 3v18M12 8h5m-5 4h5" /></>,
@@ -146,6 +147,7 @@ const navigation: { id: Page; title: string; icon: string; group?: boolean; chil
   { id: "agents", title: "Agents", icon: "agents", group: true },
   { id: "omp", title: "OMP", icon: "omp", child: true },
   { id: "claude", title: "Claude Code", icon: "claude", child: true },
+  { id: "codex", title: "Codex CLI", icon: "codex", child: true },
   { id: "mcp", title: "MCP", icon: "plug", group: true },
   { id: "skills", title: "Skills", icon: "spark", group: true },
   { id: "repositories", title: "仓库", icon: "repo", group: true },
@@ -201,6 +203,14 @@ function App() {
   const [claudeUsageSelection, setClaudeUsageSelection] = useState<{ range: UsageRange; label: string; choice: UsageChoice }>({ range: "24h", label: "近24小时", choice: "24h" });
   const pendingClaudeUsageSync = useRef<Promise<UsageStats> | null>(null);
   const [claudeCodeStatus, setClaudeCodeStatus] = useState<ClaudeCodeStatus | null>(null);
+  const [codexUsage, setCodexUsage] = useState<UsageStats | null>(null);
+  const [codexUsageLoading, setCodexUsageLoading] = useState<"sync" | "read" | null>(null);
+  const [codexUsageError, setCodexUsageError] = useState("");
+  const codexUsageLoadId = useRef(0);
+  const codexUsageRangeRef = useRef<UsageRange>("24h");
+  const [codexUsageSelection, setCodexUsageSelection] = useState<{ range: UsageRange; label: string; choice: UsageChoice }>({ range: "24h", label: "近24小时", choice: "24h" });
+  const pendingCodexUsageSync = useRef<Promise<UsageStats> | null>(null);
+  const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
   const [subscriptions, setSubscriptions] = useState<SubscriptionStatus[] | null>(null);
   const [subscriptionsLoading, setSubscriptionsLoading] = useState(false);
   const [subscriptionsError, setSubscriptionsError] = useState("");
@@ -312,8 +322,9 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (page === "agents" || page === "claude") {
+    if (page === "agents" || page === "claude" || page === "codex") {
       api.getClaudeCodeStatus().then(setClaudeCodeStatus).catch(() => setClaudeCodeStatus({ installed: false, version: "" }));
+      api.getCodexStatus().then(setCodexStatus).catch(() => setCodexStatus({ installed: false, version: "" }));
     }
     if (page === "agents") void loadAgentsUsage("sync", agentsUsageRangeRef.current);
   }, [page, loadAgentsUsage]);
@@ -395,6 +406,48 @@ function App() {
     claudeUsageRangeRef.current = range;
     setClaudeUsageSelection({ range, label, choice });
     if (changed) void loadClaudeUsage("read", range);
+  }
+
+  const loadCodexUsage = useCallback(async (mode: "sync" | "read", range: UsageRange) => {
+    const request = ++codexUsageLoadId.current;
+    setCodexUsage(null);
+    setCodexUsageError("");
+    const pending = mode === "read" ? pendingCodexUsageSync.current : null;
+    setCodexUsageLoading(pending ? "sync" : mode);
+    let activeOperation: "sync" | "read" = mode;
+    let sync: Promise<UsageStats> | null = null;
+    try {
+      if (mode === "sync") {
+        sync = api.syncAgentUsage("codex", range);
+        pendingCodexUsageSync.current = sync;
+      } else if (pending) {
+        activeOperation = "sync";
+        await pending;
+        if (request !== codexUsageLoadId.current) return;
+        activeOperation = "read";
+        setCodexUsageLoading("read");
+      }
+      if (request !== codexUsageLoadId.current) return;
+      const stats = mode === "sync" ? await sync! : await api.getAgentUsage("codex", range);
+      if (request === codexUsageLoadId.current) setCodexUsage(stats);
+    } catch (reason) {
+      if (request === codexUsageLoadId.current) setCodexUsageError(`${activeOperation === "sync" ? "Codex 用量同步" : "Codex 用量读取"}失败：${errorText(reason)}`);
+    } finally {
+      if (sync && pendingCodexUsageSync.current === sync) pendingCodexUsageSync.current = null;
+      if (request === codexUsageLoadId.current) setCodexUsageLoading(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (page === "codex") void loadCodexUsage("sync", codexUsageRangeRef.current);
+    return () => { ++codexUsageLoadId.current; pendingCodexUsageSync.current = null; };
+  }, [page, loadCodexUsage]);
+
+  function changeCodexUsageRange(range: UsageRange, label: string, choice: UsageChoice) {
+    const changed = range !== codexUsageRangeRef.current;
+    codexUsageRangeRef.current = range;
+    setCodexUsageSelection({ range, label, choice });
+    if (changed) void loadCodexUsage("read", range);
   }
 
   const reload = useCallback(async (selected: Workspace): Promise<State | null> => {
@@ -637,6 +690,7 @@ function App() {
     agents: ["Agents", "管理代理环境与兼容性检测。"],
     omp: ["OMP", ""],
     claude: ["Claude Code", ""],
+    codex: ["Codex CLI", ""],
     mcp: ["MCP 服务", "查看通用来源，在应用前审阅每一处配置变更。"],
     skills: ["Skills", "管理已安装技能，保留本地修改的控制权。"],
     repositories: ["技能仓库", "从已发现的 Git 来源同步可用技能。"],
@@ -656,13 +710,14 @@ function App() {
       </aside>
       <main className="main-area">
         <div className="content">
-          <div className="page-heading"><div><h1>{contentHeader[0]}{page === "omp" && state && <span className={`omp-version-pill ${state.agent.installed && state.agent.version ? "available" : "missing"}`}>{state.agent.installed && state.agent.version ? state.agent.version.replace(/^omp\//i, "") : "未检测到"}</span>}{page === "claude" && claudeCodeStatus && <span className={`omp-version-pill ${claudeCodeStatus.installed && claudeCodeStatus.version ? "available" : "missing"}`}>{claudeCodeStatus.installed && claudeCodeStatus.version ? claudeCodeStatus.version.split(/\s+/)[0] : "未检测到"}</span>}</h1>{page !== "omp" && page !== "claude" && <p>{contentHeader[1]}</p>}</div><button className="button button-muted refresh-button" aria-label={page === "omp" ? "刷新 OMP 用量" : page === "claude" ? "刷新 Claude Code 用量" : "刷新状态"} onClick={() => { if (page === "omp") void loadUsage("sync", usageRangeRef.current); else if (page === "claude") void loadClaudeUsage("sync", claudeUsageRangeRef.current); else { if (page === "agents") refreshAgentsUsage(); if (selectedWorkspace) void reload(selectedWorkspace); } }} disabled={page === "omp" ? usageLoading !== null : page === "claude" ? claudeUsageLoading !== null : page === "agents" ? agentsRefreshBusy || agentsUsageLoading !== null : loading || isBusy}><Glyph name="refresh" size={16} />{page === "omp" || page === "claude" ? "刷新用量" : "刷新状态"}</button></div>
+          <div className="page-heading"><div><h1>{contentHeader[0]}{page === "omp" && state && <span className={`omp-version-pill ${state.agent.installed && state.agent.version ? "available" : "missing"}`}>{state.agent.installed && state.agent.version ? state.agent.version.replace(/^omp\//i, "") : "未检测到"}</span>}{page === "claude" && claudeCodeStatus && <span className={`omp-version-pill ${claudeCodeStatus.installed && claudeCodeStatus.version ? "available" : "missing"}`}>{claudeCodeStatus.installed && claudeCodeStatus.version ? claudeCodeStatus.version.split(/\s+/)[0] : "未检测到"}</span>}{page === "codex" && codexStatus && <span className={`omp-version-pill ${codexStatus.installed && codexStatus.version ? "available" : "missing"}`}>{codexStatus.installed && codexStatus.version ? codexStatus.version.split(/\s+/).pop() : "未检测到"}</span>}</h1>{page !== "omp" && page !== "claude" && page !== "codex" && <p>{contentHeader[1]}</p>}</div><button className="button button-muted refresh-button" aria-label={page === "omp" ? "刷新 OMP 用量" : page === "claude" ? "刷新 Claude Code 用量" : page === "codex" ? "刷新 Codex 用量" : "刷新状态"} onClick={() => { if (page === "omp") void loadUsage("sync", usageRangeRef.current); else if (page === "claude") void loadClaudeUsage("sync", claudeUsageRangeRef.current); else if (page === "codex") void loadCodexUsage("sync", codexUsageRangeRef.current); else { if (page === "agents") refreshAgentsUsage(); if (selectedWorkspace) void reload(selectedWorkspace); } }} disabled={page === "omp" ? usageLoading !== null : page === "claude" ? claudeUsageLoading !== null : page === "codex" ? codexUsageLoading !== null : page === "agents" ? agentsRefreshBusy || agentsUsageLoading !== null : loading || isBusy}><Glyph name="refresh" size={16} />{page === "omp" || page === "claude" || page === "codex" ? "刷新用量" : "刷新状态"}</button></div>
           {error && <div className="alert alert-error" role="alert"><Glyph name="warning" size={18} /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><Glyph name="close" size={16} /></button></div>}
           {notice && <div className="alert alert-success" role="status"><Glyph name="check" size={18} /><span>{notice}</span><button aria-label="关闭成功提示" onClick={() => setNotice("")}><Glyph name="close" size={16} /></button></div>}
-          {page !== "omp" && page !== "claude" && loading && <div className="loading-panel" role="status"><span className="spinner" />正在自动发现通用来源…</div>}
-          {page !== "omp" && page !== "claude" && !loading && !state && <Empty icon="warning" title="尚无法读取通用来源" description="AMC 会自动扫描用户级与兼容来源，请刷新重试。" action="重新扫描" onClick={() => { if (selectedWorkspace) void reloadAndLoad(selectedWorkspace); }} />}
+          {page !== "omp" && page !== "claude" && page !== "codex" && loading && <div className="loading-panel" role="status"><span className="spinner" />正在自动发现通用来源…</div>}
+          {page !== "omp" && page !== "claude" && page !== "codex" && !loading && !state && <Empty icon="warning" title="尚无法读取通用来源" description="AMC 会自动扫描用户级与兼容来源，请刷新重试。" action="重新扫描" onClick={() => { if (selectedWorkspace) void reloadAndLoad(selectedWorkspace); }} />}
           {page === "omp" && <AgentUsagePanel agentLabel="OMP" stats={usage} range={usageSelection.range} rangeLabel={usageSelection.label} activeChoice={usageSelection.choice} loading={usageLoading} error={usageError} onRangeChange={changeUsageRange} onRefresh={() => void loadUsage("sync", usageRangeRef.current)} />}
           {page === "claude" && <AgentUsagePanel agentLabel="Claude Code" stats={claudeUsage} range={claudeUsageSelection.range} rangeLabel={claudeUsageSelection.label} activeChoice={claudeUsageSelection.choice} loading={claudeUsageLoading} error={claudeUsageError} onRangeChange={changeClaudeUsageRange} onRefresh={() => void loadClaudeUsage("sync", claudeUsageRangeRef.current)} />}
+          {page === "codex" && <AgentUsagePanel agentLabel="Codex CLI" stats={codexUsage} range={codexUsageSelection.range} rangeLabel={codexUsageSelection.label} activeChoice={codexUsageSelection.choice} loading={codexUsageLoading} error={codexUsageError} onRangeChange={changeCodexUsageRange} onRefresh={() => void loadCodexUsage("sync", codexUsageRangeRef.current)} />}
           {!loading && state && <>
             {page === "overview" && <>
               <div className="stat-grid"><button className="stat-card" onClick={() => setPage("mcp")}><span className="stat-icon purple"><Glyph name="plug" /></span><span className="stat-value">{state.mcp.length}</span><span className="stat-title">MCP 服务</span><small>查看配置来源 <Glyph name="arrow" size={13} /></small></button><button className="stat-card" onClick={() => setPage("skills")}><span className="stat-icon amber"><Glyph name="spark" /></span><span className="stat-value">{state.skills.length}</span><span className="stat-title">检测到的 Skills</span><small>查看技能来源 <Glyph name="arrow" size={13} /></small></button><button className="stat-card" onClick={() => setPage("repositories")}><span className="stat-icon mint"><Glyph name="repo" /></span><span className="stat-value">{state.repositories.length}</span><span className="stat-title">Git 仓库</span><small>发现更多技能 <Glyph name="arrow" size={13} /></small></button></div>
@@ -682,6 +737,11 @@ function App() {
                     <div className="item-icon claude-icon-tile"><Glyph name="claude" size={22} /></div>
                     <div className="item-content"><div className="item-title"><h3>Claude Code</h3><span className={`tag ${claudeCodeStatus?.installed ? "tag-good" : "tag-muted"}`}>{claudeCodeStatus?.installed ? "已检测到" : "未检测到"}</span></div><p>{claudeCodeStatus ? (claudeCodeStatus.installed ? (claudeCodeStatus.version || "已找到可执行文件，但无法读取版本") : "未找到可用的 claude 可执行文件") : "正在检测 Claude Code CLI…"}</p></div>
                     <div className="item-actions"><button className="button button-muted" onClick={() => setPage("claude")}>查看详情 <Glyph name="arrow" size={14} /></button></div>
+                  </article>
+                  <article className="item-card">
+                    <div className="item-icon codex-icon-tile"><Glyph name="codex" size={22} /></div>
+                    <div className="item-content"><div className="item-title"><h3>Codex CLI</h3><span className={`tag ${codexStatus?.installed ? "tag-good" : "tag-muted"}`}>{codexStatus?.installed ? "已检测到" : "未检测到"}</span></div><p>{codexStatus ? (codexStatus.installed ? (codexStatus.version || "已找到可执行文件，但无法读取版本") : "未找到可用的 codex 可执行文件") : "正在检测 Codex CLI…"}</p></div>
+                    <div className="item-actions"><button className="button button-muted" onClick={() => setPage("codex")}>查看详情 <Glyph name="arrow" size={14} /></button></div>
                   </article>
                 </div>
               </section>

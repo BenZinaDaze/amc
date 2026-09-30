@@ -29,6 +29,9 @@ ureq = { version = "3", features = ["json"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 
+[dev-dependencies]
+filetime = "0.2"
+
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1

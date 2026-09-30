@@ -50,6 +50,7 @@ export type SubscriptionStatus = {
 };
 export type SubscriptionKind = { id: string; title: string; keyLabel: string; keyPlaceholder: string; platforms: [string, string][] };
 export type ClaudeCodeStatus = { installed: boolean; version: string };
+export type CodexStatus = { installed: boolean; version: string };
 export const api = {
   getDefaultWorkspace: () => invoke<Workspace>("get_default_workspace"),
   getState: (workspace: Workspace) => invoke<State>("get_state", { workspace }),
@@ -58,6 +59,7 @@ export const api = {
   syncAgentsUsage: (range: UsageRange) => invoke<UsageStats>("sync_agents_usage", { range }),
   getAgentsUsage: (range: UsageRange) => invoke<UsageStats>("get_agents_usage", { range }),
   getClaudeCodeStatus: () => invoke<ClaudeCodeStatus>("get_claude_code_status"),
+  getCodexStatus: () => invoke<CodexStatus>("get_codex_status"),
   refreshPricing: () => invoke<string>("refresh_pricing"),
   planMcp: (workspace: Workspace, name: string, config: Record<string, unknown> | null) => invoke<Plan>("plan_mcp", { workspace, name, config }),
   applyPlan: (id: string) => invoke<Message>("apply_plan", { id }),

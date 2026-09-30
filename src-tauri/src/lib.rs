@@ -1,9 +1,9 @@
 mod omp;
-mod omp_usage;
 mod operations;
 mod pricing;
 mod store;
 mod subscription;
+mod usage;
 mod workspace;
 
 use std::sync::{Arc, Mutex};
@@ -136,14 +136,14 @@ async fn sync_agent_usage(
     app: tauri::AppHandle,
     agent_id: String,
     range: String,
-) -> omp::Result<omp_usage::UsageStats> {
+) -> omp::Result<usage::UsageStats> {
     let price_file = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join(pricing::FILE_NAME);
     tauri::async_runtime::spawn_blocking(move || {
-        omp_usage::sync_agent_usage(&agent_id, &range, &price_file)
+        usage::sync_agent_usage(&agent_id, &range, &price_file)
     })
     .await
     .map_err(|e| format!("后台操作失败: {e}"))?
@@ -154,14 +154,14 @@ async fn get_agent_usage(
     app: tauri::AppHandle,
     agent_id: String,
     range: String,
-) -> omp::Result<omp_usage::UsageStats> {
+) -> omp::Result<usage::UsageStats> {
     let price_file = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join(pricing::FILE_NAME);
     tauri::async_runtime::spawn_blocking(move || {
-        omp_usage::get_agent_usage(&agent_id, &range, &price_file)
+        usage::get_agent_usage(&agent_id, &range, &price_file)
     })
     .await
     .map_err(|e| format!("后台操作失败: {e}"))?
@@ -171,14 +171,14 @@ async fn get_agent_usage(
 async fn sync_agents_usage(
     app: tauri::AppHandle,
     range: String,
-) -> omp::Result<omp_usage::UsageStats> {
+) -> omp::Result<usage::UsageStats> {
     let price_file = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join(pricing::FILE_NAME);
     tauri::async_runtime::spawn_blocking(move || {
-        omp_usage::sync_agents_usage(&range, &price_file)
+        usage::sync_agents_usage(&range, &price_file)
     })
     .await
     .map_err(|e| format!("后台操作失败: {e}"))?
@@ -188,22 +188,29 @@ async fn sync_agents_usage(
 async fn get_agents_usage(
     app: tauri::AppHandle,
     range: String,
-) -> omp::Result<omp_usage::UsageStats> {
+) -> omp::Result<usage::UsageStats> {
     let price_file = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join(pricing::FILE_NAME);
     tauri::async_runtime::spawn_blocking(move || {
-        omp_usage::get_agents_usage(&range, &price_file)
+        usage::get_agents_usage(&range, &price_file)
     })
     .await
     .map_err(|e| format!("后台操作失败: {e}"))?
 }
 
 #[tauri::command]
-async fn get_claude_code_status() -> omp::Result<omp_usage::ClaudeCodeStatus> {
-    tauri::async_runtime::spawn_blocking(omp_usage::claude_code_status)
+async fn get_claude_code_status() -> omp::Result<usage::ClaudeCodeStatus> {
+    tauri::async_runtime::spawn_blocking(usage::claude_code_status)
+        .await
+        .map_err(|e| format!("后台操作失败: {e}"))
+}
+
+#[tauri::command]
+async fn get_codex_status() -> omp::Result<usage::CodexStatus> {
+    tauri::async_runtime::spawn_blocking(usage::codex_status)
         .await
         .map_err(|e| format!("后台操作失败: {e}"))
 }
@@ -327,6 +334,7 @@ pub fn run() {
             sync_agents_usage,
             get_agents_usage,
             get_claude_code_status,
+            get_codex_status,
             refresh_pricing,
             fetch_subscriptions,
             list_subscription_kinds,
