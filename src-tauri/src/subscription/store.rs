@@ -1,0 +1,348 @@
+//! Persisting subscription entries under the app data dir with owner-only
+//! permissions. The frontend never receives keys; only masked hints cross the
+//! boundary. Vendor-specific credential shaping lives in the vendor modules.
+
+use crate::omp::Result;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
+
+use super::{known_kind, validate_platform};
+
+/// Subscriptions the user saved inside AMC, persisted with owner-only
+/// permissions under the app data dir. The frontend never receives keys.
+const SUBSCRIPTIONS_FILE: &str = "subscriptions.json";
+
+/// One subscription instance; a vendor may appear several times.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StoredSubscription {
+    /// Unique among the current entries: `"1"`, `"2"`, …
+    pub id: String,
+    /// Provider kind, e.g. `glm`; see [`known_kind`].
+    pub kind: String,
+    /// User-defined card name.
+    pub name: String,
+    /// `zai` (api.z.ai) or `bigmodel` (open.bigmodel.cn).
+    pub platform: String,
+    pub key: String,
+}
+
+impl StoredSubscription {
+    pub(super) fn hint(&self) -> String {
+        let tail: String = self.key.chars().rev().take(4).collect();
+        format!("…{}", tail.chars().rev().collect::<String>())
+    }
+}
+
+#[derive(Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StoredSubscriptions {
+    /// Monotonic counter behind [`next_entry_id`]; ids are never reused.
+    #[serde(default)]
+    next_id: u64,
+    #[serde(default)]
+    pub(super) entries: Vec<StoredSubscription>,
+    /// Legacy single-plan shape, migrated by [`read_stored`] and dropped on
+    /// the next save.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    glm: Option<LegacyCredential>,
+    #[serde(default)]
+    plans: Vec<String>,
+}
+
+/// Credential fields of pre-multi-entry files.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyCredential {
+    platform: String,
+    key: String,
+}
+
+/// Older builds stored one optional credential plus a plan-id list; fold that
+/// into a single entry so existing keys keep working.
+fn migrate_legacy(mut stored: StoredSubscriptions) -> StoredSubscriptions {
+    if stored.entries.is_empty()
+        && stored.plans.iter().any(|id| id == "glm")
+        && stored.glm.as_ref().is_some_and(|glm| !glm.key.trim().is_empty())
+    {
+        if let Some(legacy) = stored.glm.take() {
+            stored.entries.push(StoredSubscription {
+                id: "1".to_owned(),
+                kind: "glm".to_owned(),
+                name: "GLM Coding Plan".to_owned(),
+                platform: legacy.platform,
+                key: legacy.key,
+            });
+        }
+    }
+    stored
+}
+
+pub(super) fn read_stored(data_dir: &Path) -> StoredSubscriptions {
+    let mut stored = fs::read_to_string(data_dir.join(SUBSCRIPTIONS_FILE))
+        .ok()
+        .and_then(|contents| serde_json::from_str(&contents).ok())
+        .map_or_else(Default::default, migrate_legacy);
+    // Counter-less files (legacy or hand-written) would otherwise fall back to
+    // surviving-entry ids; lift the counter above every stored id before any
+    // deletion can empty the list and a re-add reuse an id.
+    let highest = stored
+        .entries
+        .iter()
+        .filter_map(|entry| entry.id.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    stored.next_id = stored.next_id.max(highest);
+    stored
+}
+
+fn write_stored_entries(data_dir: &Path, stored: StoredSubscriptions) -> Result<()> {
+    fs::create_dir_all(data_dir).map_err(|e| format!("创建数据目录失败: {e}"))?;
+    let path = data_dir.join(SUBSCRIPTIONS_FILE);
+    let mut clean = stored;
+    clean.glm = None;
+    clean.plans = Vec::new();
+    let bytes =
+        serde_json::to_vec_pretty(&clean).map_err(|e| format!("序列化失败: {e}"))?;
+    write_private(&path, &bytes)
+}
+
+fn validate_name(name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("套餐名称不能为空".to_owned());
+    }
+    if name.chars().count() > 100 {
+        return Err("套餐名称过长".to_owned());
+    }
+    Ok(name.to_owned())
+}
+
+fn validate_key(key: &str) -> Result<String> {
+    let key = key.trim();
+    if key.len() < 8 || key.chars().any(char::is_whitespace) {
+        return Err("GLM Key 格式无效".to_owned());
+    }
+    Ok(key.to_owned())
+}
+
+fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    let mut file = options
+        .open(path)
+        .map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+    }
+    file.write_all(bytes)
+        .map_err(|e| format!("写入 {} 失败: {e}", path.display()))
+}
+
+// ---------------------------------------------------------------- entry CRUD
+
+pub fn add_plan(data_dir: &Path, kind: &str, name: &str, platform: &str, key: &str) -> Result<()> {
+    if !known_kind(kind) {
+        return Err(format!("未知的订阅套餐: {kind}"));
+    }
+    let name = validate_name(name)?;
+    let platform = validate_platform(kind, platform)?;
+    let key = validate_key(key)?;
+    let mut stored = read_stored(data_dir);
+    let id = next_entry_id(&mut stored);
+    stored.entries.push(StoredSubscription {
+        id,
+        kind: kind.to_owned(),
+        name,
+        platform,
+        key,
+    });
+    write_stored_entries(data_dir, stored)
+}
+
+/// A `None` key keeps the stored one, so edits never need the raw key.
+pub fn update_plan(
+    data_dir: &Path,
+    id: &str,
+    name: &str,
+    platform: &str,
+    key: Option<&str>,
+) -> Result<()> {
+    let name = validate_name(name)?;
+    let key = key.map(validate_key).transpose()?;
+    let mut stored = read_stored(data_dir);
+    let entry = stored
+        .entries
+        .iter_mut()
+        .find(|entry| entry.id == id)
+        .ok_or_else(|| "订阅套餐不存在".to_owned())?;
+    entry.platform = validate_platform(&entry.kind, platform)?;
+    entry.name = name;
+    if let Some(key) = key {
+        entry.key = key;
+    }
+    write_stored_entries(data_dir, stored)
+}
+
+pub fn remove_plan(data_dir: &Path, id: &str) -> Result<()> {
+    let mut stored = read_stored(data_dir);
+    let before = stored.entries.len();
+    stored.entries.retain(|entry| entry.id != id);
+    if stored.entries.len() != before {
+        write_stored_entries(data_dir, stored)?;
+    }
+    Ok(())
+}
+
+/// Entry ids count up monotonically and are never reused, so a stale card
+/// can never act on a different subscription after a delete + re-add.
+/// Invariant: [`read_stored`] lifts `next_id` above every stored id before
+/// any mutation happens.
+fn next_entry_id(stored: &mut StoredSubscriptions) -> String {
+    stored.next_id += 1;
+    stored.next_id.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::subscription::fetch_all;
+    use serde_json::{json, Value};
+    use std::path::PathBuf;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("amc-stored-{name}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn entry_crud_and_validation() {
+        let dir = temp_dir("crud");
+        assert!(add_plan(&dir, "glm", "  ", "zai", "12345678").is_err());
+        assert!(add_plan(&dir, "nope", "名", "zai", "12345678").is_err());
+        assert!(add_plan(&dir, "glm", "名", "unknown", "12345678").is_err());
+        assert!(add_plan(&dir, "glm", "名", "zai", "short").is_err());
+        assert!(fetch_all(&dir).is_empty());
+
+        // The same vendor can be added twice with different keys.
+        add_plan(&dir, "glm", "  主号  ", "zai", "  12345678abcdef  ").unwrap();
+        add_plan(&dir, "glm", "备用", "bigmodel", "fedcba9876543210").unwrap();
+        let entries = read_stored(&dir).entries;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, "1");
+        assert_eq!(entries[1].id, "2");
+        assert_eq!(entries[0].name, "主号");
+        assert_eq!(entries[0].platform, "zai");
+        assert_eq!(entries[0].key, "12345678abcdef");
+        assert_eq!(entries[0].hint(), "…cdef");
+
+        // A missing key keeps the stored one; a blank one is rejected.
+        update_plan(&dir, "1", "主力", "bigmodel", None).unwrap();
+        assert!(update_plan(&dir, "1", "主力", "bigmodel", Some("  ")).is_err());
+        let entry = &read_stored(&dir).entries[0];
+        assert_eq!(entry.name, "主力");
+        assert_eq!(entry.platform, "bigmodel");
+        assert_eq!(entry.key, "12345678abcdef");
+        update_plan(&dir, "1", "主力", "zai", Some("aaaa1234")).unwrap();
+        assert_eq!(read_stored(&dir).entries[0].key, "aaaa1234");
+        assert!(update_plan(&dir, "99", "x", "zai", None).is_err());
+
+        remove_plan(&dir, "1").unwrap();
+        assert_eq!(read_stored(&dir).entries.len(), 1);
+        remove_plan(&dir, "1").unwrap(); // removing again is a no-op
+
+        // Each entry renders as its own card with its own name and masked key.
+        let statuses = fetch_all(&dir);
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].id, "2");
+        assert_eq!(statuses[0].title, "备用");
+        assert_eq!(statuses[0].provider, "glm");
+        assert_eq!(statuses[0].platform, "bigmodel");
+        assert_eq!(statuses[0].key_hint.as_deref(), Some("…3210"));
+    }
+
+    #[test]
+    fn entry_ids_are_never_reused() {
+        let dir = temp_dir("ids");
+        add_plan(&dir, "glm", "甲", "zai", "12345678abcdef").unwrap();
+        add_plan(&dir, "glm", "乙", "zai", "12345678abcdef").unwrap();
+        remove_plan(&dir, "2").unwrap();
+        add_plan(&dir, "glm", "丙", "zai", "12345678abcdef").unwrap();
+        let stored = read_stored(&dir);
+        let ids: Vec<&str> = stored.entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["1", "3"]);
+        // A stale view of the deleted entry cannot touch the new one.
+        assert!(update_plan(&dir, "2", "幽灵", "zai", None).is_err());
+        remove_plan(&dir, "2").unwrap(); // removing a stale id is a no-op
+        assert_eq!(read_stored(&dir).entries.len(), 2);
+
+        remove_plan(&dir, "1").unwrap();
+        add_plan(&dir, "glm", "丁", "zai", "12345678abcdef").unwrap();
+        let stored = read_stored(&dir);
+        let ids: Vec<&str> = stored.entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["3", "4"]);
+    }
+
+    #[test]
+    fn delete_before_add_never_reuses_id() {
+        // Legacy migration yields entry "1" with no counter; deleting it must
+        // not let the next add claim "1" again.
+        let dir = temp_dir("legacy-reuse");
+        let legacy = json!({
+            "glm": { "platform": "zai", "key": "12345678abcdef" },
+            "plans": ["glm"]
+        });
+        fs::write(dir.join(SUBSCRIPTIONS_FILE), serde_json::to_vec(&legacy).unwrap()).unwrap();
+        remove_plan(&dir, "1").unwrap();
+        add_plan(&dir, "glm", "新的", "zai", "12345678abcdef").unwrap();
+        let stored = read_stored(&dir);
+        assert_eq!(stored.entries[0].id, "2");
+
+        // Same for new-shape files written without the counter.
+        let dir = temp_dir("counterless");
+        let file = json!({ "entries": [
+            { "id": "5", "kind": "glm", "name": "手写", "platform": "zai", "key": "12345678abcdef" }
+        ] });
+        fs::write(dir.join(SUBSCRIPTIONS_FILE), serde_json::to_vec(&file).unwrap()).unwrap();
+        remove_plan(&dir, "5").unwrap();
+        add_plan(&dir, "glm", "新的", "zai", "12345678abcdef").unwrap();
+        let stored = read_stored(&dir);
+        assert_eq!(stored.entries[0].id, "6");
+    }
+
+    #[test]
+    fn legacy_file_migrates_to_one_entry() {
+        let dir = temp_dir("legacy");
+        let legacy = json!({
+            "glm": { "platform": "zai", "key": "12345678abcdef" },
+            "plans": ["glm"]
+        });
+        fs::write(dir.join(SUBSCRIPTIONS_FILE), serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let statuses = fetch_all(&dir);
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].id, "1");
+        assert_eq!(statuses[0].title, "GLM Coding Plan");
+        assert_eq!(statuses[0].platform, "zai");
+
+        // The next save writes the new shape only.
+        add_plan(&dir, "glm", "二号", "zai", "fedcba9876543210").unwrap();
+        let raw: Value =
+            serde_json::from_slice(&fs::read(dir.join(SUBSCRIPTIONS_FILE)).unwrap()).unwrap();
+        assert!(raw.get("glm").is_none());
+        assert_eq!(raw["entries"].as_array().unwrap().len(), 2);
+
+        // A legacy key whose plan was never added stays hidden, as before.
+        let dir = temp_dir("legacy-hidden");
+        let legacy = json!({ "glm": { "platform": "zai", "key": "12345678abcdef" } });
+        fs::write(dir.join(SUBSCRIPTIONS_FILE), serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert!(fetch_all(&dir).is_empty());
+    }
+}
