@@ -81,15 +81,19 @@ fn fetch_usage(base_url: &str, token: &str) -> Result<ProviderReport> {
         return Err("Key 已失效或被禁用".to_owned());
     }
     // 订阅模式带周窗口起点时，用 start_date 重取一次，让模型分项与重置周期
-    // 对齐（默认是无参数的近 30 天）；重取失败则沿用第一次的响应。
+    // 对齐（默认是无参数的近 30 天）。重取失败时沿用第一次响应，且不得把
+    // 30 天数据标成「周期内」——period 标志只在重取成功时置位。
     let window_start = value
         .get("subscription")
         .and_then(|s| s.get("weekly_window_start"))
         .and_then(Value::as_str)
         .and_then(window_start_date);
-    let value = match window_start.as_deref() {
-        Some(date) => get_json(&format!("{base_url}/v1/usage?start_date={date}"), token).unwrap_or(value),
-        None => value,
+    let (value, windowed) = match window_start.as_deref() {
+        Some(date) => match get_json(&format!("{base_url}/v1/usage?start_date={date}"), token) {
+            Ok(dated) => (dated, true),
+            Err(_) => (value, false),
+        },
+        None => (value, false),
     };
     let plan = value
         .get("planName")
@@ -107,9 +111,8 @@ fn fetch_usage(base_url: &str, token: &str) -> Result<ProviderReport> {
         _ => quotas.extend(unrestricted_quotas(&value)),
     }
     metrics.extend(usage_metrics(value.get("usage")));
-    // 与重置周期对齐后，给一行窗口内 Token 合计。start_date 只支持日期，
-    // 从服务器当日零点起算，比真实重置时刻早一段（属日期精度统计）。
-    if window_start.is_some() {
+    // 仅在 start_date 重取成功时给周期合计；30 天回退数据不带周期标签。
+    if windowed {
         let window_tokens: i64 = value
             .get("model_stats")
             .and_then(Value::as_array)
@@ -365,28 +368,26 @@ mod tests {
     use serde_json::json;
     use std::io::{Read, Write};
 
-    /// Minimal HTTP server answering `requests` sequential connections with
-    /// `(status, body)`, recording each request's head.
-    fn serve(
-        requests: usize,
-        status_line: &str,
-        body: &str,
-    ) -> (u16, std::thread::JoinHandle<Vec<String>>) {
+    /// Minimal HTTP server answering each sequential connection with the
+    /// matching `(status, body)` pair, recording each request's head.
+    fn serve(responses: &[(&str, &str)]) -> (u16, std::thread::JoinHandle<Vec<String>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let (status_line, body) = (status_line.to_owned(), body.to_owned());
+        let responses: Vec<(String, String)> = responses
+            .iter()
+            .map(|(status, body)| ((*status).to_owned(), (*body).to_owned()))
+            .collect();
         let handle = std::thread::spawn(move || {
             let mut seen = Vec::new();
-            for _ in 0..requests {
+            for (status_line, body) in &responses {
                 let (mut stream, _) = listener.accept().unwrap();
                 let mut request = String::new();
                 let mut buffer = [0u8; 4096];
                 let read = stream.read(&mut buffer).unwrap_or(0);
                 request.push_str(&String::from_utf8_lossy(&buffer[..read]));
-                let body_bytes = body.as_bytes();
                 let response = format!(
                     "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body_bytes.len()
+                    body.len()
                 );
                 stream.write_all(response.as_bytes()).unwrap_or(());
                 seen.push(request);
@@ -421,6 +422,25 @@ mod tests {
     }"#;
 
     #[test]
+    fn period_total_is_omitted_when_dated_request_fails() {
+        // 第一次 200（近 30 天视角），start_date 重取 500：分项留在 30 天
+        // 回退数据上，但不得出现「周期内 Token」标签。
+        let (port, handle) = serve(&[
+            ("HTTP/1.1 200 OK", SUBSCRIPTION_BODY),
+            ("HTTP/1.1 500 Internal Server Error", r#"{"error":{"message":"boom"}}"#),
+        ]);
+        let report = fetch_entry(&entry(format!("http://127.0.0.1:{port}"), "sk-good-key")).unwrap();
+        let requests = handle.join().unwrap();
+        assert!(requests[1].starts_with("GET /v1/usage?start_date=2026-09-28 HTTP/1.1"), "{}", requests[1]);
+        assert!(report.metrics.iter().all(|metric| metric.label != "周期内 Token"));
+        // 30 天回退分项仍然在。
+        assert_eq!(
+            report.metrics.iter().find(|m| m.label == "claude-sonnet").map(|m| m.value),
+            Some(900000)
+        );
+    }
+
+    #[test]
     fn window_start_date_extracts_date_part() {
         assert_eq!(
             window_start_date("2026-09-27T01:22:03.171467+08:00").as_deref(),
@@ -433,7 +453,7 @@ mod tests {
 
     #[test]
     fn fetch_entry_hits_v1_usage_with_bearer_key() {
-        let (port, handle) = serve(2, "HTTP/1.1 200 OK", SUBSCRIPTION_BODY);
+        let (port, handle) = serve(&[("HTTP/1.1 200 OK", SUBSCRIPTION_BODY), ("HTTP/1.1 200 OK", SUBSCRIPTION_BODY)]);
         let report = fetch_entry(&entry(format!("http://127.0.0.1:{port}"), "sk-good-key")).unwrap();
         let requests = handle.join().unwrap();
         let first = requests[0].to_ascii_lowercase();
@@ -470,11 +490,10 @@ mod tests {
 
     #[test]
     fn fetch_entry_reports_http_errors_without_leaking_key() {
-        let (port, handle) = serve(
-            1,
+        let (port, handle) = serve(&[(
             "HTTP/1.1 401 Unauthorized",
             r#"{"error":{"type":"authentication_error","message":"Invalid API key"}}"#,
-        );
+        )]);
         let Err(error) = fetch_entry(&entry(format!("http://127.0.0.1:{port}"), "sk-leaky-key")) else {
             panic!("expected 401 to fail");
         };
