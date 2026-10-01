@@ -1,4 +1,3 @@
-mod omp;
 mod operations;
 mod platform;
 mod pricing;

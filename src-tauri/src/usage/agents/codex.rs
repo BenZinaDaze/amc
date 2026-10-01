@@ -155,9 +155,7 @@ impl CodexUsageAdapter {
                         // prefixes keep the parent's ids.
                         if let Some(turn_model) = ["model", "model_slug"]
                             .iter()
-                            .filter_map(|key| {
-                                payload.and_then(|payload| payload.get(key))
-                            })
+                            .filter_map(|key| payload.and_then(|payload| payload.get(key)))
                             .find_map(|value| value.as_str())
                             .filter(|turn_model| !turn_model.is_empty())
                         {
@@ -198,10 +196,9 @@ impl CodexUsageAdapter {
                             continue;
                         };
                         // `info` is null on events carrying only rate limits.
-                        let Some(info) =
-                            payload.and_then(|payload| payload.get("info")).filter(|info| {
-                                info.is_object()
-                            })
+                        let Some(info) = payload
+                            .and_then(|payload| payload.get("info"))
+                            .filter(|info| info.is_object())
                         else {
                             continue;
                         };
@@ -265,11 +262,9 @@ impl CodexUsageAdapter {
                         // The payload is part of the key because one turn can
                         // contain several API responses, each with its own
                         // `last_token_usage` delta under the same `turn_id`.
-                        let seen_event = current_turn
-                            .as_ref()
-                            .is_some_and(|turn_id| {
-                                !seen_events.insert(format!("{turn_id}\u{1}{payload_key}"))
-                            });
+                        let seen_event = current_turn.as_ref().is_some_and(|turn_id| {
+                            !seen_events.insert(format!("{turn_id}\u{1}{payload_key}"))
+                        });
                         if seen_event {
                             continue;
                         }
@@ -290,13 +285,23 @@ impl CodexUsageAdapter {
                         if turn.input + turn.cached + turn.write + turn.output <= 0 {
                             continue;
                         }
-                        let model = if model.is_empty() { "unknown" } else { model.as_str() };
+                        let model = if model.is_empty() {
+                            "unknown"
+                        } else {
+                            model.as_str()
+                        };
                         // Transcripts only name the model; routed models
                         // resolve to their listed provider to price.
                         let provider = prices.primary_provider(model).unwrap_or("openai");
                         let input = (turn.input - turn.cached - turn.write).max(0);
-                        let cost =
-                            prices.cost(provider, model, input, turn.cached, turn.write, turn.output);
+                        let cost = prices.cost(
+                            provider,
+                            model,
+                            input,
+                            turn.cached,
+                            turn.write,
+                            turn.output,
+                        );
                         let model_totals = models
                             .entry((provider.to_owned(), model.to_owned()))
                             .or_default();
@@ -359,41 +364,10 @@ pub struct CodexStatus {
 
 pub fn codex_status() -> CodexStatus {
     let executable = if cfg!(windows) { "codex.exe" } else { "codex" };
-    let mut found = false;
-    for directory in env::var_os("PATH")
-        .into_iter()
-        .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
-        .chain(
-            platform::home()
-                .ok()
-                .into_iter()
-                .flat_map(|home| [home.join(".local/bin"), home.join(".codex/bin")]),
-        )
-        .chain(
-            ["/opt/homebrew/bin", "/usr/local/bin"]
-                .into_iter()
-                .map(PathBuf::from),
-        )
-    {
-        let program = directory.join(executable);
-        if !program.is_file() {
-            continue;
-        }
-        found = true;
-        if let Ok(mut command) = platform::cli_command(&program) {
-            if let Ok(output) = command.arg("--version").output() {
-                if output.status.success() {
-                    return CodexStatus {
-                        installed: true,
-                        version: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-                    };
-                }
-            }
-        }
-    }
+    let status = platform::cli_status(executable, &[".local/bin", ".codex/bin"]);
     CodexStatus {
-        installed: found,
-        version: String::new(),
+        installed: status.installed,
+        version: status.version,
     }
 }
 
@@ -582,11 +556,12 @@ mod tests {
         ];
         fs::write(day.join("rollout.jsonl"), rollout.join("\n")).unwrap();
         let adapter = CodexUsageAdapter::from_base(root).unwrap();
-        let range = UsageRange::parse(&format!("custom:0:{}", start + 86_400_000), start + 86_400_000).unwrap();
-        let stats = adapter
-            .read_usage(range, &prices())
-            .unwrap()
-            .finish();
+        let range = UsageRange::parse(
+            &format!("custom:0:{}", start + 86_400_000),
+            start + 86_400_000,
+        )
+        .unwrap();
+        let stats = adapter.read_usage(range, &prices()).unwrap().finish();
         assert_eq!(stats.total_requests, 2);
         // Each turn counts its `last_token_usage`; the re-broadcast adds
         // nothing.
@@ -609,7 +584,9 @@ mod tests {
                 .unwrap()
                 .to_rfc3339()
         };
-        let token_count = |timestamp: String, last: (i64, i64, i64, i64), total: (i64, i64, i64, i64)| {
+        let token_count = |timestamp: String,
+                           last: (i64, i64, i64, i64),
+                           total: (i64, i64, i64, i64)| {
             format!(
                 r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"cache_write_input_tokens":{},"output_tokens":{}}},"total_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"cache_write_input_tokens":{},"output_tokens":{}}}}}}}}}"#,
                 last.0, last.1, last.2, last.3, total.0, total.1, total.2, total.3
@@ -617,19 +594,28 @@ mod tests {
         };
         let rollout = [
             // First child turn on top of the parent baseline.
-            token_count(stamp(1000), (1_000, 500, 0, 100), (50_000, 40_000, 0, 3_000)),
+            token_count(
+                stamp(1000),
+                (1_000, 500, 0, 100),
+                (50_000, 40_000, 0, 3_000),
+            ),
             // Rate-limit re-broadcast of the unchanged usage.
-            token_count(stamp(1100), (1_000, 500, 0, 100), (50_000, 40_000, 0, 3_000)),
+            token_count(
+                stamp(1100),
+                (1_000, 500, 0, 100),
+                (50_000, 40_000, 0, 3_000),
+            ),
             // The second turn advances past the seeded baseline.
             token_count(stamp(2000), (200, 0, 0, 20), (50_200, 40_000, 0, 3_020)),
         ];
         fs::write(day.join("rollout.jsonl"), rollout.join("\n")).unwrap();
         let adapter = CodexUsageAdapter::from_base(root).unwrap();
-        let range = UsageRange::parse(&format!("custom:{start}:{}", start + 86_400_000), start + 86_400_000).unwrap();
-        let stats = adapter
-            .read_usage(range, &prices())
-            .unwrap()
-            .finish();
+        let range = UsageRange::parse(
+            &format!("custom:{start}:{}", start + 86_400_000),
+            start + 86_400_000,
+        )
+        .unwrap();
+        let stats = adapter.read_usage(range, &prices()).unwrap().finish();
         assert_eq!(stats.total_requests, 2);
         assert_eq!(stats.input_tokens, 500 + 200);
         assert_eq!(stats.cache_read_tokens, 500);
@@ -672,7 +658,9 @@ mod tests {
                 r#"{{"timestamp":"{timestamp}","type":"turn_context","payload":{{"turn_id":"{turn_id}","model":"gpt-5.6-terra"}}}}"#
             )
         };
-        let token_count = |timestamp: String, last: (i64, i64, i64, i64), total: (i64, i64, i64, i64)| {
+        let token_count = |timestamp: String,
+                           last: (i64, i64, i64, i64),
+                           total: (i64, i64, i64, i64)| {
             format!(
                 r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"cache_write_input_tokens":{},"output_tokens":{}}},"total_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"cache_write_input_tokens":{},"output_tokens":{}}}}}}}}}"#,
                 last.0, last.1, last.2, last.3, total.0, total.1, total.2, total.3
@@ -723,11 +711,12 @@ mod tests {
         )
         .unwrap();
         let adapter = CodexUsageAdapter::from_base(root).unwrap();
-        let range = UsageRange::parse(&format!("custom:{start}:{}", start + 86_400_000), start + 86_400_000).unwrap();
-        let stats = adapter
-            .read_usage(range, &prices())
-            .unwrap()
-            .finish();
+        let range = UsageRange::parse(
+            &format!("custom:{start}:{}", start + 86_400_000),
+            start + 86_400_000,
+        )
+        .unwrap();
+        let stats = adapter.read_usage(range, &prices()).unwrap().finish();
         // The parent's two turns plus the child's own turn; the inherited
         // copy in the child file is skipped.
         assert_eq!(stats.total_requests, 3);
@@ -764,7 +753,9 @@ mod tests {
                 r#"{{"timestamp":"{timestamp}","type":"turn_context","payload":{{"turn_id":"{turn_id}","model":"gpt-5.6-terra"}}}}"#
             )
         };
-        let token_count = |timestamp: String, last: (i64, i64, i64, i64), total: (i64, i64, i64, i64)| {
+        let token_count = |timestamp: String,
+                           last: (i64, i64, i64, i64),
+                           total: (i64, i64, i64, i64)| {
             format!(
                 r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"cache_write_input_tokens":{},"output_tokens":{}}},"total_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"cache_write_input_tokens":{},"output_tokens":{}}}}}}}}}"#,
                 last.0, last.1, last.2, last.3, total.0, total.1, total.2, total.3
@@ -775,13 +766,18 @@ mod tests {
                 r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"thread_settings_applied","thread_id":"{thread}"}}}}"#
             )
         };
-        let parent_path = day.join("rollout-2026-07-11T08-00-00-aaaaaaaa-1111-2222-3333-444444444444.jsonl");
+        let parent_path =
+            day.join("rollout-2026-07-11T08-00-00-aaaaaaaa-1111-2222-3333-444444444444.jsonl");
         fs::write(
             &parent_path,
             [
                 session_meta("parent-thread", None),
                 turn_context(stamp(-172_800_000), "turn-parent"),
-                token_count(stamp(-172_799_000), (1_000, 500, 0, 100), (1_000, 500, 0, 100)),
+                token_count(
+                    stamp(-172_799_000),
+                    (1_000, 500, 0, 100),
+                    (1_000, 500, 0, 100),
+                ),
             ]
             .join("\n"),
         )
@@ -807,10 +803,7 @@ mod tests {
         .unwrap();
         let adapter = CodexUsageAdapter::from_base(root).unwrap();
         let range = UsageRange::parse("24h", now + 1).unwrap();
-        let stats = adapter
-            .read_usage(range, &prices())
-            .unwrap()
-            .finish();
+        let stats = adapter.read_usage(range, &prices()).unwrap().finish();
         // Only the child's own turn is in range; the inherited copy must not
         // resurrect the parent's out-of-range turn.
         assert_eq!(stats.total_requests, 1);
@@ -832,7 +825,9 @@ mod tests {
                 .unwrap()
                 .to_rfc3339()
         };
-        let token_count = |timestamp: String, last: (i64, i64, i64, i64), total: (i64, i64, i64, i64)| {
+        let token_count = |timestamp: String,
+                           last: (i64, i64, i64, i64),
+                           total: (i64, i64, i64, i64)| {
             format!(
                 r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"cache_write_input_tokens":{},"output_tokens":{}}},"total_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"cache_write_input_tokens":{},"output_tokens":{}}}}}}}}}"#,
                 last.0, last.1, last.2, last.3, total.0, total.1, total.2, total.3
@@ -844,7 +839,11 @@ mod tests {
                 stamp(0)
             ),
             // First response of the turn.
-            token_count(stamp(1000), (10_000, 8_000, 0, 500), (10_000, 8_000, 0, 500)),
+            token_count(
+                stamp(1000),
+                (10_000, 8_000, 0, 500),
+                (10_000, 8_000, 0, 500),
+            ),
             // Second response of the same turn: same `turn_id`, own delta.
             token_count(stamp(2000), (2_000, 1_000, 0, 100), (12_000, 9_000, 0, 600)),
             // Rate-limit re-broadcast of the unchanged totals.
@@ -852,11 +851,12 @@ mod tests {
         ];
         fs::write(day.join("rollout.jsonl"), rollout.join("\n")).unwrap();
         let adapter = CodexUsageAdapter::from_base(root).unwrap();
-        let range = UsageRange::parse(&format!("custom:{start}:{}", start + 86_400_000), start + 86_400_000).unwrap();
-        let stats = adapter
-            .read_usage(range, &prices())
-            .unwrap()
-            .finish();
+        let range = UsageRange::parse(
+            &format!("custom:{start}:{}", start + 86_400_000),
+            start + 86_400_000,
+        )
+        .unwrap();
+        let stats = adapter.read_usage(range, &prices()).unwrap().finish();
         assert_eq!(stats.total_requests, 2);
         assert_eq!(stats.input_tokens, 2_000 + 1_000);
         assert_eq!(stats.output_tokens, 500 + 100);
@@ -889,11 +889,12 @@ mod tests {
         ];
         fs::write(day.join("rollout.jsonl"), rollout.join("\n")).unwrap();
         let adapter = CodexUsageAdapter::from_base(root).unwrap();
-        let range = UsageRange::parse(&format!("custom:{start}:{}", start + 86_400_000), start + 86_400_000).unwrap();
-        let stats = adapter
-            .read_usage(range, &prices())
-            .unwrap()
-            .finish();
+        let range = UsageRange::parse(
+            &format!("custom:{start}:{}", start + 86_400_000),
+            start + 86_400_000,
+        )
+        .unwrap();
+        let stats = adapter.read_usage(range, &prices()).unwrap().finish();
         assert_eq!(stats.total_requests, 1);
         // Only the delta across the cutoff: (30_000-12_000, 24_000-9_000, 700-600),
         // of which the uncached input is 18_000 - 15_000.
@@ -901,5 +902,4 @@ mod tests {
         assert_eq!(stats.cache_read_tokens, 15_000);
         assert_eq!(stats.output_tokens, 100);
     }
-
 }

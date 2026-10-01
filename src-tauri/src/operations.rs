@@ -1,5 +1,4 @@
 use crate::{
-    omp,
     platform::{self, Result},
     store::{InstallRecord, Installation, Repository, Store},
     workspace::{self, Workspace},
@@ -112,7 +111,7 @@ impl Core {
 
     pub fn state(&self, workspace: Workspace) -> Result<State> {
         let root = workspace::root(&workspace)?;
-        let (installed, version) = omp::omp_version();
+        let (installed, version) = crate::usage::agents::omp::status();
         let installations = self
             .store
             .installations()?
@@ -645,7 +644,9 @@ impl Core {
                 if old.rollback_commit.is_none() || old.rollback_hash.is_none() {
                     return Err("回滚备份缺少提交编号或文件校验".into());
                 }
-                if old.rollback_hash.as_ref() != Some(&platform::tree_hash(&platform::snapshot(backup)?)) {
+                if old.rollback_hash.as_ref()
+                    != Some(&platform::tree_hash(&platform::snapshot(backup)?))
+                {
                     return Err("回滚备份已变化".into());
                 }
                 (None, None, "技能已回滚")

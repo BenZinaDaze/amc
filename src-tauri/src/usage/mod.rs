@@ -2,13 +2,13 @@
 // the registry. One file per source lives beside it (`omp.rs`, `claude.rs`,
 // `codex.rs`); a new agent registers in [`AGENT_IDS`] and implements
 // [`AgentUsageAdapter`], nothing else.
-use crate::{omp, platform, pricing::Pricing};
+use crate::{platform, pricing::Pricing};
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicI64},
+    sync::atomic::AtomicI64,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -17,7 +17,7 @@ trait AgentUsageAdapter {
     fn read(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage>;
 }
 
-mod agents;
+pub(crate) mod agents;
 
 pub(crate) use agents::claude::{claude_code_status, ClaudeCodeStatus};
 pub(crate) use agents::codex::{codex_status, CodexStatus};
@@ -248,7 +248,10 @@ fn collect_jsonl(source: &str, directory: &Path, files: &mut Vec<PathBuf>) -> pl
             .path();
         if path.is_dir() {
             collect_jsonl(source, &path, files)?;
-        } else if path.extension().is_some_and(|extension| extension == "jsonl") {
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "jsonl")
+        {
             files.push(path);
         }
     }
@@ -264,7 +267,7 @@ fn adapter_for(agent_id: &str) -> platform::Result<Box<dyn AgentUsageAdapter>> {
     use agents::{claude::ClaudeCodeUsageAdapter, codex::CodexUsageAdapter, omp::OmpUsageAdapter};
     match agent_id {
         "omp" => {
-            if omp::omp_executable().is_none() {
+            if agents::omp::executable().is_none() {
                 return Err("找不到 OMP 可执行文件；请安装 omp 后重试".into());
             }
             Ok(Box::new(OmpUsageAdapter::from_environment()?))
@@ -303,19 +306,26 @@ fn collect(
     }
     match merged {
         Some(raw) => Ok(raw.finish()),
-        None => Err(first_error
-            .unwrap_or_else(|| "没有可统计的 Agent 用量来源".to_owned())),
+        None => Err(first_error.unwrap_or_else(|| "没有可统计的 Agent 用量来源".to_owned())),
     }
 }
 
-pub fn sync_agent_usage(agent_id: &str, range: &str, price_file: &Path) -> platform::Result<UsageStats> {
+pub fn sync_agent_usage(
+    agent_id: &str,
+    range: &str,
+    price_file: &Path,
+) -> platform::Result<UsageStats> {
     let range = UsageRange::parse(range, now_millis()?)?;
     with_adapter(agent_id, price_file, |adapter, prices| {
         adapter.sync(range, prices)
     })
 }
 
-pub fn get_agent_usage(agent_id: &str, range: &str, price_file: &Path) -> platform::Result<UsageStats> {
+pub fn get_agent_usage(
+    agent_id: &str,
+    range: &str,
+    price_file: &Path,
+) -> platform::Result<UsageStats> {
     let range = UsageRange::parse(range, now_millis()?)?;
     with_adapter(agent_id, price_file, |adapter, prices| {
         adapter.read(range, prices)

@@ -11,7 +11,7 @@ use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashSet},
     env, fs,
-    path::{PathBuf},
+    path::PathBuf,
     sync::atomic::Ordering,
 };
 
@@ -98,8 +98,12 @@ impl ClaudeCodeUsageAdapter {
                 let Some(usage) = message.get("usage") else {
                     continue;
                 };
-                let token =
-                    |field: &str| usage.get(field).and_then(serde_json::Value::as_i64).unwrap_or(0);
+                let token = |field: &str| {
+                    usage
+                        .get(field)
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(0)
+                };
                 let input = token("input_tokens");
                 let output = token("output_tokens");
                 let write = token("cache_creation_input_tokens");
@@ -190,42 +194,15 @@ pub struct ClaudeCodeStatus {
 }
 
 pub fn claude_code_status() -> ClaudeCodeStatus {
-    let executable = if cfg!(windows) { "claude.exe" } else { "claude" };
-    let mut found = false;
-    for directory in env::var_os("PATH")
-        .into_iter()
-        .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
-        .chain(
-            platform::home()
-                .ok()
-                .into_iter()
-                .flat_map(|home| [home.join(".local/bin"), home.join(".claude/local")]),
-        )
-        .chain(
-            ["/opt/homebrew/bin", "/usr/local/bin"]
-                .into_iter()
-                .map(PathBuf::from),
-        )
-    {
-        let program = directory.join(executable);
-        if !program.is_file() {
-            continue;
-        }
-        found = true;
-        if let Ok(mut command) = platform::cli_command(&program) {
-            if let Ok(output) = command.arg("--version").output() {
-                if output.status.success() {
-                    return ClaudeCodeStatus {
-                        installed: true,
-                        version: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-                    };
-                }
-            }
-        }
-    }
+    let executable = if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    };
+    let status = platform::cli_status(executable, &[".local/bin", ".claude/local"]);
     ClaudeCodeStatus {
-        installed: found,
-        version: String::new(),
+        installed: status.installed,
+        version: status.version,
     }
 }
 
@@ -254,18 +231,66 @@ mod tests {
         let entries = [
             // In-range request that gets rewritten verbatim into a second
             // file by --resume; counted once.
-            line(stamp(0), "msg_1", "req_1", "claude-sonnet-4-5-20250929", sonnet_usage),
-            line(stamp(1000), "msg_1", "req_1", "claude-sonnet-4-5-20250929", sonnet_usage),
+            line(
+                stamp(0),
+                "msg_1",
+                "req_1",
+                "claude-sonnet-4-5-20250929",
+                sonnet_usage,
+            ),
+            line(
+                stamp(1000),
+                "msg_1",
+                "req_1",
+                "claude-sonnet-4-5-20250929",
+                sonnet_usage,
+            ),
             // Local "<synthetic>" notices and zero-token records are not API calls.
-            line(stamp(2000), "msg_2", "req_2", "<synthetic>", r#"{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}"#),
+            line(
+                stamp(2000),
+                "msg_2",
+                "req_2",
+                "<synthetic>",
+                r#"{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}"#,
+            ),
             // Range boundaries behave like the OMP query: cutoff inclusive, end exclusive.
-            line(stamp(-1), "msg_3", "req_3", "claude-sonnet-4-5-20250929", sonnet_usage),
-            line(stamp(86_400_000), "msg_5", "req_5", "claude-sonnet-4-5-20250929", sonnet_usage),
-            line(stamp(86_399_999), "msg_4", "req_4", "claude-haiku-4-5-20251001", r#"{"input_tokens":10,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}"#),
+            line(
+                stamp(-1),
+                "msg_3",
+                "req_3",
+                "claude-sonnet-4-5-20250929",
+                sonnet_usage,
+            ),
+            line(
+                stamp(86_400_000),
+                "msg_5",
+                "req_5",
+                "claude-sonnet-4-5-20250929",
+                sonnet_usage,
+            ),
+            line(
+                stamp(86_399_999),
+                "msg_4",
+                "req_4",
+                "claude-haiku-4-5-20251001",
+                r#"{"input_tokens":10,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}"#,
+            ),
             // Entries without a timestamp cannot be bucketed.
-            line(String::new(), "msg_6", "req_6", "claude-haiku-4-5-20251001", r#"{"input_tokens":10,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}"#),
+            line(
+                String::new(),
+                "msg_6",
+                "req_6",
+                "claude-haiku-4-5-20251001",
+                r#"{"input_tokens":10,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}"#,
+            ),
             // Routed non-Anthropic model resolves to its catalog provider.
-            line(stamp(3000), "msg_7", "req_7", "glm-5.3-flash", r#"{"input_tokens":5000,"output_tokens":1000,"cache_creation_input_tokens":0,"cache_read_input_tokens":2000}"#),
+            line(
+                stamp(3000),
+                "msg_7",
+                "req_7",
+                "glm-5.3-flash",
+                r#"{"input_tokens":5000,"output_tokens":1000,"cache_creation_input_tokens":0,"cache_read_input_tokens":2000}"#,
+            ),
         ];
         fs::write(project.join("session-a.jsonl"), entries.join("\n")).unwrap();
         fs::write(
@@ -274,7 +299,13 @@ mod tests {
                 r#"{{"type":"user","timestamp":"{}","message":{{"usage":{{"input_tokens":9}}}}}}
 {}"#,
                 stamp(0),
-                line(stamp(0), "msg_1", "req_1", "claude-sonnet-4-5-20250929", sonnet_usage)
+                line(
+                    stamp(0),
+                    "msg_1",
+                    "req_1",
+                    "claude-sonnet-4-5-20250929",
+                    sonnet_usage
+                )
             ),
         )
         .unwrap();
@@ -305,12 +336,19 @@ mod tests {
         let haiku = (110. * 1. + 70. * 5.) / 1_000_000.;
         let glm = (5000. * 0.15 + 1000. * 0.5 + 2000. * 0.03) / 1_000_000.;
         assert!((stats.total_cost.unwrap() - sonnet - haiku - glm).abs() < 1e-12);
-        let models: Vec<(String, String)> = stats.by_model.iter().map(|m| (m.provider.clone(), m.model.clone())).collect();
-        assert_eq!(models, vec![
-            ("anthropic".into(), "claude-haiku-4-5-20251001".into()),
-            ("anthropic".into(), "claude-sonnet-4-5-20250929".into()),
-            ("zhipu-coding-plan".into(), "glm-5.3-flash".into()),
-        ]);
+        let models: Vec<(String, String)> = stats
+            .by_model
+            .iter()
+            .map(|m| (m.provider.clone(), m.model.clone()))
+            .collect();
+        assert_eq!(
+            models,
+            vec![
+                ("anthropic".into(), "claude-haiku-4-5-20251001".into()),
+                ("anthropic".into(), "claude-sonnet-4-5-20250929".into()),
+                ("zhipu-coding-plan".into(), "glm-5.3-flash".into()),
+            ]
+        );
         assert_eq!(stats.trend.len(), 2);
         assert_eq!(stats.trend[0].bucket, 1_759_996_800_000);
         assert_eq!(stats.trend[0].requests, 3);
@@ -327,5 +365,4 @@ mod tests {
         let error = ClaudeCodeUsageAdapter::from_base(root).err().unwrap();
         assert!(error.contains("找不到 Claude Code 数据目录"), "{error}");
     }
-
 }

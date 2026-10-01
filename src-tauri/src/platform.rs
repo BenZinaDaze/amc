@@ -240,6 +240,66 @@ pub fn cli_command(program: &Path) -> Result<Command> {
     Ok(command)
 }
 
+/// 一个 CLI 的安装状态：`installed` 只要求候选文件存在，`version` 取第一个
+/// 成功执行 `--version` 的输出（探测全部失败时为空串）。
+pub struct CliStatus {
+    pub installed: bool,
+    pub version: String,
+}
+
+fn cli_directories<'a>(
+    executable: &'a str,
+    home: Option<PathBuf>,
+    home_extra_dirs: &'a [&'a str],
+) -> impl Iterator<Item = PathBuf> + 'a {
+    let mut directories: Vec<PathBuf> = env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
+        .collect();
+    if let Some(home) = home {
+        directories.extend(home_extra_dirs.iter().map(|extra| home.join(extra)));
+    }
+    directories.extend(
+        ["/opt/homebrew/bin", "/usr/local/bin"]
+            .into_iter()
+            .map(PathBuf::from),
+    );
+    directories
+        .into_iter()
+        .map(move |directory| directory.join(executable))
+}
+
+/// 在 PATH + `home_extra_dirs`（相对用户目录）+ 常见 Homebrew 目录中查找
+/// 可执行文件。
+pub fn cli_executable(executable: &str, home_extra_dirs: &[&str]) -> Option<PathBuf> {
+    cli_directories(executable, home().ok(), home_extra_dirs).find(|program| program.is_file())
+}
+
+/// [`cli_executable`] 的状态版：探测 `--version`。
+pub fn cli_status(executable: &str, home_extra_dirs: &[&str]) -> CliStatus {
+    let mut found = false;
+    for program in cli_directories(executable, home().ok(), home_extra_dirs) {
+        if !program.is_file() {
+            continue;
+        }
+        found = true;
+        if let Ok(mut command) = cli_command(&program) {
+            if let Ok(output) = command.arg("--version").output() {
+                if output.status.success() {
+                    return CliStatus {
+                        installed: true,
+                        version: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+                    };
+                }
+            }
+        }
+    }
+    CliStatus {
+        installed: found,
+        version: String::new(),
+    }
+}
+
 pub const HIDDEN_MCP_VALUE: &str = "[已隐藏]";
 
 pub fn redact_mcp_in_place(value: &mut Value) {

@@ -5,7 +5,7 @@ use crate::usage::{merge_into, prices};
 use crate::usage::{
     now_millis, AgentUsageAdapter, RawUsage, Totals, UsageRange, LAST_SUCCESSFUL_SYNC,
 };
-use crate::{omp, platform, pricing::Pricing};
+use crate::{platform, pricing::Pricing};
 use rusqlite::{params, Connection, OpenFlags};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -17,6 +17,21 @@ use std::{
 
 pub(crate) struct OmpUsageAdapter {
     stats_db: PathBuf,
+}
+
+const OMP_EXECUTABLE: &str = if cfg!(windows) { "omp.exe" } else { "omp" };
+/// OMP 经 bun/npm 安装，需要这些相对用户目录的附加搜索路径。
+const OMP_HOME_EXTRA_DIRS: &[&str] = &[".bun/bin", ".local/bin"];
+
+/// 在 PATH 与 OMP 安装目录中定位 `omp` 可执行文件。
+pub(crate) fn executable() -> Option<PathBuf> {
+    platform::cli_executable(OMP_EXECUTABLE, OMP_HOME_EXTRA_DIRS)
+}
+
+/// OMP 安装状态（Agents 页展示用）：是否找到文件 + `--version` 输出。
+pub(crate) fn status() -> (bool, String) {
+    let status = platform::cli_status(OMP_EXECUTABLE, OMP_HOME_EXTRA_DIRS);
+    (status.installed, status.version)
 }
 
 // OMP loads dotenv files after Bun preloads the launch project's .env. Only
@@ -295,7 +310,7 @@ impl OmpUsageAdapter {
         })
     }
     fn sync_cli(&self) -> platform::Result<()> {
-        let program = omp::omp_executable().ok_or("找不到 OMP 可执行文件；请安装 omp 后重试")?;
+        let program = executable().ok_or("找不到 OMP 可执行文件；请安装 omp 后重试")?;
         let output = platform::cli_command(&program)?
             .args(["stats", "--summary"])
             .output()
@@ -413,7 +428,6 @@ impl AgentUsageAdapter for OmpUsageAdapter {
         self.read_db(range, prices)
     }
 }
-
 
 fn normalize_profile(value: &str) -> platform::Result<Option<String>> {
     let value = value.trim();
@@ -590,9 +604,11 @@ mod tests {
         let first = OmpUsageAdapter { stats_db: first_db }
             .read_db(range, &prices)
             .unwrap();
-        let second = OmpUsageAdapter { stats_db: second_db }
-            .read_db(range, &prices)
-            .unwrap();
+        let second = OmpUsageAdapter {
+            stats_db: second_db,
+        }
+        .read_db(range, &prices)
+        .unwrap();
         let expected_synced_at = first.synced_at.max(second.synced_at);
         let mut merged: Option<RawUsage> = None;
         merge_into(&mut merged, first);
@@ -825,7 +841,7 @@ mod tests {
     }
     #[test]
     fn installed_omp_stats_db_matches_project_dotenv_resolution_with_mode_files() {
-        let Some(program) = omp::omp_executable() else {
+        let Some(program) = executable() else {
             // OMP is optional in cross-platform CI; the Rust-only path tests
             // above remain deterministic without a locally installed CLI.
             return;
