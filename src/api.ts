@@ -35,6 +35,7 @@ export type QuotaUsage = {
   resetsAt: number | null;
   windowMinutes: number | null;
   details: QuotaDetail[];
+  unit: "usd" | null;
 };
 export type MetricUsage = { id: string; label: string; value: number };
 export type SubscriptionStatus = {
@@ -42,13 +43,14 @@ export type SubscriptionStatus = {
   provider: string;
   title: string;
   platform: string;
+  baseUrl: string | null;
   keyHint: string | null;
   error: string | null;
   plan: string | null;
   quotas: QuotaUsage[];
   metrics: MetricUsage[];
 };
-export type SubscriptionKind = { id: string; title: string; keyLabel: string; keyPlaceholder: string; platforms: [string, string][] };
+export type SubscriptionKind = { id: string; title: string; keyLabel: string; keyPlaceholder: string; platforms: [string, string][]; urlLabel: string | null; urlPlaceholder: string | null };
 export type ClaudeCodeStatus = { installed: boolean; version: string };
 export type CodexStatus = { installed: boolean; version: string };
 export const api = {
@@ -74,7 +76,7 @@ export const api = {
   rollbackSkill: (installationId: number) => invoke<Plan>("rollback_skill", { installationId }),
   fetchSubscriptions: () => invoke<SubscriptionStatus[]>("fetch_subscriptions"),
   listSubscriptionKinds: () => invoke<SubscriptionKind[]>("list_subscription_kinds"),
-  addSubscriptionPlan: (kind: string, name: string, platform: string, key: string) => invoke<Message>("add_subscription_plan", { kind, name, platform, key }),
-  updateSubscriptionPlan: (id: string, name: string, platform: string, key: string) => invoke<Message>("update_subscription_plan", { id, name, platform, key: key || null }),
+  addSubscriptionPlan: (kind: string, name: string, platform: string, key: string, baseUrl: string) => invoke<Message>("add_subscription_plan", { kind, name, platform, key, baseUrl: baseUrl || null }),
+  updateSubscriptionPlan: (id: string, name: string, platform: string, key: string, baseUrl: string) => invoke<Message>("update_subscription_plan", { id, name, platform, key: key || null, baseUrl: baseUrl || null }),
   removeSubscriptionPlan: (id: string) => invoke<Message>("remove_subscription_plan", { id }),
 };

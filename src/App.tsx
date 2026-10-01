@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNod
 import { openUrl } from "@tauri-apps/plugin-opener";
 import ompIcon from "./assets/omp.svg";
 import zaiIcon from "./assets/zai.svg";
+import sub2apiIcon from "./assets/sub2api.svg";
 import { version } from "../package.json";
 import { api, type ClaudeCodeStatus, type CodexStatus, type McpServer, type Plan, type Repository, type RepositorySkill, type State, type SubscriptionKind, type SubscriptionStatus, type UsageRange, type UsageStats, type Workspace } from "./api";
 import "./App.css";
@@ -1006,6 +1007,9 @@ function formatQuotaCount(kind: string, value: number): string {
   return kind === "tokens" ? usageTokenNumber.format(value) : usageNumber.format(value);
 }
 
+// `unit: "usd"` 的额度行存的是美分整数，展示为美元。
+const usageUsd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+
 function metricIcon(id: string): string {
   if (id === "tokens" || id === "model") return "spark";
   if (id === "requests") return "agents";
@@ -1025,6 +1029,7 @@ function PlanFormModal({ form, onClose, onSaved }: {
   const [name, setName] = useState(editing?.title ?? "");
   const [nameTouched, setNameTouched] = useState(editing !== null);
   const [platform, setPlatform] = useState(editing?.platform ?? "zai");
+  const [baseUrl, setBaseUrl] = useState(editing?.baseUrl ?? "");
   const [key, setKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -1044,13 +1049,14 @@ function PlanFormModal({ form, onClose, onSaved }: {
     }).catch(() => { /* keep the glm default; add validates server-side */ });
     return () => { cancelled = true; };
   }, [editing]);
+  const needsUrl = !!selected?.urlLabel;
   const submit = async () => {
-    if (saving || !name.trim() || (!editing && !key.trim())) return;
+    if (saving || !name.trim() || (!editing && !key.trim()) || (needsUrl && !baseUrl.trim())) return;
     setSaving(true);
     setError("");
     try {
-      if (editing) await api.updateSubscriptionPlan(editing.id, name.trim(), platform, key.trim());
-      else await api.addSubscriptionPlan(kind, name.trim(), platform, key.trim());
+      if (editing) await api.updateSubscriptionPlan(editing.id, name.trim(), platform, key.trim(), baseUrl.trim());
+      else await api.addSubscriptionPlan(kind, name.trim(), platform, key.trim(), baseUrl.trim());
       onSaved();
     } catch (reason) {
       setError(errorText(reason));
@@ -1073,7 +1079,10 @@ function PlanFormModal({ form, onClose, onSaved }: {
               setKind(event.target.value);
               if (next) {
                 if (!nameTouched) setName(next.title);
-                if (next.platforms[0]) setPlatform(next.platforms[0][0]);
+                setPlatform(next.platforms[0]?.[0] ?? "");
+                setBaseUrl("");
+                // 凭据不跨套餐类型复用：换类型即丢弃已输入的 Key。
+                setKey("");
               }
             }}>
               {kinds.map((entry) => <option key={entry.id} value={entry.id}>{entry.title}</option>)}
@@ -1083,11 +1092,14 @@ function PlanFormModal({ form, onClose, onSaved }: {
             <input value={name} maxLength={100} placeholder="例如：主力账号" autoFocus onChange={(event) => { setNameTouched(true); setName(event.target.value); }} />
           </label>
           {/* 平台与凭据字段随所选套餐类型切换 */}
-          <label>平台
+          {(selected?.platforms.length ?? 0) > 0 && <label>平台
             <select value={platform} onChange={(event) => setPlatform(event.target.value)}>
               {(selected?.platforms ?? []).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
-          </label>
+          </label>}
+          {needsUrl && <label>{selected?.urlLabel}
+            <input value={baseUrl} placeholder={selected?.urlPlaceholder ?? "https://…"} onChange={(event) => setBaseUrl(event.target.value)} />
+          </label>}
           <label>{selected?.keyLabel ?? "凭据 Key"}
             <input type="password" value={key} autoComplete="off" placeholder={editing ? `留空则保留现有 Key（${editing.keyHint ?? "已保存"}）` : selected?.keyPlaceholder ?? "粘贴凭据 Key"} onChange={(event) => setKey(event.target.value)} />
           </label>
@@ -1095,7 +1107,7 @@ function PlanFormModal({ form, onClose, onSaved }: {
         {error && <small className="subscription-form-error" role="alert">{error}</small>}
         <div className="modal-actions">
           <button className="button button-muted" type="button" onClick={onClose}>取消</button>
-          <button className="button button-primary" type="submit" disabled={saving || !name.trim() || (!editing && !key.trim())}>{saving ? "保存中…" : editing ? "保存" : "添加"}</button>
+          <button className="button button-primary" type="submit" disabled={saving || !name.trim() || (!editing && !key.trim()) || (needsUrl && !baseUrl.trim())}>{saving ? "保存中…" : editing ? "保存" : "添加"}</button>
         </div>
       </form>
     </div>
@@ -1105,7 +1117,7 @@ function PlanFormModal({ form, onClose, onSaved }: {
 function SubscriptionCard({ status, onMenu }: { status: SubscriptionStatus; onMenu: (status: SubscriptionStatus, x: number, y: number) => void }) {
   return <article className="subscription-card" onContextMenu={(event) => { event.preventDefault(); onMenu(status, event.clientX, event.clientY); }}>
     <div className="subscription-head">
-      <span className="subscription-icon"><img src={zaiIcon} alt="" /></span>
+      <span className="subscription-icon"><img src={status.provider === "sub2api" ? sub2apiIcon : zaiIcon} alt="" /></span>
       <div className="subscription-title">
         <h3>{status.title}{status.plan && <span className="tag tag-muted">{status.plan}</span>}</h3>
       </div>
@@ -1117,7 +1129,7 @@ function SubscriptionCard({ status, onMenu }: { status: SubscriptionStatus; onMe
           {status.quotas.map((quota) => {
             const tone = quota.usedPercent >= 90 ? "danger" : quota.usedPercent >= 70 ? "warn" : "ok";
             const counts = quota.used !== null && quota.total !== null
-              ? `${formatQuotaCount(quota.kind, quota.used)} / ${formatQuotaCount(quota.kind, quota.total)}`
+              ? `${quota.unit === "usd" ? usageUsd.format(quota.used / 100) : formatQuotaCount(quota.kind, quota.used)} / ${quota.unit === "usd" ? usageUsd.format(quota.total / 100) : formatQuotaCount(quota.kind, quota.total)}`
               : null;
             return <div key={quota.label} className="quota-row">
               <div className="quota-top">

@@ -248,13 +248,14 @@ async fn add_subscription_plan(
     name: String,
     platform: String,
     key: String,
+    base_url: Option<String>,
 ) -> omp::Result<subscription::Message> {
     let data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        subscription::add_plan(&data_dir, &kind, &name, &platform, &key)?;
+        subscription::add_plan(&data_dir, &kind, &name, &platform, &key, base_url.as_deref())?;
         Ok(subscription::Message {
             message: format!("已添加订阅套餐 {name}"),
         })
@@ -270,13 +271,21 @@ async fn update_subscription_plan(
     name: String,
     platform: String,
     key: Option<String>,
+    base_url: Option<String>,
 ) -> omp::Result<subscription::Message> {
     let data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        subscription::update_plan(&data_dir, &id, &name, &platform, key.as_deref())?;
+        subscription::update_plan(
+            &data_dir,
+            &id,
+            &name,
+            &platform,
+            key.as_deref(),
+            base_url.as_deref(),
+        )?;
         Ok(subscription::Message {
             message: format!("已更新订阅套餐 {name}"),
         })

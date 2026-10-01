@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-use super::{known_kind, validate_platform};
+use super::{known_kind, validate_base_url, validate_platform};
 
 /// Subscriptions the user saved inside AMC, persisted with owner-only
 /// permissions under the app data dir. The frontend never receives keys.
@@ -23,8 +23,12 @@ pub(super) struct StoredSubscription {
     pub kind: String,
     /// User-defined card name.
     pub name: String,
-    /// `zai` (api.z.ai) or `bigmodel` (open.bigmodel.cn).
+    /// `zai` (api.z.ai) or `bigmodel` (open.bigmodel.cn); empty for kinds
+    /// without platform choices.
     pub platform: String,
+    /// Instance URL for kinds that need one (e.g. `sub2api`).
+    #[serde(default)]
+    pub base_url: Option<String>,
     pub key: String,
 }
 
@@ -72,6 +76,7 @@ fn migrate_legacy(mut stored: StoredSubscriptions) -> StoredSubscriptions {
                 kind: "glm".to_owned(),
                 name: "GLM Coding Plan".to_owned(),
                 platform: legacy.platform,
+                base_url: None,
                 key: legacy.key,
             });
         }
@@ -147,12 +152,20 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 
 // ---------------------------------------------------------------- entry CRUD
 
-pub fn add_plan(data_dir: &Path, kind: &str, name: &str, platform: &str, key: &str) -> Result<()> {
+pub fn add_plan(
+    data_dir: &Path,
+    kind: &str,
+    name: &str,
+    platform: &str,
+    key: &str,
+    base_url: Option<&str>,
+) -> Result<()> {
     if !known_kind(kind) {
         return Err(format!("未知的订阅套餐: {kind}"));
     }
     let name = validate_name(name)?;
     let platform = validate_platform(kind, platform)?;
+    let base_url = validate_base_url(kind, base_url)?;
     let key = validate_key(key)?;
     let mut stored = read_stored(data_dir);
     let id = next_entry_id(&mut stored);
@@ -161,18 +174,21 @@ pub fn add_plan(data_dir: &Path, kind: &str, name: &str, platform: &str, key: &s
         kind: kind.to_owned(),
         name,
         platform,
+        base_url,
         key,
     });
     write_stored_entries(data_dir, stored)
 }
 
-/// A `None` key keeps the stored one, so edits never need the raw key.
+/// A `None` key keeps the stored one, so edits never need the raw key; the
+/// instance URL is not secret and is always replaced.
 pub fn update_plan(
     data_dir: &Path,
     id: &str,
     name: &str,
     platform: &str,
     key: Option<&str>,
+    base_url: Option<&str>,
 ) -> Result<()> {
     let name = validate_name(name)?;
     let key = key.map(validate_key).transpose()?;
@@ -183,6 +199,7 @@ pub fn update_plan(
         .find(|entry| entry.id == id)
         .ok_or_else(|| "订阅套餐不存在".to_owned())?;
     entry.platform = validate_platform(&entry.kind, platform)?;
+    entry.base_url = validate_base_url(&entry.kind, base_url)?;
     entry.name = name;
     if let Some(key) = key {
         entry.key = key;
@@ -226,66 +243,79 @@ mod tests {
     #[test]
     fn entry_crud_and_validation() {
         let dir = temp_dir("crud");
-        assert!(add_plan(&dir, "glm", "  ", "zai", "12345678").is_err());
-        assert!(add_plan(&dir, "nope", "名", "zai", "12345678").is_err());
-        assert!(add_plan(&dir, "glm", "名", "unknown", "12345678").is_err());
-        assert!(add_plan(&dir, "glm", "名", "zai", "short").is_err());
+        assert!(add_plan(&dir, "glm", "  ", "zai", "12345678", None).is_err());
+        assert!(add_plan(&dir, "nope", "名", "zai", "12345678", None).is_err());
+        assert!(add_plan(&dir, "glm", "名", "unknown", "12345678", None).is_err());
+        assert!(add_plan(&dir, "glm", "名", "zai", "short", None).is_err());
+        assert!(add_plan(&dir, "sub2api", "名", "", "sk-abcdef123456", None).is_err());
+        assert!(add_plan(&dir, "sub2api", "名", "", "sk-abcdef123456", Some("ftp://x")).is_err());
+        assert!(add_plan(&dir, "sub2api", "名", "zai", "sk-abcdef123456", Some("https://x.y")).is_err());
         assert!(fetch_all(&dir).is_empty());
 
         // The same vendor can be added twice with different keys.
-        add_plan(&dir, "glm", "  主号  ", "zai", "  12345678abcdef  ").unwrap();
-        add_plan(&dir, "glm", "备用", "bigmodel", "fedcba9876543210").unwrap();
+        add_plan(&dir, "glm", "  主号  ", "zai", "  12345678abcdef  ", None).unwrap();
+        add_plan(&dir, "glm", "备用", "bigmodel", "fedcba9876543210", None).unwrap();
+        add_plan(&dir, "sub2api", "自建", "", "sk-abcdef123456", Some("  https://sub.example.com/  ")).unwrap();
         let entries = read_stored(&dir).entries;
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].id, "1");
         assert_eq!(entries[1].id, "2");
+        assert_eq!(entries[2].id, "3");
         assert_eq!(entries[0].name, "主号");
         assert_eq!(entries[0].platform, "zai");
         assert_eq!(entries[0].key, "12345678abcdef");
         assert_eq!(entries[0].hint(), "…cdef");
+        assert_eq!(entries[0].base_url, None);
+        assert_eq!(entries[2].platform, "");
+        assert_eq!(entries[2].base_url.as_deref(), Some("https://sub.example.com"));
 
         // A missing key keeps the stored one; a blank one is rejected.
-        update_plan(&dir, "1", "主力", "bigmodel", None).unwrap();
-        assert!(update_plan(&dir, "1", "主力", "bigmodel", Some("  ")).is_err());
+        update_plan(&dir, "1", "主力", "bigmodel", None, None).unwrap();
+        assert!(update_plan(&dir, "1", "主力", "bigmodel", Some("  "), None).is_err());
         let entry = &read_stored(&dir).entries[0];
         assert_eq!(entry.name, "主力");
         assert_eq!(entry.platform, "bigmodel");
         assert_eq!(entry.key, "12345678abcdef");
-        update_plan(&dir, "1", "主力", "zai", Some("aaaa1234")).unwrap();
+        update_plan(&dir, "1", "主力", "zai", Some("aaaa1234"), None).unwrap();
         assert_eq!(read_stored(&dir).entries[0].key, "aaaa1234");
-        assert!(update_plan(&dir, "99", "x", "zai", None).is_err());
+        assert!(update_plan(&dir, "99", "x", "zai", None, None).is_err());
+        // The instance URL is replaced on every edit.
+        update_plan(&dir, "3", "自建", "", None, Some("http://127.0.0.1:9")).unwrap();
+        assert_eq!(read_stored(&dir).entries[2].base_url.as_deref(), Some("http://127.0.0.1:9"));
 
         remove_plan(&dir, "1").unwrap();
-        assert_eq!(read_stored(&dir).entries.len(), 1);
+        assert_eq!(read_stored(&dir).entries.len(), 2);
         remove_plan(&dir, "1").unwrap(); // removing again is a no-op
 
         // Each entry renders as its own card with its own name and masked key.
         let statuses = fetch_all(&dir);
-        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses.len(), 2);
         assert_eq!(statuses[0].id, "2");
         assert_eq!(statuses[0].title, "备用");
         assert_eq!(statuses[0].provider, "glm");
         assert_eq!(statuses[0].platform, "bigmodel");
         assert_eq!(statuses[0].key_hint.as_deref(), Some("…3210"));
+        assert_eq!(statuses[1].provider, "sub2api");
+        assert_eq!(statuses[1].base_url.as_deref(), Some("http://127.0.0.1:9"));
     }
 
     #[test]
     fn entry_ids_are_never_reused() {
         let dir = temp_dir("ids");
-        add_plan(&dir, "glm", "甲", "zai", "12345678abcdef").unwrap();
-        add_plan(&dir, "glm", "乙", "zai", "12345678abcdef").unwrap();
+        add_plan(&dir, "glm", "甲", "zai", "12345678abcdef", None).unwrap();
+        add_plan(&dir, "glm", "乙", "zai", "12345678abcdef", None).unwrap();
         remove_plan(&dir, "2").unwrap();
-        add_plan(&dir, "glm", "丙", "zai", "12345678abcdef").unwrap();
+        add_plan(&dir, "glm", "丙", "zai", "12345678abcdef", None).unwrap();
         let stored = read_stored(&dir);
         let ids: Vec<&str> = stored.entries.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["1", "3"]);
         // A stale view of the deleted entry cannot touch the new one.
-        assert!(update_plan(&dir, "2", "幽灵", "zai", None).is_err());
+        assert!(update_plan(&dir, "2", "幽灵", "zai", None, None).is_err());
         remove_plan(&dir, "2").unwrap(); // removing a stale id is a no-op
         assert_eq!(read_stored(&dir).entries.len(), 2);
 
         remove_plan(&dir, "1").unwrap();
-        add_plan(&dir, "glm", "丁", "zai", "12345678abcdef").unwrap();
+        add_plan(&dir, "glm", "丁", "zai", "12345678abcdef", None).unwrap();
         let stored = read_stored(&dir);
         let ids: Vec<&str> = stored.entries.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["3", "4"]);
@@ -302,7 +332,7 @@ mod tests {
         });
         fs::write(dir.join(SUBSCRIPTIONS_FILE), serde_json::to_vec(&legacy).unwrap()).unwrap();
         remove_plan(&dir, "1").unwrap();
-        add_plan(&dir, "glm", "新的", "zai", "12345678abcdef").unwrap();
+        add_plan(&dir, "glm", "新的", "zai", "12345678abcdef", None).unwrap();
         let stored = read_stored(&dir);
         assert_eq!(stored.entries[0].id, "2");
 
@@ -313,7 +343,7 @@ mod tests {
         ] });
         fs::write(dir.join(SUBSCRIPTIONS_FILE), serde_json::to_vec(&file).unwrap()).unwrap();
         remove_plan(&dir, "5").unwrap();
-        add_plan(&dir, "glm", "新的", "zai", "12345678abcdef").unwrap();
+        add_plan(&dir, "glm", "新的", "zai", "12345678abcdef", None).unwrap();
         let stored = read_stored(&dir);
         assert_eq!(stored.entries[0].id, "6");
     }
@@ -333,7 +363,7 @@ mod tests {
         assert_eq!(statuses[0].platform, "zai");
 
         // The next save writes the new shape only.
-        add_plan(&dir, "glm", "二号", "zai", "fedcba9876543210").unwrap();
+        add_plan(&dir, "glm", "二号", "zai", "fedcba9876543210", None).unwrap();
         let raw: Value =
             serde_json::from_slice(&fs::read(dir.join(SUBSCRIPTIONS_FILE)).unwrap()).unwrap();
         assert!(raw.get("glm").is_none());

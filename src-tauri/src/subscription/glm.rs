@@ -285,6 +285,7 @@ fn normalize_limit(raw: &RawLimit) -> Option<QuotaUsage> {
         resets_at,
         window_minutes,
         details,
+        unit: None,
     })
 }
 
