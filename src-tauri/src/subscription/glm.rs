@@ -5,7 +5,7 @@
 //! weekly credit cycle) and `tool-usage` (MCP calls). The endpoints are
 //! undocumented; [Z.ai's own usage plugin][plugin] is the reference.
 
-use crate::omp::Result;
+use crate::platform::Result;
 use chrono::{DateTime, Local, Timelike};
 use serde::Deserialize;
 use serde_json::Value;

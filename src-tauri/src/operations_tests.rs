@@ -126,15 +126,15 @@ fn mcp_preserves_unrelated_keys_redacts_secrets_and_rejects_stale_preview() {
     assert_eq!(visible.config["auth"]["clientId"], "public-id");
     assert_eq!(
         visible.config["headers"]["Authorization"],
-        omp::HIDDEN_MCP_VALUE
+        platform::HIDDEN_MCP_VALUE
     );
     assert_eq!(
         visible.config["auth"]["clientSecret"],
-        omp::HIDDEN_MCP_VALUE
+        platform::HIDDEN_MCP_VALUE
     );
     assert_eq!(
         visible.config["auth"]["credentialId"],
-        omp::HIDDEN_MCP_VALUE
+        platform::HIDDEN_MCP_VALUE
     );
     let mut redacted = visible.config.clone();
     redacted["enabled"] = Value::Bool(false);

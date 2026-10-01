@@ -10,7 +10,7 @@
 //! provider module exposing `fetch_entry(&StoredSubscription)`, and give it a
 //! match arm in [`fetch_entry`].
 
-use crate::omp::Result;
+use crate::platform::Result;
 use serde::Serialize;
 use std::path::Path;
 

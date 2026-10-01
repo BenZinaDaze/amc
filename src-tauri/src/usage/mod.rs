@@ -2,7 +2,7 @@
 // the registry. One file per source lives beside it (`omp.rs`, `claude.rs`,
 // `codex.rs`); a new agent registers in [`AGENT_IDS`] and implements
 // [`AgentUsageAdapter`], nothing else.
-use crate::{omp, pricing::Pricing};
+use crate::{omp, platform, pricing::Pricing};
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
@@ -13,8 +13,8 @@ use std::{
 };
 
 trait AgentUsageAdapter {
-    fn sync(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage>;
-    fn read(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage>;
+    fn sync(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage>;
+    fn read(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage>;
 }
 
 mod agents;
@@ -165,7 +165,7 @@ struct UsageRange {
 }
 
 impl UsageRange {
-    fn parse(value: &str, now: i64) -> omp::Result<Self> {
+    fn parse(value: &str, now: i64) -> platform::Result<Self> {
         if let Some(bounds) = value.strip_prefix("custom:") {
             let (start, end) = bounds
                 .split_once(':')
@@ -217,7 +217,7 @@ impl UsageRange {
     }
 }
 
-fn now_millis() -> omp::Result<i64> {
+fn now_millis() -> platform::Result<i64> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| format!("获取当前时间失败: {e}"))?
@@ -239,7 +239,7 @@ fn modified_millis(path: &Path) -> Option<i64> {
 /// Session transcripts nest arbitrarily (Claude Code keeps official subagent
 /// transcripts two levels below the project dir), so the JSONL sources need
 /// a recursive walk collecting every `*.jsonl` file.
-fn collect_jsonl(source: &str, directory: &Path, files: &mut Vec<PathBuf>) -> omp::Result<()> {
+fn collect_jsonl(source: &str, directory: &Path, files: &mut Vec<PathBuf>) -> platform::Result<()> {
     for entry in fs::read_dir(directory)
         .map_err(|e| format!("读取 {source} 数据目录 {} 失败: {e}", directory.display()))?
     {
@@ -260,7 +260,7 @@ static LAST_SUCCESSFUL_SYNC: AtomicI64 = AtomicI64::new(0);
 /// Every agent AMC collects usage from; a new source registers here and
 /// implements [`AgentUsageAdapter`], nothing else.
 const AGENT_IDS: &[&str] = &["omp", "claude-code", "codex"];
-fn adapter_for(agent_id: &str) -> omp::Result<Box<dyn AgentUsageAdapter>> {
+fn adapter_for(agent_id: &str) -> platform::Result<Box<dyn AgentUsageAdapter>> {
     use agents::{claude::ClaudeCodeUsageAdapter, codex::CodexUsageAdapter, omp::OmpUsageAdapter};
     match agent_id {
         "omp" => {
@@ -278,8 +278,8 @@ fn adapter_for(agent_id: &str) -> omp::Result<Box<dyn AgentUsageAdapter>> {
 fn with_adapter(
     agent_id: &str,
     price_file: &Path,
-    operation: impl FnOnce(&dyn AgentUsageAdapter, &Pricing) -> omp::Result<RawUsage>,
-) -> omp::Result<UsageStats> {
+    operation: impl FnOnce(&dyn AgentUsageAdapter, &Pricing) -> platform::Result<RawUsage>,
+) -> platform::Result<UsageStats> {
     let raw = operation(adapter_for(agent_id)?.as_ref(), &Pricing::load(price_file)?)?;
     Ok(raw.finish())
 }
@@ -288,8 +288,8 @@ fn with_adapter(
 /// as at least one source succeeds; only a total failure is reported.
 fn collect(
     price_file: &Path,
-    operation: impl Fn(&dyn AgentUsageAdapter, &Pricing) -> omp::Result<RawUsage>,
-) -> omp::Result<UsageStats> {
+    operation: impl Fn(&dyn AgentUsageAdapter, &Pricing) -> platform::Result<RawUsage>,
+) -> platform::Result<UsageStats> {
     let prices = Pricing::load(price_file)?;
     let mut merged: Option<RawUsage> = None;
     let mut first_error: Option<String> = None;
@@ -308,26 +308,26 @@ fn collect(
     }
 }
 
-pub fn sync_agent_usage(agent_id: &str, range: &str, price_file: &Path) -> omp::Result<UsageStats> {
+pub fn sync_agent_usage(agent_id: &str, range: &str, price_file: &Path) -> platform::Result<UsageStats> {
     let range = UsageRange::parse(range, now_millis()?)?;
     with_adapter(agent_id, price_file, |adapter, prices| {
         adapter.sync(range, prices)
     })
 }
 
-pub fn get_agent_usage(agent_id: &str, range: &str, price_file: &Path) -> omp::Result<UsageStats> {
+pub fn get_agent_usage(agent_id: &str, range: &str, price_file: &Path) -> platform::Result<UsageStats> {
     let range = UsageRange::parse(range, now_millis()?)?;
     with_adapter(agent_id, price_file, |adapter, prices| {
         adapter.read(range, prices)
     })
 }
 
-pub fn sync_agents_usage(range: &str, price_file: &Path) -> omp::Result<UsageStats> {
+pub fn sync_agents_usage(range: &str, price_file: &Path) -> platform::Result<UsageStats> {
     let range = UsageRange::parse(range, now_millis()?)?;
     collect(price_file, |adapter, prices| adapter.sync(range, prices))
 }
 
-pub fn get_agents_usage(range: &str, price_file: &Path) -> omp::Result<UsageStats> {
+pub fn get_agents_usage(range: &str, price_file: &Path) -> platform::Result<UsageStats> {
     let range = UsageRange::parse(range, now_millis()?)?;
     collect(price_file, |adapter, prices| adapter.read(range, prices))
 }

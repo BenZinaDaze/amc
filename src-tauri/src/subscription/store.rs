@@ -2,7 +2,7 @@
 //! permissions. The frontend never receives keys; only masked hints cross the
 //! boundary. Vendor-specific credential shaping lives in the vendor modules.
 
-use crate::omp::Result;
+use crate::platform::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;

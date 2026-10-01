@@ -5,7 +5,7 @@
 //! the remote repository root whenever usage is refreshed. Updating a price
 //! means editing that file and pushing; the app picks it up on next refresh.
 
-use crate::omp::Result;
+use crate::platform::Result;
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, HashMap},

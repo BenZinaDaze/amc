@@ -6,7 +6,7 @@ use crate::usage::{
     collect_jsonl, modified_millis, now_millis, rfc3339_millis, AgentUsageAdapter, RawUsage,
     Totals, UsageRange, LAST_SUCCESSFUL_SYNC,
 };
-use crate::{omp, pricing::Pricing};
+use crate::{platform, pricing::Pricing};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashSet},
@@ -46,8 +46,8 @@ pub(crate) struct CodexUsageAdapter {
 }
 
 impl CodexUsageAdapter {
-    pub(crate) fn from_environment() -> omp::Result<Self> {
-        let home = omp::home()?;
+    pub(crate) fn from_environment() -> platform::Result<Self> {
+        let home = platform::home()?;
         Self::from_base(
             env::var("CODEX_HOME")
                 .ok()
@@ -56,7 +56,7 @@ impl CodexUsageAdapter {
         )
     }
 
-    fn from_base(base: PathBuf) -> omp::Result<Self> {
+    fn from_base(base: PathBuf) -> platform::Result<Self> {
         let sessions_dir = base.join("sessions");
         if !sessions_dir.is_dir() {
             return Err(format!(
@@ -67,7 +67,7 @@ impl CodexUsageAdapter {
         Ok(Self { sessions_dir })
     }
 
-    fn transcripts(&self) -> omp::Result<Vec<PathBuf>> {
+    fn transcripts(&self) -> platform::Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         // Rollouts nest as sessions/YYYY/MM/DD/rollout-*.jsonl.
         collect_jsonl("Codex", &self.sessions_dir, &mut files)?;
@@ -75,7 +75,7 @@ impl CodexUsageAdapter {
         Ok(files)
     }
 
-    fn read_usage(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage> {
+    fn read_usage(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
         let mut totals = Totals::default();
         let mut models: BTreeMap<(String, String), Totals> = BTreeMap::new();
         let mut trend: BTreeMap<i64, (i64, i64)> = BTreeMap::new();
@@ -331,7 +331,7 @@ impl CodexUsageAdapter {
 }
 
 impl AgentUsageAdapter for CodexUsageAdapter {
-    fn sync(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage> {
+    fn sync(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
         let mut raw = self.read_usage(range, prices)?;
         let now = now_millis()?;
         LAST_SUCCESSFUL_SYNC.store(now, Ordering::Relaxed);
@@ -339,7 +339,7 @@ impl AgentUsageAdapter for CodexUsageAdapter {
         Ok(raw)
     }
 
-    fn read(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage> {
+    fn read(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
         let mut raw = self.read_usage(range, prices)?;
         raw.synced_at = raw
             .synced_at
@@ -364,7 +364,7 @@ pub fn codex_status() -> CodexStatus {
         .into_iter()
         .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
         .chain(
-            omp::home()
+            platform::home()
                 .ok()
                 .into_iter()
                 .flat_map(|home| [home.join(".local/bin"), home.join(".codex/bin")]),
@@ -380,7 +380,7 @@ pub fn codex_status() -> CodexStatus {
             continue;
         }
         found = true;
-        if let Ok(mut command) = omp::omp_command(&program) {
+        if let Ok(mut command) = platform::cli_command(&program) {
             if let Ok(output) = command.arg("--version").output() {
                 if output.status.success() {
                     return CodexStatus {

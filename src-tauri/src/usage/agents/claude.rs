@@ -6,7 +6,7 @@ use crate::usage::{
     collect_jsonl, modified_millis, now_millis, rfc3339_millis, AgentUsageAdapter, RawUsage,
     Totals, UsageRange, LAST_SUCCESSFUL_SYNC,
 };
-use crate::{omp, pricing::Pricing};
+use crate::{platform, pricing::Pricing};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashSet},
@@ -25,8 +25,8 @@ pub(crate) struct ClaudeCodeUsageAdapter {
 }
 
 impl ClaudeCodeUsageAdapter {
-    pub(crate) fn from_environment() -> omp::Result<Self> {
-        let home = omp::home()?;
+    pub(crate) fn from_environment() -> platform::Result<Self> {
+        let home = platform::home()?;
         Self::from_base(
             env::var("CLAUDE_CONFIG_DIR")
                 .ok()
@@ -35,7 +35,7 @@ impl ClaudeCodeUsageAdapter {
         )
     }
 
-    fn from_base(base: PathBuf) -> omp::Result<Self> {
+    fn from_base(base: PathBuf) -> platform::Result<Self> {
         let projects_dir = base.join("projects");
         if !projects_dir.is_dir() {
             return Err(format!(
@@ -49,14 +49,14 @@ impl ClaudeCodeUsageAdapter {
     // Session transcripts sit at projects/<project>/*.jsonl; official
     // subagents live deeper at projects/<project>/<sessionId>/subagents/
     // agent-<id>.jsonl, so the walk must recurse below the project dir.
-    fn transcripts(&self) -> omp::Result<Vec<PathBuf>> {
+    fn transcripts(&self) -> platform::Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         collect_jsonl("Claude Code", &self.projects_dir, &mut files)?;
         files.sort();
         Ok(files)
     }
 
-    fn read_usage(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage> {
+    fn read_usage(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
         let mut totals = Totals::default();
         let mut models: BTreeMap<(String, String), Totals> = BTreeMap::new();
         let mut trend: BTreeMap<i64, (i64, i64)> = BTreeMap::new();
@@ -165,7 +165,7 @@ impl ClaudeCodeUsageAdapter {
 }
 
 impl AgentUsageAdapter for ClaudeCodeUsageAdapter {
-    fn sync(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage> {
+    fn sync(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
         let mut raw = self.read_usage(range, prices)?;
         let now = now_millis()?;
         LAST_SUCCESSFUL_SYNC.store(now, Ordering::Relaxed);
@@ -173,7 +173,7 @@ impl AgentUsageAdapter for ClaudeCodeUsageAdapter {
         Ok(raw)
     }
 
-    fn read(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage> {
+    fn read(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
         let mut raw = self.read_usage(range, prices)?;
         raw.synced_at = raw
             .synced_at
@@ -196,7 +196,7 @@ pub fn claude_code_status() -> ClaudeCodeStatus {
         .into_iter()
         .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
         .chain(
-            omp::home()
+            platform::home()
                 .ok()
                 .into_iter()
                 .flat_map(|home| [home.join(".local/bin"), home.join(".claude/local")]),
@@ -212,7 +212,7 @@ pub fn claude_code_status() -> ClaudeCodeStatus {
             continue;
         }
         found = true;
-        if let Ok(mut command) = omp::omp_command(&program) {
+        if let Ok(mut command) = platform::cli_command(&program) {
             if let Ok(output) = command.arg("--version").output() {
                 if output.status.success() {
                     return ClaudeCodeStatus {

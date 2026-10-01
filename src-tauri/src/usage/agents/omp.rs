@@ -1,13 +1,11 @@
 // OMP usage: the stats.db reader plus the launch-context resolution that
 // locates it (dotenv files, profiles, XDG data migration).
 #[cfg(test)]
-use crate::usage::prices;
+use crate::usage::{merge_into, prices};
 use crate::usage::{
     now_millis, AgentUsageAdapter, RawUsage, Totals, UsageRange, LAST_SUCCESSFUL_SYNC,
 };
-#[cfg(test)]
-use crate::usage::merge_into;
-use crate::{omp, pricing::Pricing};
+use crate::{omp, platform, pricing::Pricing};
 use rusqlite::{params, Connection, OpenFlags};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -40,7 +38,7 @@ fn apply_dotenv_paths(
     file: &Path,
     values: &mut HashMap<String, String>,
     mirror_omp: bool,
-) -> omp::Result<()> {
+) -> platform::Result<()> {
     let contents = match fs::read_to_string(file) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -163,7 +161,7 @@ fn config_dirs(
     pi_profile: Option<&str>,
     agent_override: Option<&Path>,
     cwd: &Path,
-) -> omp::Result<(PathBuf, PathBuf)> {
+) -> platform::Result<(PathBuf, PathBuf)> {
     // Node's path.join(home, configName) retains home for leading slashes.
     #[cfg(not(windows))]
     let config_name = config_name.strip_prefix("/").unwrap_or(config_name);
@@ -197,7 +195,7 @@ fn effective_path_env(
     home: &Path,
     cwd: &Path,
     mut values: HashMap<String, String>,
-) -> omp::Result<(HashMap<String, String>, String)> {
+) -> platform::Result<(HashMap<String, String>, String)> {
     // Bun preloads the launch project's .env before importing OMP's dirs.ts.
     apply_dotenv_paths(&cwd.join(".env"), &mut values, false)?;
     let profile = values
@@ -229,8 +227,8 @@ fn effective_path_env(
 }
 
 impl OmpUsageAdapter {
-    pub(crate) fn from_environment() -> omp::Result<Self> {
-        let home = omp::home()?;
+    pub(crate) fn from_environment() -> platform::Result<Self> {
+        let home = platform::home()?;
         let cwd = env::current_dir().map_err(|e| format!("读取 OMP 启动目录失败: {e}"))?;
         Self::from_launch_context(home, &cwd, path_env())
     }
@@ -239,7 +237,7 @@ impl OmpUsageAdapter {
         home: PathBuf,
         cwd: &Path,
         launch_env: HashMap<String, String>,
-    ) -> omp::Result<Self> {
+    ) -> platform::Result<Self> {
         let (values, profile) = effective_path_env(&home, cwd, launch_env)?;
         Self::from_configuration(
             home,
@@ -269,7 +267,7 @@ impl OmpUsageAdapter {
         agent_override: Option<PathBuf>,
         xdg_data_home: Option<PathBuf>,
         cwd: &Path,
-    ) -> omp::Result<Self> {
+    ) -> platform::Result<Self> {
         let (root, agent_dir) = config_dirs(
             &home,
             &config_name,
@@ -296,9 +294,9 @@ impl OmpUsageAdapter {
             stats_db: data_root.as_ref().unwrap_or(&root).join("stats.db"),
         })
     }
-    fn sync_cli(&self) -> omp::Result<()> {
+    fn sync_cli(&self) -> platform::Result<()> {
         let program = omp::omp_executable().ok_or("找不到 OMP 可执行文件；请安装 omp 后重试")?;
-        let output = omp::omp_command(&program)?
+        let output = platform::cli_command(&program)?
             .args(["stats", "--summary"])
             .output()
             .map_err(|e| format!("执行 {} 失败: {e}", program.display()))?;
@@ -318,7 +316,7 @@ impl OmpUsageAdapter {
         Ok(())
     }
 
-    fn read_db(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage> {
+    fn read_db(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
         let db = Connection::open_with_flags(&self.stats_db, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|e| {
                 format!(
@@ -402,7 +400,7 @@ impl OmpUsageAdapter {
 }
 
 impl AgentUsageAdapter for OmpUsageAdapter {
-    fn sync(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage> {
+    fn sync(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
         self.sync_cli()?;
         let mut raw = self.read_db(range, prices)?;
         let now = now_millis()?;
@@ -411,13 +409,13 @@ impl AgentUsageAdapter for OmpUsageAdapter {
         Ok(raw)
     }
 
-    fn read(&self, range: UsageRange, prices: &Pricing) -> omp::Result<RawUsage> {
+    fn read(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
         self.read_db(range, prices)
     }
 }
 
 
-fn normalize_profile(value: &str) -> omp::Result<Option<String>> {
+fn normalize_profile(value: &str) -> platform::Result<Option<String>> {
     let value = value.trim();
     if value.is_empty() || value == "default" {
         return Ok(None);
@@ -850,7 +848,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let output = omp::omp_command(&program)
+        let output = platform::cli_command(&program)
             .unwrap()
             .current_dir(&project)
             .env("HOME", &home)

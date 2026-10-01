@@ -1,5 +1,6 @@
 use crate::{
-    omp::{self, Result},
+    omp,
+    platform::{self, Result},
     store::{InstallRecord, Installation, Repository, Store},
     workspace::{self, Workspace},
 };
@@ -27,8 +28,8 @@ pub struct AgentInfo {
 pub struct State {
     workspace: Workspace,
     agent: AgentInfo,
-    mcp: Vec<omp::McpView>,
-    skills: Vec<omp::SkillView>,
+    mcp: Vec<platform::McpView>,
+    skills: Vec<platform::SkillView>,
     repositories: Vec<Repository>,
     installations: Vec<Installation>,
 }
@@ -151,7 +152,7 @@ impl Core {
         name: String,
         mut config: Option<Value>,
     ) -> Result<Plan> {
-        if !omp::valid_mcp_name(&name) {
+        if !platform::valid_mcp_name(&name) {
             return Err("MCP 名称无效（最多 100 字符，仅限字母数字、_-. :）".into());
         }
         if let Some(value) = &config {
@@ -165,8 +166,8 @@ impl Core {
         } else {
             root.join(".mcp.json")
         };
-        omp::no_links(&primary, &root)?;
-        omp::no_links(&legacy, &root)?;
+        platform::no_links(&primary, &root)?;
+        platform::no_links(&legacy, &root)?;
         let primary_doc = read_mcp_document(&primary)?;
         let legacy_doc = read_mcp_document(&legacy)?;
         let in_primary = primary_doc
@@ -201,7 +202,7 @@ impl Core {
             .ok_or("mcpServers 必须是对象")?;
         if let Some(mut value) = config.take() {
             let fallback = legacy_doc.get("mcpServers").and_then(|v| v.get(&name));
-            omp::restore_mcp_secrets(&mut value, servers.get(&name).or(fallback))?;
+            platform::restore_mcp_secrets(&mut value, servers.get(&name).or(fallback))?;
             servers.insert(name.clone(), value);
         } else {
             servers.remove(&name);
@@ -272,7 +273,7 @@ impl Core {
                     if dir != base {
                         return Ok(());
                     }
-                } else if let Ok((name, description)) = omp::skill_metadata(&file) {
+                } else if let Ok((name, description)) = platform::skill_metadata(&file) {
                     if dir != base
                         && dir.file_name().and_then(|value| value.to_str()) != Some(name.as_str())
                     {
@@ -408,18 +409,18 @@ impl Core {
             return Err("无效技能路径".into());
         }
         let source = repo_root.join(relative);
-        omp::no_links(&source, &repo_root)?;
+        platform::no_links(&source, &repo_root)?;
         if !source.is_dir() {
             return Err("仓库中不存在该技能目录".into());
         }
-        let (name, _) = omp::skill_metadata(&source.join("SKILL.md"))?;
+        let (name, _) = platform::skill_metadata(&source.join("SKILL.md"))?;
         if skill_path != "."
             && source.file_name().and_then(|value| value.to_str()) != Some(name.as_str())
         {
             return Err("技能 name 必须与目录名一致".into());
         }
-        let files = omp::source_snapshot(&source, &repo_root)?;
-        let hash = omp::tree_hash(&files);
+        let files = platform::source_snapshot(&source, &repo_root)?;
+        let hash = platform::tree_hash(&files);
         let commit = self.store.commit(repository_id)?;
         let target = root.join("skills").join(&name);
         let workspace_root = root.parent().ok_or("工作区安装目录无效")?;
@@ -429,7 +430,7 @@ impl Core {
         if expected_target.is_some_and(|expected| expected != target) {
             return Err("技能名称已更改；不能原地同步旧安装".into());
         }
-        omp::no_links(&target, &root)?;
+        platform::no_links(&target, &root)?;
         let existing = self.store.by_path(&target)?;
         let old = existing.as_ref().filter(|r| r.active);
         if target.exists() && old.is_none() {
@@ -441,7 +442,7 @@ impl Core {
             }
         }
         let old_hash = checked_target(&target, old)?;
-        let old_files = omp::snapshot(&target)?;
+        let old_files = platform::snapshot(&target)?;
         let changes = diff_files(&target, &old_files, &files);
         Ok(self.enqueue(
             format!("{}技能 {name}", if old.is_some() { "更新" } else { "安装" }),
@@ -506,8 +507,8 @@ impl Core {
         if !workspace::is_installation_target(&workspace_root, &target) {
             return Err("安装目标不在工作区 .agents/skills 内".into());
         }
-        omp::no_links(&target, &root)?;
-        omp::no_links(&backup, &root)?;
+        platform::no_links(&target, &root)?;
+        platform::no_links(&backup, &root)?;
         if !backup.is_dir() {
             return Err("回滚备份不存在".into());
         }
@@ -515,11 +516,11 @@ impl Core {
         if !record.active && target.exists() {
             return Err("目标路径已被占用，无法回滚".into());
         }
-        let backup_files = omp::snapshot(&backup)?;
-        if record.rollback_hash.as_deref() != Some(omp::tree_hash(&backup_files).as_str()) {
+        let backup_files = platform::snapshot(&backup)?;
+        if record.rollback_hash.as_deref() != Some(platform::tree_hash(&backup_files).as_str()) {
             return Err("回滚备份已变化".into());
         }
-        let files = omp::snapshot(&target)?;
+        let files = platform::snapshot(&target)?;
         let changes = diff_files(&target, &files, &backup_files);
         Ok(self.enqueue(
             format!("回滚技能 {}", record.name),
@@ -550,9 +551,9 @@ impl Core {
         if !workspace::is_installation_target(&workspace_root, &target) {
             return Err("安装目标不在工作区 .agents/skills 内".into());
         }
-        omp::no_links(&target, &root)?;
+        platform::no_links(&target, &root)?;
         let hash = checked_target(&target, Some(record))?;
-        let files = omp::snapshot(&target)?;
+        let files = platform::snapshot(&target)?;
         Ok((root, target, hash, files))
     }
 
@@ -575,7 +576,7 @@ impl Core {
                 if !workspace::is_installation_target(workspace_root, &target) {
                     return Err("安装目标不在工作区 .agents/skills 内".into());
                 }
-                omp::no_links(&target, &root)?;
+                platform::no_links(&target, &root)?;
                 if let Some(previous) = &record {
                     let current = self.store.record(previous.id)?;
                     if current.commit != previous.commit
@@ -591,7 +592,7 @@ impl Core {
                     return Err("安装目标已被占用".into());
                 }
                 let current = if target.exists() {
-                    Some(omp::tree_hash(&omp::snapshot(&target)?))
+                    Some(platform::tree_hash(&platform::snapshot(&target)?))
                 } else {
                     None
                 };
@@ -614,7 +615,7 @@ impl Core {
         let parent = target.parent().ok_or("技能安装目录无效")?;
         let backup_root = root.join(".amc-backups");
         let new_backup = backup_root.join(id);
-        omp::no_links(&new_backup, &root)?;
+        platform::no_links(&new_backup, &root)?;
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         fs::create_dir_all(&backup_root).map_err(|e| e.to_string())?;
         let stage = backup_root.join(format!(".stage-{id}"));
@@ -629,7 +630,7 @@ impl Core {
             } => {
                 let source = self.store.repo_dir(*repository_id).join(skill_path);
                 if self.store.commit(*repository_id)? != *commit
-                    || omp::tree_hash(&omp::source_snapshot(
+                    || platform::tree_hash(&platform::source_snapshot(
                         &source,
                         &self.store.repo_dir(*repository_id),
                     )?) != *hash
@@ -644,7 +645,7 @@ impl Core {
                 if old.rollback_commit.is_none() || old.rollback_hash.is_none() {
                     return Err("回滚备份缺少提交编号或文件校验".into());
                 }
-                if old.rollback_hash.as_ref() != Some(&omp::tree_hash(&omp::snapshot(backup)?)) {
+                if old.rollback_hash.as_ref() != Some(&platform::tree_hash(&platform::snapshot(backup)?)) {
                     return Err("回滚备份已变化".into());
                 }
                 (None, None, "技能已回滚")
@@ -769,7 +770,7 @@ impl Core {
 
 fn apply_mcp(data_dir: &Path, root: &Path, id: &str, writes: &[McpWrite]) -> Result<Message> {
     for write in writes {
-        omp::no_links(&write.path, root)?;
+        platform::no_links(&write.path, root)?;
         let actual = match fs::read(&write.path) {
             Ok(bytes) => Some(bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -870,7 +871,7 @@ fn checked_target(target: &Path, record: Option<&InstallRecord>) -> Result<Optio
         if !target.is_dir() {
             return Err("已管理的技能目录已丢失，请手动恢复后重试".into());
         }
-        let hash = omp::tree_hash(&omp::snapshot(target)?);
+        let hash = platform::tree_hash(&platform::snapshot(target)?);
         if hash != record.hash {
             return Err("技能已被手动修改，拒绝覆盖；请先备份或恢复原文件".into());
         }
@@ -951,7 +952,7 @@ fn preview_mcp(data: &[u8]) -> String {
     let Ok(mut doc) = serde_json::from_slice::<Value>(data) else {
         return "[MCP JSON 不可预览；敏感字段未显示]".into();
     };
-    omp::redact_mcp_in_place(&mut doc);
+    platform::redact_mcp_in_place(&mut doc);
     serde_json::to_string_pretty(&doc)
         .unwrap_or_else(|_| "[MCP JSON 不可预览；敏感字段未显示]".into())
 }
@@ -962,7 +963,7 @@ fn preview(data: &[u8]) -> String {
             return text.to_owned();
         }
     }
-    format!("[{} 字节; SHA-256 {}]", data.len(), omp::digest(data))
+    format!("[{} 字节; SHA-256 {}]", data.len(), platform::digest(data))
 }
 fn diff_files(
     target: &Path,

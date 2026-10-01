@@ -9,7 +9,7 @@
 use serde_json::Value;
 use std::time::Duration;
 
-use crate::omp::Result;
+use crate::platform::Result;
 
 use super::{MetricUsage, ProviderReport, QuotaUsage};
 use super::store::StoredSubscription;

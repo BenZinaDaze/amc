@@ -1,5 +1,5 @@
 use crate::{
-    omp::{self, Result},
+    platform::{self, Result},
     workspace,
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -218,7 +218,7 @@ impl Store {
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| uuid::Uuid::parse_str(name).is_ok());
             let canonical_backup = fs::canonicalize(&backup).map_err(|_| "历史备份路径无效")?;
-            omp::no_links(&canonical_backup, &root)?;
+            platform::no_links(&canonical_backup, &root)?;
             if !owned_backup {
                 return Err(format!(
                     "历史备份不在 AMC 管理目录内，拒绝删除: {}",
@@ -228,7 +228,7 @@ impl Store {
             cleanup.push(backup);
         }
         let cache = self.repo_dir(id);
-        omp::no_links(&cache, &self.root)?;
+        platform::no_links(&cache, &self.root)?;
         cleanup.push(cache);
         let tx = self
             .db
@@ -305,8 +305,8 @@ impl Store {
 
     pub fn update_repository(&self, repo: &Repository) -> Result<String> {
         let directory = self.repo_dir(repo.id);
-        omp::no_links(&directory, &self.root)?;
-        omp::no_links(&directory.join(".git"), &self.root)?;
+        platform::no_links(&directory, &self.root)?;
+        platform::no_links(&directory.join(".git"), &self.root)?;
         if !directory.is_dir() {
             return Err("Git 缓存缺失，请重新添加仓库".into());
         }
@@ -327,7 +327,7 @@ impl Store {
 
     pub fn commit(&self, id: i64) -> Result<String> {
         let directory = self.repo_dir(id);
-        omp::no_links(&directory.join(".git"), &self.root)?;
+        platform::no_links(&directory.join(".git"), &self.root)?;
         git_commit(&directory)
     }
 
@@ -336,13 +336,13 @@ impl Store {
         for record in self.records()? {
             let target = Path::new(&record.target_path);
             let modified = record.active
-                && omp::snapshot(target)
-                    .map(|files| omp::tree_hash(&files) != record.hash)
+                && platform::snapshot(target)
+                    .map(|files| platform::tree_hash(&files) != record.hash)
                     .unwrap_or(true);
             let source = self.repo_dir(record.repository_id).join(&record.skill_path);
             let update_available = record.active
-                && omp::source_snapshot(&source, &self.repo_dir(record.repository_id))
-                    .map(|files| !files.is_empty() && omp::tree_hash(&files) != record.hash)
+                && platform::source_snapshot(&source, &self.repo_dir(record.repository_id))
+                    .map(|files| !files.is_empty() && platform::tree_hash(&files) != record.hash)
                     .unwrap_or(false);
             let target_free = matches!(fs::symlink_metadata(target), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
             let rollback_available = (if record.active {

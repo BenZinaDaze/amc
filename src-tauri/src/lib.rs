@@ -1,5 +1,6 @@
 mod omp;
 mod operations;
+mod platform;
 mod pricing;
 mod store;
 mod subscription;
@@ -13,8 +14,8 @@ type Shared = Arc<Mutex<operations::Core>>;
 
 async fn dispatch<T: Send + 'static>(
     state: State<'_, Shared>,
-    task: impl FnOnce(&mut operations::Core) -> omp::Result<T> + Send + 'static,
-) -> omp::Result<T> {
+    task: impl FnOnce(&mut operations::Core) -> platform::Result<T> + Send + 'static,
+) -> platform::Result<T> {
     let core = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut guard = core.lock().map_err(|_| "AMC 状态锁已损坏".to_string())?;
@@ -25,7 +26,7 @@ async fn dispatch<T: Send + 'static>(
 }
 
 #[tauri::command]
-async fn get_default_workspace() -> omp::Result<workspace::Workspace> {
+async fn get_default_workspace() -> platform::Result<workspace::Workspace> {
     workspace::default_workspace()
 }
 
@@ -33,7 +34,7 @@ async fn get_default_workspace() -> omp::Result<workspace::Workspace> {
 async fn get_state(
     state: State<'_, Shared>,
     workspace: workspace::Workspace,
-) -> omp::Result<operations::State> {
+) -> platform::Result<operations::State> {
     dispatch(state, move |core| core.state(workspace)).await
 }
 
@@ -43,12 +44,12 @@ async fn plan_mcp(
     workspace: workspace::Workspace,
     name: String,
     config: Option<serde_json::Value>,
-) -> omp::Result<operations::Plan> {
+) -> platform::Result<operations::Plan> {
     dispatch(state, move |core| core.plan_mcp(workspace, name, config)).await
 }
 
 #[tauri::command]
-async fn apply_plan(state: State<'_, Shared>, id: String) -> omp::Result<operations::Message> {
+async fn apply_plan(state: State<'_, Shared>, id: String) -> platform::Result<operations::Message> {
     dispatch(state, move |core| core.apply(id)).await
 }
 
@@ -57,7 +58,7 @@ async fn add_repository(
     state: State<'_, Shared>,
     url: String,
     reference: String,
-) -> omp::Result<store::Repository> {
+) -> platform::Result<store::Repository> {
     dispatch(state, move |core| core.add_repository(url, reference)).await
 }
 
@@ -65,7 +66,7 @@ async fn add_repository(
 async fn remove_repository(
     state: State<'_, Shared>,
     repository_id: i64,
-) -> omp::Result<operations::Message> {
+) -> platform::Result<operations::Message> {
     dispatch(state, move |core| core.remove_repository(repository_id)).await
 }
 
@@ -73,7 +74,7 @@ async fn remove_repository(
 async fn list_repository_skills(
     state: State<'_, Shared>,
     repository_id: i64,
-) -> omp::Result<Vec<operations::RepositorySkill>> {
+) -> platform::Result<Vec<operations::RepositorySkill>> {
     dispatch(state, move |core| core.repository_skills(repository_id)).await
 }
 
@@ -81,12 +82,12 @@ async fn list_repository_skills(
 async fn check_updates(
     state: State<'_, Shared>,
     repository_id: i64,
-) -> omp::Result<operations::Message> {
+) -> platform::Result<operations::Message> {
     dispatch(state, move |core| core.check_updates(repository_id)).await
 }
 
 #[tauri::command]
-async fn check_all_updates(state: State<'_, Shared>) -> omp::Result<operations::Message> {
+async fn check_all_updates(state: State<'_, Shared>) -> platform::Result<operations::Message> {
     dispatch(state, |core| core.check_all_updates()).await
 }
 
@@ -96,7 +97,7 @@ async fn plan_skill(
     workspace: workspace::Workspace,
     repository_id: i64,
     skill_path: String,
-) -> omp::Result<operations::Plan> {
+) -> platform::Result<operations::Plan> {
     dispatch(state, move |core| {
         core.plan_skill(workspace, repository_id, skill_path)
     })
@@ -107,7 +108,7 @@ async fn plan_skill(
 async fn plan_sync(
     state: State<'_, Shared>,
     installation_id: i64,
-) -> omp::Result<operations::Plan> {
+) -> platform::Result<operations::Plan> {
     dispatch(state, move |core| {
         let record = core.store.record(installation_id)?;
         core.plan_sync_record(record)
@@ -119,7 +120,7 @@ async fn plan_sync(
 async fn plan_remove_skill(
     state: State<'_, Shared>,
     installation_id: i64,
-) -> omp::Result<operations::Plan> {
+) -> platform::Result<operations::Plan> {
     dispatch(state, move |core| core.plan_remove_skill(installation_id)).await
 }
 
@@ -127,7 +128,7 @@ async fn plan_remove_skill(
 async fn rollback_skill(
     state: State<'_, Shared>,
     installation_id: i64,
-) -> omp::Result<operations::Plan> {
+) -> platform::Result<operations::Plan> {
     dispatch(state, move |core| core.rollback_skill(installation_id)).await
 }
 
@@ -136,7 +137,7 @@ async fn sync_agent_usage(
     app: tauri::AppHandle,
     agent_id: String,
     range: String,
-) -> omp::Result<usage::UsageStats> {
+) -> platform::Result<usage::UsageStats> {
     let price_file = app
         .path()
         .app_data_dir()
@@ -154,7 +155,7 @@ async fn get_agent_usage(
     app: tauri::AppHandle,
     agent_id: String,
     range: String,
-) -> omp::Result<usage::UsageStats> {
+) -> platform::Result<usage::UsageStats> {
     let price_file = app
         .path()
         .app_data_dir()
@@ -171,7 +172,7 @@ async fn get_agent_usage(
 async fn sync_agents_usage(
     app: tauri::AppHandle,
     range: String,
-) -> omp::Result<usage::UsageStats> {
+) -> platform::Result<usage::UsageStats> {
     let price_file = app
         .path()
         .app_data_dir()
@@ -188,7 +189,7 @@ async fn sync_agents_usage(
 async fn get_agents_usage(
     app: tauri::AppHandle,
     range: String,
-) -> omp::Result<usage::UsageStats> {
+) -> platform::Result<usage::UsageStats> {
     let price_file = app
         .path()
         .app_data_dir()
@@ -202,21 +203,21 @@ async fn get_agents_usage(
 }
 
 #[tauri::command]
-async fn get_claude_code_status() -> omp::Result<usage::ClaudeCodeStatus> {
+async fn get_claude_code_status() -> platform::Result<usage::ClaudeCodeStatus> {
     tauri::async_runtime::spawn_blocking(usage::claude_code_status)
         .await
         .map_err(|e| format!("后台操作失败: {e}"))
 }
 
 #[tauri::command]
-async fn get_codex_status() -> omp::Result<usage::CodexStatus> {
+async fn get_codex_status() -> platform::Result<usage::CodexStatus> {
     tauri::async_runtime::spawn_blocking(usage::codex_status)
         .await
         .map_err(|e| format!("后台操作失败: {e}"))
 }
 
 #[tauri::command]
-async fn refresh_pricing(app: tauri::AppHandle) -> omp::Result<String> {
+async fn refresh_pricing(app: tauri::AppHandle) -> platform::Result<String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || pricing::refresh(&data_dir))
         .await
@@ -226,7 +227,7 @@ async fn refresh_pricing(app: tauri::AppHandle) -> omp::Result<String> {
 #[tauri::command]
 async fn fetch_subscriptions(
     app: tauri::AppHandle,
-) -> omp::Result<Vec<subscription::SubscriptionStatus>> {
+) -> platform::Result<Vec<subscription::SubscriptionStatus>> {
     let data_dir = app
         .path()
         .app_data_dir()
@@ -237,7 +238,7 @@ async fn fetch_subscriptions(
 }
 
 #[tauri::command]
-async fn list_subscription_kinds() -> omp::Result<Vec<subscription::SubscriptionKind>> {
+async fn list_subscription_kinds() -> platform::Result<Vec<subscription::SubscriptionKind>> {
     Ok(subscription::list_kinds())
 }
 
@@ -249,7 +250,7 @@ async fn add_subscription_plan(
     platform: String,
     key: String,
     base_url: Option<String>,
-) -> omp::Result<subscription::Message> {
+) -> platform::Result<subscription::Message> {
     let data_dir = app
         .path()
         .app_data_dir()
@@ -272,7 +273,7 @@ async fn update_subscription_plan(
     platform: String,
     key: Option<String>,
     base_url: Option<String>,
-) -> omp::Result<subscription::Message> {
+) -> platform::Result<subscription::Message> {
     let data_dir = app
         .path()
         .app_data_dir()
@@ -298,7 +299,7 @@ async fn update_subscription_plan(
 async fn remove_subscription_plan(
     app: tauri::AppHandle,
     id: String,
-) -> omp::Result<subscription::Message> {
+) -> platform::Result<subscription::Message> {
     let data_dir = app
         .path()
         .app_data_dir()

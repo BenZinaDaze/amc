@@ -1,4 +1,4 @@
-use crate::omp::{self, McpView, Result, SkillView};
+use crate::platform::{self, McpView, Result, SkillView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -32,7 +32,7 @@ pub fn root(workspace: &Workspace) -> Result<PathBuf> {
     if !root.is_dir() {
         return Err("工作区路径必须指向目录".into());
     }
-    omp::no_links(&root, &root)?;
+    platform::no_links(&root, &root)?;
     Ok(root)
 }
 
@@ -45,7 +45,7 @@ pub fn default_root() -> Result<PathBuf> {
     if !home.is_dir() {
         return Err("用户目录必须是目录".into());
     }
-    omp::no_links(&home, &home)?;
+    platform::no_links(&home, &home)?;
     Ok(home)
 }
 
@@ -191,7 +191,7 @@ pub fn scan_mcp(root: &Path) -> Result<Vec<McpView>> {
         if !paths.insert(source.path.clone()) || !source.path.is_file() {
             continue;
         }
-        omp::no_links(
+        platform::no_links(
             &source.path,
             source.path.parent().ok_or("MCP 来源路径无效")?,
         )?;
@@ -215,7 +215,7 @@ pub fn scan_mcp(root: &Path) -> Result<Vec<McpView>> {
                 if seen.insert(name.clone()) {
                     result.push(McpView {
                         name: name.clone(),
-                        config: omp::redacted_mcp(config),
+                        config: platform::redacted_mcp(config),
                         source: format!("{} · {}", source.label, source.path.display()),
                         enabled: !disabled.contains(name.as_str())
                             && (enabled.contains(name.as_str())
@@ -289,7 +289,7 @@ pub fn scan_skills(root: &Path) -> Result<Vec<SkillView>> {
         if !seen_paths.insert(source.path.clone()) || !source.path.is_dir() {
             continue;
         }
-        omp::no_links(
+        platform::no_links(
             &source.path,
             source.path.parent().ok_or("技能来源路径无效")?,
         )?;
@@ -313,7 +313,7 @@ pub fn scan_skills(root: &Path) -> Result<Vec<SkillView>> {
             {
                 continue;
             }
-            let Ok((name, description)) = omp::skill_metadata(&skill_file) else {
+            let Ok((name, description)) = platform::skill_metadata(&skill_file) else {
                 continue;
             };
             if directory.file_name().and_then(|value| value.to_str()) != Some(name.as_str()) {
@@ -352,7 +352,7 @@ pub fn is_installation_target(root: &Path, path: &Path) -> bool {
         return false;
     };
     if !path.is_absolute()
-        || !omp::valid_skill_name(
+        || !platform::valid_skill_name(
             path.file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or(""),
@@ -370,7 +370,7 @@ pub fn is_installation_target(root: &Path, path: &Path) -> bool {
     let Ok(canonical_existing) = fs::canonicalize(existing) else {
         return false;
     };
-    if omp::no_links(&canonical_existing, &canonical_root).is_err() {
+    if platform::no_links(&canonical_existing, &canonical_root).is_err() {
         return false;
     }
     match fs::canonicalize(parent) {
