@@ -3,23 +3,17 @@
 #[cfg(test)]
 use crate::usage::prices;
 use crate::usage::{
-    collect_jsonl, modified_millis, now_millis, rfc3339_millis, AgentUsageAdapter, RawUsage,
-    Totals, UsageRange, LAST_SUCCESSFUL_SYNC,
+    collect_jsonl, modified_millis, rfc3339_millis, AgentUsageAdapter, SourceScan, UsageRecord,
 };
-use crate::{platform, pricing::Pricing};
+use crate::platform;
 use serde::Serialize;
-use std::{
-    collections::{BTreeMap, HashSet},
-    env, fs,
-    path::PathBuf,
-    sync::atomic::Ordering,
-};
+use std::{collections::HashSet, env, fs, path::PathBuf};
 
 /// Claude Code CLI writes one JSONL transcript per session under
 /// `$CLAUDE_CONFIG_DIR/projects/<project>/*.jsonl` (default config root
 /// `~/.claude`); every API response lands as an assistant line carrying raw
-/// token usage, so there is no CLI sync step — sync and read both scan the
-/// files and only the reported sync time differs.
+/// token usage, so there is no CLI sync step — scanning feeds the archive,
+/// which deduplicates the copies that retries and resumes produce.
 pub(crate) struct ClaudeCodeUsageAdapter {
     projects_dir: PathBuf,
 }
@@ -56,10 +50,8 @@ impl ClaudeCodeUsageAdapter {
         Ok(files)
     }
 
-    fn read_usage(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
-        let mut totals = Totals::default();
-        let mut models: BTreeMap<(String, String), Totals> = BTreeMap::new();
-        let mut trend: BTreeMap<i64, (i64, i64)> = BTreeMap::new();
+    fn scan_usage(&self, since: i64) -> platform::Result<SourceScan> {
+        let mut records = Vec::new();
         // Retries, --resume and session forks rewrite the same API response
         // into several lines; message id plus request id identifies one.
         let mut seen: HashSet<(String, String)> = HashSet::new();
@@ -69,9 +61,9 @@ impl ClaudeCodeUsageAdapter {
             if let Some(value) = modified {
                 synced_at = synced_at.max(value);
             }
-            // A transcript last written before the cutoff cannot contain
-            // newer entries, so it is skipped without parsing.
-            if modified.is_some_and(|value| value < range.cutoff) {
+            // A transcript last written before the archive's high-water mark
+            // cannot hold a newer record, so it is skipped without parsing.
+            if modified.is_some_and(|value| value < since) {
                 continue;
             }
             let contents = fs::read_to_string(&file)
@@ -118,11 +110,6 @@ impl ClaudeCodeUsageAdapter {
                 else {
                     continue;
                 };
-                if timestamp < range.cutoff
-                    || range.end_exclusive.is_some_and(|end| timestamp >= end)
-                {
-                    continue;
-                }
                 let id = message
                     .get("id")
                     .and_then(serde_json::Value::as_str)
@@ -134,55 +121,35 @@ impl ClaudeCodeUsageAdapter {
                 if !id.is_empty() && !seen.insert((id.to_owned(), request.to_owned())) {
                     continue;
                 }
-                // Transcripts only name the model; routed models (GLM behind
-                // Claude Code) resolve to their listed provider to price.
-                let provider = prices.primary_provider(model).unwrap_or("anthropic");
-                let cost = prices.cost(provider, model, input, read, write, output);
-                let model_totals = models
-                    .entry((provider.to_owned(), model.to_owned()))
-                    .or_default();
-                for item in [&mut totals, model_totals] {
-                    item.requests += 1;
-                    item.total_tokens += input + output + write + read;
-                    item.input_tokens += input;
-                    item.output_tokens += output;
-                    item.cache_read_tokens += read;
-                    if let Some(cost) = cost {
-                        item.cost += cost;
+                records.push(UsageRecord {
+                    // The provider stays empty: transcripts only name the
+                    // model, and routed models (GLM behind Claude Code) are
+                    // attributed from the catalog at query time.
+                    provider: String::new(),
+                    external_id: if id.is_empty() {
+                        // Transcripts without a message id fall back to the
+                        // response's content as its identity.
+                        format!("{timestamp}\u{1}{model}\u{1}{input}\u{1}{output}\u{1}{write}\u{1}{read}")
                     } else {
-                        item.unpriced_requests += 1;
-                    }
-                }
-                let bucket = timestamp.div_euclid(range.bucket_ms) * range.bucket_ms;
-                let point = trend.entry(bucket).or_default();
-                point.0 += 1;
-                point.1 += input + output + write + read;
+                        format!("{id}\u{1}{request}")
+                    },
+                    model: model.to_owned(),
+                    timestamp,
+                    input_tokens: input,
+                    output_tokens: output,
+                    cache_read_tokens: read,
+                    cache_write_tokens: write,
+                    total_tokens: input + output + write + read,
+                });
             }
         }
-        Ok(RawUsage {
-            totals,
-            models,
-            trend,
-            synced_at,
-        })
+        Ok(SourceScan { records, synced_at })
     }
 }
 
 impl AgentUsageAdapter for ClaudeCodeUsageAdapter {
-    fn sync(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
-        let mut raw = self.read_usage(range, prices)?;
-        let now = now_millis()?;
-        LAST_SUCCESSFUL_SYNC.store(now, Ordering::Relaxed);
-        raw.synced_at = now;
-        Ok(raw)
-    }
-
-    fn read(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
-        let mut raw = self.read_usage(range, prices)?;
-        raw.synced_at = raw
-            .synced_at
-            .max(LAST_SUCCESSFUL_SYNC.load(Ordering::Relaxed));
-        Ok(raw)
+    fn scan(&self, since: i64) -> platform::Result<SourceScan> {
+        self.scan_usage(since)
     }
 }
 
@@ -324,9 +291,20 @@ mod tests {
             ),
         )
         .unwrap();
-        let adapter = ClaudeCodeUsageAdapter::from_base(root).unwrap();
-        let range = UsageRange::parse(&format!("custom:{start}:{end}"), end + 1).unwrap();
-        let stats = adapter.read_usage(range, &prices()).unwrap().finish();
+        let adapter = ClaudeCodeUsageAdapter::from_base(root.clone()).unwrap();
+        let store = crate::usage::store::UsageStore::new(&root).unwrap();
+        let scan = adapter.scan(0).unwrap();
+        store.ingest("claude-code", &scan.records).unwrap();
+        // A second scan of the unchanged files archives nothing new: the
+        // (message id, request id) identity dedupes across syncs too.
+        let rescan = adapter.scan(0).unwrap();
+        assert_eq!(store.ingest("claude-code", &rescan.records).unwrap(), 0);
+        let range =
+            crate::usage::UsageRange::parse(&format!("custom:{start}:{end}"), end + 1).unwrap();
+        let stats = store
+            .query(Some("claude-code"), range, &prices())
+            .unwrap()
+            .finish();
         assert_eq!(stats.total_requests, 4);
         assert_eq!(stats.input_tokens, 6110);
         assert_eq!(stats.output_tokens, 1270);

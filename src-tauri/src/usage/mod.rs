@@ -1,7 +1,14 @@
-// Agent usage collection: shared aggregation types, the adapter contract and
-// the registry. One file per source lives beside it (`omp.rs`, `claude.rs`,
-// `codex.rs`); a new agent registers in [`AGENT_IDS`] and implements
-// [`AgentUsageAdapter`], nothing else.
+// Agent usage collection: shared aggregation types, the adapter contract,
+// the registry and the AMC-owned archive. One source file lives beside it
+// (`omp.rs`, `claude.rs`, `codex.rs`); a new agent registers in
+// [`AGENT_IDS`] and implements [`AgentUsageAdapter`], nothing else.
+//
+// Adapters only scan: they turn the source's raw records into
+// [`store::UsageRecord`]s, which are ingested into the archive
+// ([`store::UsageStore`], `<data dir>/usage.sqlite3`) keyed by
+// `(source, external_id)`. Every read aggregates the archive over the
+// requested range and prices it with the current catalog, so deleting the
+// sources never takes already-seen statistics with it.
 use crate::{platform, pricing::Pricing};
 use serde::Serialize;
 use std::{
@@ -12,12 +19,45 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-trait AgentUsageAdapter {
-    fn sync(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage>;
-    fn read(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage>;
+/// One raw usage record as emitted by a source scan. `input_tokens` counts
+/// uncached prompt tokens; cache reads and writes are separate buckets.
+/// `provider` carries the source-owned value (OMP records one); empty means
+/// the provider is resolved from the pricing catalog when queried, so a
+/// later catalog entry can still price and attribute the record.
+pub(super) struct UsageRecord {
+    pub external_id: String,
+    pub provider: String,
+    pub model: String,
+    pub timestamp: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub total_tokens: i64,
+}
+
+/// What one source scan produced: raw records destined for the archive plus
+/// the source's own notion of when it was last written.
+pub(super) struct SourceScan {
+    pub records: Vec<UsageRecord>,
+    pub synced_at: i64,
+}
+
+pub(super) trait AgentUsageAdapter {
+    /// Optional CLI refresh before scanning; OMP runs `omp stats --summary`
+    /// so its stats database reflects the newest sessions.
+    fn sync_source(&self) -> platform::Result<()> {
+        Ok(())
+    }
+
+    /// Scans records written at or after `since` (0 scans everything).
+    /// Overlap between scans is harmless: the archive deduplicates by the
+    /// source's stable record identity.
+    fn scan(&self, since: i64) -> platform::Result<SourceScan>;
 }
 
 mod agents;
+mod store;
 
 pub(crate) use agents::claude::{claude_code_status, ClaudeCodeStatus};
 pub(crate) use agents::codex::{codex_status, CodexStatus};
@@ -79,16 +119,6 @@ impl Totals {
             (self.cache_read_tokens as f64 / prompt as f64).clamp(0.0, 1.0)
         }
     }
-
-    fn absorb(&mut self, other: &Totals) {
-        self.requests += other.requests;
-        self.total_tokens += other.total_tokens;
-        self.input_tokens += other.input_tokens;
-        self.output_tokens += other.output_tokens;
-        self.cache_read_tokens += other.cache_read_tokens;
-        self.cost += other.cost;
-        self.unpriced_requests += other.unpriced_requests;
-    }
 }
 
 /// Aggregatable usage without derived fields; [`RawUsage::finish`] renders it.
@@ -136,26 +166,22 @@ impl RawUsage {
             synced_at: self.synced_at,
         }
     }
-
-    fn merge(&mut self, other: RawUsage) {
-        self.totals.absorb(&other.totals);
-        for (key, totals) in other.models {
-            self.models.entry(key).or_default().absorb(&totals);
-        }
-        for (bucket, (requests, total_tokens)) in other.trend {
-            let point = self.trend.entry(bucket).or_default();
-            point.0 += requests;
-            point.1 += total_tokens;
-        }
-        self.synced_at = self.synced_at.max(other.synced_at);
-    }
 }
 
-fn merge_into(merged: &mut Option<RawUsage>, raw: RawUsage) {
-    match merged {
-        Some(merged) => merged.merge(raw),
-        None => *merged = Some(raw),
-    }
+/// Resolves the provider for records whose source names only a model (the
+/// Claude Code and Codex transcripts). Resolving at query time keeps later
+/// catalog entries able to price and re-attribute archived records; the
+/// fallback is the CLI vendor, as before.
+fn resolve_provider(source: &str, model: &str, prices: &Pricing) -> String {
+    let fallback = match source {
+        "claude-code" => "anthropic",
+        "codex" => "openai",
+        _ => source,
+    };
+    prices
+        .primary_provider(model)
+        .unwrap_or(fallback)
+        .to_owned()
 }
 
 #[derive(Clone, Copy)]
@@ -279,68 +305,163 @@ fn adapter_for(agent_id: &str) -> platform::Result<Box<dyn AgentUsageAdapter>> {
     }
 }
 
-fn with_adapter(
+/// Read-path construction: unlike [`adapter_for`] it does not require the
+/// OMP executable, because reading may be served from the archive alone
+/// once the CLI (or its data) is gone.
+fn adapter_for_read(agent_id: &str) -> platform::Result<Box<dyn AgentUsageAdapter>> {
+    use agents::{claude::ClaudeCodeUsageAdapter, codex::CodexUsageAdapter, omp::OmpUsageAdapter};
+    match agent_id {
+        "omp" => Ok(Box::new(OmpUsageAdapter::from_environment()?)),
+        "claude-code" => Ok(Box::new(ClaudeCodeUsageAdapter::from_environment()?)),
+        "codex" => Ok(Box::new(CodexUsageAdapter::from_environment()?)),
+        _ => Err(format!("不支持的 Agent 用量来源: {agent_id}")),
+    }
+}
+
+/// Ingests one source's newest records into the archive; returns the scan's
+/// own last-write time so callers can report `synced_at`.
+fn ingest_source(
+    store: &store::UsageStore,
     agent_id: &str,
+    adapter: &dyn AgentUsageAdapter,
+) -> platform::Result<i64> {
+    let scan = adapter.scan(store.high_water(agent_id)?)?;
+    store.ingest(agent_id, &scan.records)?;
+    Ok(scan.synced_at)
+}
+
+/// A source that cannot be scanned only fails the request when the archive
+/// holds nothing for it; otherwise the archived statistics survive the
+/// cleanup that broke the source.
+fn require_archive(
+    store: &store::UsageStore,
+    agent_id: &str,
+    error: String,
+) -> platform::Result<()> {
+    if store.has_records(Some(agent_id))? {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+/// Syncs one agent: refresh its source (OMP CLI), ingest everything new,
+/// then aggregate the archive over the range.
+pub fn sync_agent_usage(
+    agent_id: &str,
+    range: &str,
+    data_dir: &Path,
     price_file: &Path,
-    operation: impl FnOnce(&dyn AgentUsageAdapter, &Pricing) -> platform::Result<RawUsage>,
 ) -> platform::Result<UsageStats> {
-    let raw = operation(adapter_for(agent_id)?.as_ref(), &Pricing::load(price_file)?)?;
+    let range = UsageRange::parse(range, now_millis()?)?;
+    let prices = Pricing::load(price_file)?;
+    let store = store::UsageStore::new(data_dir)?;
+    let adapter = adapter_for(agent_id)?;
+    adapter.sync_source()?;
+    let synced_at = ingest_source(&store, agent_id, adapter.as_ref())?;
+    let now = now_millis()?;
+    LAST_SUCCESSFUL_SYNC.store(now, std::sync::atomic::Ordering::Relaxed);
+    let mut raw = store.query(Some(agent_id), range, &prices)?;
+    raw.synced_at = now.max(synced_at);
     Ok(raw.finish())
 }
 
-/// Agents that cannot provide usage (e.g. not installed) are skipped as long
-/// as at least one source succeeds; only a total failure is reported.
-fn collect(
+/// Reads one agent's usage: ingest what is new when the source still
+/// exists, then aggregate the archive — which keeps answering after the
+/// agent cleaned up its files.
+pub fn get_agent_usage(
+    agent_id: &str,
+    range: &str,
+    data_dir: &Path,
     price_file: &Path,
-    operation: impl Fn(&dyn AgentUsageAdapter, &Pricing) -> platform::Result<RawUsage>,
 ) -> platform::Result<UsageStats> {
+    let range = UsageRange::parse(range, now_millis()?)?;
     let prices = Pricing::load(price_file)?;
-    let mut merged: Option<RawUsage> = None;
+    let store = store::UsageStore::new(data_dir)?;
+    let mut synced_at = match adapter_for_read(agent_id) {
+        Ok(adapter) => match ingest_source(&store, agent_id, adapter.as_ref()) {
+            Ok(scan_synced_at) => scan_synced_at,
+            Err(error) => {
+                require_archive(&store, agent_id, error)?;
+                0
+            }
+        },
+        Err(error) => {
+            require_archive(&store, agent_id, error)?;
+            0
+        }
+    };
+    let mut raw = store.query(Some(agent_id), range, &prices)?;
+    synced_at = synced_at.max(LAST_SUCCESSFUL_SYNC.load(std::sync::atomic::Ordering::Relaxed));
+    raw.synced_at = synced_at;
+    Ok(raw.finish())
+}
+
+/// Syncs every agent; sources that fail (e.g. not installed) are skipped as
+/// long as the archive can still answer, and only a fully empty result is
+/// reported as an error.
+pub fn sync_agents_usage(
+    range: &str,
+    data_dir: &Path,
+    price_file: &Path,
+) -> platform::Result<UsageStats> {
+    let range = UsageRange::parse(range, now_millis()?)?;
+    let prices = Pricing::load(price_file)?;
+    let store = store::UsageStore::new(data_dir)?;
     let mut first_error: Option<String> = None;
+    let mut synced_any = false;
     for agent_id in AGENT_IDS {
-        match adapter_for(agent_id).and_then(|adapter| operation(adapter.as_ref(), &prices)) {
-            Ok(raw) => merge_into(&mut merged, raw),
+        let result = adapter_for(agent_id)
+            .and_then(|adapter| {
+                adapter.sync_source()?;
+                ingest_source(&store, agent_id, adapter.as_ref())
+            })
+            .map(|_| ());
+        match result {
+            Ok(()) => synced_any = true,
             Err(error) => {
                 let _ = first_error.get_or_insert(error);
             }
         }
     }
-    match merged {
-        Some(raw) => Ok(raw.finish()),
-        None => Err(first_error.unwrap_or_else(|| "没有可统计的 Agent 用量来源".to_owned())),
+    if !synced_any && !store.has_records(None)? {
+        return Err(first_error.unwrap_or_else(|| "没有可统计的 Agent 用量来源".to_owned()));
     }
+    let now = now_millis()?;
+    if synced_any {
+        LAST_SUCCESSFUL_SYNC.store(now, std::sync::atomic::Ordering::Relaxed);
+    }
+    let mut raw = store.query(None, range, &prices)?;
+    raw.synced_at = if synced_any {
+        now
+    } else {
+        LAST_SUCCESSFUL_SYNC.load(std::sync::atomic::Ordering::Relaxed)
+    };
+    Ok(raw.finish())
 }
 
-pub fn sync_agent_usage(
-    agent_id: &str,
+/// Reads every agent's usage; a source that cannot be scanned only fails
+/// the request when the archive holds nothing for it.
+pub fn get_agents_usage(
     range: &str,
+    data_dir: &Path,
     price_file: &Path,
 ) -> platform::Result<UsageStats> {
     let range = UsageRange::parse(range, now_millis()?)?;
-    with_adapter(agent_id, price_file, |adapter, prices| {
-        adapter.sync(range, prices)
-    })
-}
-
-pub fn get_agent_usage(
-    agent_id: &str,
-    range: &str,
-    price_file: &Path,
-) -> platform::Result<UsageStats> {
-    let range = UsageRange::parse(range, now_millis()?)?;
-    with_adapter(agent_id, price_file, |adapter, prices| {
-        adapter.read(range, prices)
-    })
-}
-
-pub fn sync_agents_usage(range: &str, price_file: &Path) -> platform::Result<UsageStats> {
-    let range = UsageRange::parse(range, now_millis()?)?;
-    collect(price_file, |adapter, prices| adapter.sync(range, prices))
-}
-
-pub fn get_agents_usage(range: &str, price_file: &Path) -> platform::Result<UsageStats> {
-    let range = UsageRange::parse(range, now_millis()?)?;
-    collect(price_file, |adapter, prices| adapter.read(range, prices))
+    let prices = Pricing::load(price_file)?;
+    let store = store::UsageStore::new(data_dir)?;
+    let mut synced_at = 0;
+    for agent_id in AGENT_IDS {
+        match adapter_for_read(agent_id)
+            .and_then(|adapter| ingest_source(&store, agent_id, adapter.as_ref()))
+        {
+            Ok(scan_synced_at) => synced_at = synced_at.max(scan_synced_at),
+            Err(error) => require_archive(&store, agent_id, error)?,
+        }
+    }
+    let mut raw = store.query(None, range, &prices)?;
+    raw.synced_at = synced_at.max(LAST_SUCCESSFUL_SYNC.load(std::sync::atomic::Ordering::Relaxed));
+    Ok(raw.finish())
 }
 
 #[cfg(test)]
@@ -355,6 +476,7 @@ pub(crate) fn prices() -> Pricing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
 
     #[test]
     fn ranges_are_milliseconds_and_all_includes_legacy_epoch_entries() {
@@ -401,5 +523,127 @@ mod tests {
                 "{value}"
             );
         }
+    }
+
+    fn archived_record(
+        external_id: &str,
+        provider: &str,
+        model: &str,
+        timestamp: i64,
+        total_tokens: i64,
+    ) -> UsageRecord {
+        UsageRecord {
+            external_id: external_id.to_owned(),
+            provider: provider.to_owned(),
+            model: model.to_owned(),
+            timestamp,
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_tokens: 3,
+            cache_write_tokens: 0,
+            total_tokens,
+        }
+    }
+
+    #[test]
+    fn the_archive_merges_every_source_in_one_query_per_model() {
+        let root = env::temp_dir().join(format!("amc-archive-merge-{}", uuid::Uuid::new_v4()));
+        let store = store::UsageStore::new(&root).unwrap();
+        let timestamp = 1_700_000_000_000;
+        store
+            .ingest(
+                "omp",
+                &[archived_record(
+                    "omp-1",
+                    "zhipu-coding-plan",
+                    "glm-5.3",
+                    timestamp,
+                    6,
+                )],
+            )
+            .unwrap();
+        // Codex names no provider; the catalog resolves it at query time.
+        store
+            .ingest(
+                "codex",
+                &[archived_record(
+                    "codex-1",
+                    "",
+                    "gpt-6-sol",
+                    timestamp,
+                    40,
+                )],
+            )
+            .unwrap();
+        let prices = prices();
+        let all = store
+            .query(
+                None,
+                UsageRange::parse("all", timestamp + 1).unwrap(),
+                &prices,
+            )
+            .unwrap()
+            .finish();
+        assert_eq!(all.total_requests, 2);
+        assert_eq!(all.total_tokens, 46);
+        assert_eq!(all.by_model.len(), 2);
+        assert_eq!(all.by_model[0].provider, "openai");
+        assert_eq!(all.by_model[0].model, "gpt-6-sol");
+        assert_eq!(all.by_model[1].provider, "zhipu-coding-plan");
+        assert_eq!(all.trend.len(), 1);
+        assert_eq!(all.trend[0].requests, 2);
+        // A single-agent view filters the archive by source.
+        let omp = store
+            .query(
+                Some("omp"),
+                UsageRange::parse("all", timestamp + 1).unwrap(),
+                &prices,
+            )
+            .unwrap()
+            .finish();
+        assert_eq!(omp.total_requests, 1);
+        assert_eq!(omp.total_tokens, 6);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // The point of the archive: once a record is in, deleting the agent's
+    // own files must not take the statistics with it. Uses the public read
+    // path against a Codex home that is removed between the two reads.
+    #[test]
+    fn usage_survives_the_agent_deleting_its_source_files() {
+        let home = env::temp_dir().join(format!("amc-survive-src-{}", uuid::Uuid::new_v4()));
+        let data_dir = env::temp_dir().join(format!("amc-survive-data-{}", uuid::Uuid::new_v4()));
+        let day = home.join("sessions").join("2026").join("07").join("13");
+        fs::create_dir_all(&day).unwrap();
+        fs::write(
+            day.join("rollout.jsonl"),
+            r#"{"timestamp":"2026-07-13T08:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":50},"total_token_usage":{"input_tokens":1000,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":50}}}}"#,
+        )
+        .unwrap();
+        let price_file = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../model-pricing.json"
+        ));
+        // Only this test touches CODEX_HOME; the adapter tests construct
+        // their adapters from explicit paths.
+        env::set_var("CODEX_HOME", &home);
+        let first = get_agent_usage("codex", "all", &data_dir, price_file).unwrap();
+        assert_eq!(first.total_requests, 1);
+        assert_eq!(first.total_tokens, 1050);
+        fs::remove_dir_all(&home).unwrap();
+        let second = get_agent_usage("codex", "all", &data_dir, price_file).unwrap();
+        assert_eq!(second.total_requests, 1);
+        assert_eq!(second.total_tokens, 1050);
+        // A fresh archive without the source is still an error.
+        let empty_dir =
+            env::temp_dir().join(format!("amc-survive-empty-{}", uuid::Uuid::new_v4()));
+        let error = match get_agent_usage("codex", "all", &empty_dir, price_file) {
+            Err(error) => error,
+            Ok(_) => panic!("没有源也没有归档时应当报错"),
+        };
+        assert!(error.contains("找不到 Codex"), "{error}");
+        env::remove_var("CODEX_HOME");
+        fs::remove_dir_all(data_dir).unwrap();
+        fs::remove_dir_all(empty_dir).unwrap();
     }
 }

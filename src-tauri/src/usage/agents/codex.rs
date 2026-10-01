@@ -3,17 +3,11 @@
 #[cfg(test)]
 use crate::usage::prices;
 use crate::usage::{
-    collect_jsonl, modified_millis, now_millis, rfc3339_millis, AgentUsageAdapter, RawUsage,
-    Totals, UsageRange, LAST_SUCCESSFUL_SYNC,
+    collect_jsonl, modified_millis, rfc3339_millis, AgentUsageAdapter, SourceScan, UsageRecord,
 };
-use crate::{platform, pricing::Pricing};
+use crate::platform;
 use serde::Serialize;
-use std::{
-    collections::{BTreeMap, HashSet},
-    env, fs,
-    path::PathBuf,
-    sync::atomic::Ordering,
-};
+use std::{collections::HashSet, env, fs, path::PathBuf};
 
 /// Raw token buckets of one Codex turn. `input` counts cached and
 /// cache-written tokens (the CLI's own `non_cached_input` subtracts them
@@ -39,8 +33,8 @@ fn codex_tokens(value: &serde_json::Value) -> CodexTokens {
 /// Codex CLI appends one rollout JSONL per session under
 /// `$CODEX_HOME/sessions/YYYY/MM/DD/` (default config root `~/.codex`).
 /// Every completed turn emits an `event_msg` of type `token_count` with the
-/// turn's `last_token_usage`, so there is no CLI sync step — sync and read
-/// both scan the files and only the reported sync time differs.
+/// turn's `last_token_usage`, so there is no CLI sync step — scanning feeds
+/// the archive, which deduplicates the copies that forks produce.
 pub(crate) struct CodexUsageAdapter {
     sessions_dir: PathBuf,
 }
@@ -75,12 +69,10 @@ impl CodexUsageAdapter {
         Ok(files)
     }
 
-    fn read_usage(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
-        let mut totals = Totals::default();
-        let mut models: BTreeMap<(String, String), Totals> = BTreeMap::new();
-        let mut trend: BTreeMap<i64, (i64, i64)> = BTreeMap::new();
+    fn scan_usage(&self, since: i64) -> platform::Result<SourceScan> {
+        let mut records = Vec::new();
         let mut synced_at = 0i64;
-        // An event is counted once across every file: copied fork prefixes
+        // An event is archived once across every file: copied fork prefixes
         // repeat the parent's `(turn_id, payload)` pairs verbatim.
         let mut seen_events: HashSet<String> = HashSet::new();
         for file in self.transcripts()? {
@@ -88,9 +80,9 @@ impl CodexUsageAdapter {
             if let Some(value) = modified {
                 synced_at = synced_at.max(value);
             }
-            // A rollout last written before the cutoff cannot contain
-            // newer entries, so it is skipped without parsing.
-            if modified.is_some_and(|value| value < range.cutoff) {
+            // A rollout last written before the archive's high-water mark
+            // cannot hold a newer record, so it is skipped without parsing.
+            if modified.is_some_and(|value| value < since) {
                 continue;
             }
             let contents = fs::read_to_string(&file)
@@ -254,26 +246,25 @@ impl CodexUsageAdapter {
                             continue;
                         }
                         let payload_key = info.to_string();
-                        // A turn's events are counted once across every file:
-                        // copied fork prefixes repeat the parent's events
-                        // verbatim (`turn_id` and payload both survive the
-                        // copy), while genuine turns — including a parent's
-                        // own post-fork turns — carry their own id or values.
-                        // The payload is part of the key because one turn can
-                        // contain several API responses, each with its own
-                        // `last_token_usage` delta under the same `turn_id`.
-                        let seen_event = current_turn.as_ref().is_some_and(|turn_id| {
-                            !seen_events.insert(format!("{turn_id}\u{1}{payload_key}"))
-                        });
+                        // A turn's events are archived once across every
+                        // file: copied fork prefixes repeat the parent's
+                        // events verbatim (`turn_id` and payload both survive
+                        // the copy), while genuine turns — including a
+                        // parent's own post-fork turns — carry their own id
+                        // or values. The payload is part of the key because
+                        // one turn can contain several API responses, each
+                        // with its own `last_token_usage` delta under the
+                        // same `turn_id`. The key doubles as the archive
+                        // identity; rollouts without turn contexts fall back
+                        // to the event's own content below.
+                        let event_key = current_turn
+                            .as_ref()
+                            .map(|turn_id| format!("{turn_id}\u{1}{payload_key}"));
+                        let seen_event =
+                            event_key
+                                .as_ref()
+                                .is_some_and(|key| !seen_events.insert(key.clone()));
                         if seen_event {
-                            continue;
-                        }
-                        // The baseline above must advance even for snapshots
-                        // outside the range, or the next cumulative-only
-                        // event would absorb the pre-cutoff usage.
-                        if timestamp < range.cutoff
-                            || range.end_exclusive.is_some_and(|end| timestamp >= end)
-                        {
                             continue;
                         }
                         let turn = CodexTokens {
@@ -290,66 +281,43 @@ impl CodexUsageAdapter {
                         } else {
                             model.as_str()
                         };
-                        // Transcripts only name the model; routed models
-                        // resolve to their listed provider to price.
-                        let provider = prices.primary_provider(model).unwrap_or("openai");
                         let input = (turn.input - turn.cached - turn.write).max(0);
-                        let cost = prices.cost(
-                            provider,
-                            model,
-                            input,
-                            turn.cached,
-                            turn.write,
-                            turn.output,
-                        );
-                        let model_totals = models
-                            .entry((provider.to_owned(), model.to_owned()))
-                            .or_default();
-                        for item in [&mut totals, model_totals] {
-                            item.requests += 1;
-                            item.total_tokens += input + turn.cached + turn.write + turn.output;
-                            item.input_tokens += input;
-                            item.output_tokens += turn.output;
-                            item.cache_read_tokens += turn.cached;
-                            if let Some(cost) = cost {
-                                item.cost += cost;
-                            } else {
-                                item.unpriced_requests += 1;
-                            }
-                        }
-                        let bucket = timestamp.div_euclid(range.bucket_ms) * range.bucket_ms;
-                        let point = trend.entry(bucket).or_default();
-                        point.0 += 1;
-                        point.1 += input + turn.cached + turn.write + turn.output;
+                        records.push(UsageRecord {
+                            // The provider stays empty: rollouts only name
+                            // the model; the catalog attributes it (and
+                            // prices it) at query time.
+                            provider: String::new(),
+                            external_id: event_key.unwrap_or_else(|| {
+                                // Old rollouts without turn contexts were
+                                // never deduplicated, so their identity
+                                // includes the file to keep distinct
+                                // occurrences distinct while staying
+                                // idempotent across rescans.
+                                format!(
+                                    "{}\u{1}{thread_id}\u{1}{timestamp}\u{1}{payload_key}",
+                                    file.display()
+                                )
+                            }),
+                            model: model.to_owned(),
+                            timestamp,
+                            input_tokens: input,
+                            output_tokens: turn.output,
+                            cache_read_tokens: turn.cached,
+                            cache_write_tokens: turn.write,
+                            total_tokens: input + turn.cached + turn.write + turn.output,
+                        });
                     }
                     _ => {}
                 }
             }
         }
-        Ok(RawUsage {
-            totals,
-            models,
-            trend,
-            synced_at,
-        })
+        Ok(SourceScan { records, synced_at })
     }
 }
 
 impl AgentUsageAdapter for CodexUsageAdapter {
-    fn sync(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
-        let mut raw = self.read_usage(range, prices)?;
-        let now = now_millis()?;
-        LAST_SUCCESSFUL_SYNC.store(now, Ordering::Relaxed);
-        raw.synced_at = now;
-        Ok(raw)
-    }
-
-    fn read(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
-        let mut raw = self.read_usage(range, prices)?;
-        raw.synced_at = raw
-            .synced_at
-            .max(LAST_SUCCESSFUL_SYNC.load(Ordering::Relaxed));
-        Ok(raw)
+    fn scan(&self, since: i64) -> platform::Result<SourceScan> {
+        self.scan_usage(since)
     }
 }
 
@@ -374,6 +342,28 @@ pub fn codex_status() -> CodexStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Scans the adapter's source into a fresh archive under `root` and
+    // aggregates the requested range — the exact production flow.
+    fn archive_and_query(
+        adapter: &CodexUsageAdapter,
+        root: &std::path::Path,
+        range: &str,
+        prices: &crate::pricing::Pricing,
+    ) -> crate::usage::UsageStats {
+        let store = crate::usage::store::UsageStore::new(root).unwrap();
+        let scan = adapter.scan(0).unwrap();
+        store.ingest("codex", &scan.records).unwrap();
+        store
+            .query(
+                Some("codex"),
+                crate::usage::UsageRange::parse(range, crate::usage::now_millis().unwrap())
+                    .unwrap(),
+                prices,
+            )
+            .unwrap()
+            .finish()
+    }
 
     #[test]
     fn codex_rollouts_attribute_turns_and_fall_back_to_cumulative_deltas() {
@@ -458,10 +448,14 @@ mod tests {
             token_count(stamp(6000), &usage((30, 0, 0, 6), (30, 0, 0, 6))),
         )
         .unwrap();
-        let adapter = CodexUsageAdapter::from_base(root).unwrap();
-        let range = UsageRange::parse(&format!("custom:{start}:{end}"), end + 1).unwrap();
+        let adapter = CodexUsageAdapter::from_base(root.clone()).unwrap();
         let prices = prices();
-        let stats = adapter.read_usage(range, &prices).unwrap().finish();
+        let stats = archive_and_query(
+            &adapter,
+            &root,
+            &format!("custom:{start}:{end}"),
+            &prices,
+        );
         // 6 turns: two gpt-5.6-terra, two glm-5.3 (the switched model keeps
         // pricing following turns), one gpt-5-codex, one unknown-model.
         assert_eq!(stats.total_requests, 6);
@@ -520,7 +514,7 @@ mod tests {
     fn codex_adapter_reports_missing_sessions_directory() {
         let root = env::temp_dir().join(format!("amc-codex-missing-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
-        let error = CodexUsageAdapter::from_base(root).err().unwrap();
+        let error = CodexUsageAdapter::from_base(root.clone()).err().unwrap();
         assert!(error.contains("找不到 Codex 数据目录"), "{error}");
     }
 
@@ -555,13 +549,13 @@ mod tests {
             ),
         ];
         fs::write(day.join("rollout.jsonl"), rollout.join("\n")).unwrap();
-        let adapter = CodexUsageAdapter::from_base(root).unwrap();
-        let range = UsageRange::parse(
+        let adapter = CodexUsageAdapter::from_base(root.clone()).unwrap();
+        let stats = archive_and_query(
+            &adapter,
+            &root,
             &format!("custom:0:{}", start + 86_400_000),
-            start + 86_400_000,
-        )
-        .unwrap();
-        let stats = adapter.read_usage(range, &prices()).unwrap().finish();
+            &prices(),
+        );
         assert_eq!(stats.total_requests, 2);
         // Each turn counts its `last_token_usage`; the re-broadcast adds
         // nothing.
@@ -609,13 +603,13 @@ mod tests {
             token_count(stamp(2000), (200, 0, 0, 20), (50_200, 40_000, 0, 3_020)),
         ];
         fs::write(day.join("rollout.jsonl"), rollout.join("\n")).unwrap();
-        let adapter = CodexUsageAdapter::from_base(root).unwrap();
-        let range = UsageRange::parse(
+        let adapter = CodexUsageAdapter::from_base(root.clone()).unwrap();
+        let stats = archive_and_query(
+            &adapter,
+            &root,
             &format!("custom:{start}:{}", start + 86_400_000),
-            start + 86_400_000,
-        )
-        .unwrap();
-        let stats = adapter.read_usage(range, &prices()).unwrap().finish();
+            &prices(),
+        );
         assert_eq!(stats.total_requests, 2);
         assert_eq!(stats.input_tokens, 500 + 200);
         assert_eq!(stats.cache_read_tokens, 500);
@@ -710,13 +704,13 @@ mod tests {
             .join("\n"),
         )
         .unwrap();
-        let adapter = CodexUsageAdapter::from_base(root).unwrap();
-        let range = UsageRange::parse(
+        let adapter = CodexUsageAdapter::from_base(root.clone()).unwrap();
+        let stats = archive_and_query(
+            &adapter,
+            &root,
             &format!("custom:{start}:{}", start + 86_400_000),
-            start + 86_400_000,
-        )
-        .unwrap();
-        let stats = adapter.read_usage(range, &prices()).unwrap().finish();
+            &prices(),
+        );
         // The parent's two turns plus the child's own turn; the inherited
         // copy in the child file is skipped.
         assert_eq!(stats.total_requests, 3);
@@ -801,9 +795,8 @@ mod tests {
             .join("\n"),
         )
         .unwrap();
-        let adapter = CodexUsageAdapter::from_base(root).unwrap();
-        let range = UsageRange::parse("24h", now + 1).unwrap();
-        let stats = adapter.read_usage(range, &prices()).unwrap().finish();
+        let adapter = CodexUsageAdapter::from_base(root.clone()).unwrap();
+        let stats = archive_and_query(&adapter, &root, "24h", &prices());
         // Only the child's own turn is in range; the inherited copy must not
         // resurrect the parent's out-of-range turn.
         assert_eq!(stats.total_requests, 1);
@@ -850,13 +843,13 @@ mod tests {
             token_count(stamp(2100), (2_000, 1_000, 0, 100), (12_000, 9_000, 0, 600)),
         ];
         fs::write(day.join("rollout.jsonl"), rollout.join("\n")).unwrap();
-        let adapter = CodexUsageAdapter::from_base(root).unwrap();
-        let range = UsageRange::parse(
+        let adapter = CodexUsageAdapter::from_base(root.clone()).unwrap();
+        let stats = archive_and_query(
+            &adapter,
+            &root,
             &format!("custom:{start}:{}", start + 86_400_000),
-            start + 86_400_000,
-        )
-        .unwrap();
-        let stats = adapter.read_usage(range, &prices()).unwrap().finish();
+            &prices(),
+        );
         assert_eq!(stats.total_requests, 2);
         assert_eq!(stats.input_tokens, 2_000 + 1_000);
         assert_eq!(stats.output_tokens, 500 + 100);
@@ -888,13 +881,13 @@ mod tests {
             totals(stamp(1000), 30_000, 24_000, 700),
         ];
         fs::write(day.join("rollout.jsonl"), rollout.join("\n")).unwrap();
-        let adapter = CodexUsageAdapter::from_base(root).unwrap();
-        let range = UsageRange::parse(
+        let adapter = CodexUsageAdapter::from_base(root.clone()).unwrap();
+        let stats = archive_and_query(
+            &adapter,
+            &root,
             &format!("custom:{start}:{}", start + 86_400_000),
-            start + 86_400_000,
-        )
-        .unwrap();
-        let stats = adapter.read_usage(range, &prices()).unwrap().finish();
+            &prices(),
+        );
         assert_eq!(stats.total_requests, 1);
         // Only the delta across the cutoff: (30_000-12_000, 24_000-9_000, 700-600),
         // of which the uncached input is 18_000 - 15_000.

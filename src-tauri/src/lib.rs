@@ -137,13 +137,10 @@ async fn sync_agent_usage(
     agent_id: String,
     range: String,
 ) -> platform::Result<usage::UsageStats> {
-    let price_file = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join(pricing::FILE_NAME);
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let price_file = data_dir.join(pricing::FILE_NAME);
     tauri::async_runtime::spawn_blocking(move || {
-        usage::sync_agent_usage(&agent_id, &range, &price_file)
+        usage::sync_agent_usage(&agent_id, &range, &data_dir, &price_file)
     })
     .await
     .map_err(|e| format!("后台操作失败: {e}"))?
@@ -155,13 +152,10 @@ async fn get_agent_usage(
     agent_id: String,
     range: String,
 ) -> platform::Result<usage::UsageStats> {
-    let price_file = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join(pricing::FILE_NAME);
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let price_file = data_dir.join(pricing::FILE_NAME);
     tauri::async_runtime::spawn_blocking(move || {
-        usage::get_agent_usage(&agent_id, &range, &price_file)
+        usage::get_agent_usage(&agent_id, &range, &data_dir, &price_file)
     })
     .await
     .map_err(|e| format!("后台操作失败: {e}"))?
@@ -172,14 +166,13 @@ async fn sync_agents_usage(
     app: tauri::AppHandle,
     range: String,
 ) -> platform::Result<usage::UsageStats> {
-    let price_file = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join(pricing::FILE_NAME);
-    tauri::async_runtime::spawn_blocking(move || usage::sync_agents_usage(&range, &price_file))
-        .await
-        .map_err(|e| format!("后台操作失败: {e}"))?
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let price_file = data_dir.join(pricing::FILE_NAME);
+    tauri::async_runtime::spawn_blocking(move || {
+        usage::sync_agents_usage(&range, &data_dir, &price_file)
+    })
+    .await
+    .map_err(|e| format!("后台操作失败: {e}"))?
 }
 
 #[tauri::command]
@@ -187,14 +180,13 @@ async fn get_agents_usage(
     app: tauri::AppHandle,
     range: String,
 ) -> platform::Result<usage::UsageStats> {
-    let price_file = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join(pricing::FILE_NAME);
-    tauri::async_runtime::spawn_blocking(move || usage::get_agents_usage(&range, &price_file))
-        .await
-        .map_err(|e| format!("后台操作失败: {e}"))?
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let price_file = data_dir.join(pricing::FILE_NAME);
+    tauri::async_runtime::spawn_blocking(move || {
+        usage::get_agents_usage(&range, &data_dir, &price_file)
+    })
+    .await
+    .map_err(|e| format!("后台操作失败: {e}"))?
 }
 
 #[tauri::command]

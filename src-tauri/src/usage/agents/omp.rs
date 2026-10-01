@@ -1,17 +1,18 @@
 // OMP usage: the stats.db reader plus the launch-context resolution that
-// locates it (dotenv files, profiles, XDG data migration).
+// locates it (dotenv files, profiles, XDG data migration). OMP owns the
+// per-request `messages` table with a `UNIQUE(session_file, entry_id)` key,
+// which becomes the archive's dedup identity.
 #[cfg(test)]
-use crate::usage::{merge_into, prices};
-use crate::usage::{
-    now_millis, AgentUsageAdapter, RawUsage, Totals, UsageRange, LAST_SUCCESSFUL_SYNC,
-};
-use crate::{platform, pricing::Pricing};
+use crate::usage::prices;
+use crate::usage::{AgentUsageAdapter, SourceScan, UsageRecord};
+#[cfg(test)]
+use crate::pricing::Pricing;
+use crate::platform;
 use rusqlite::{params, Connection, OpenFlags};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     env, fs,
     path::{Path, PathBuf},
-    sync::atomic::Ordering,
     time::UNIX_EPOCH,
 };
 
@@ -331,7 +332,7 @@ impl OmpUsageAdapter {
         Ok(())
     }
 
-    fn read_db(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
+    fn scan_db(&self, since: i64) -> platform::Result<SourceScan> {
         let db = Connection::open_with_flags(&self.stats_db, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|e| {
                 format!(
@@ -339,21 +340,21 @@ impl OmpUsageAdapter {
                     self.stats_db.display()
                 )
             })?;
-        let mut totals = Totals::default();
-        let mut models: BTreeMap<(String, String), Totals> = BTreeMap::new();
-        let mut trend: BTreeMap<i64, (i64, i64)> = BTreeMap::new();
         let mut query = db
             .prepare(
-                "SELECT provider, model, timestamp, input_tokens, output_tokens, \
-                 cache_read_tokens, cache_write_tokens, total_tokens \
-                 FROM messages WHERE timestamp >= ?1 AND (?2 IS NULL OR timestamp < ?2)",
+                "SELECT session_file, entry_id, provider, model, timestamp, input_tokens, \
+                 output_tokens, cache_read_tokens, cache_write_tokens, total_tokens \
+                 FROM messages WHERE timestamp >= ?1",
             )
             .map_err(|e| format!("OMP 用量表无效: {e}"))?;
         let mut rows = query
-            .query(params![range.cutoff, range.end_exclusive])
+            .query(params![since])
             .map_err(|e| format!("读取 OMP 用量失败: {e}"))?;
+        let mut records = Vec::new();
         while let Some(row) = rows.next().map_err(|e| format!("读取 OMP 用量失败: {e}"))? {
-            let record: rusqlite::Result<(String, String, i64, i64, i64, i64, i64, i64)> = (|| {
+            let record: rusqlite::Result<
+                (String, String, String, String, i64, i64, i64, i64, i64, i64),
+            > = (|| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -363,69 +364,64 @@ impl OmpUsageAdapter {
                     row.get(5)?,
                     row.get(6)?,
                     row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
                 ))
-            })(
-            );
-            let (provider, model, timestamp, input, output, read, write, tokens) =
-                record.map_err(|e| format!("OMP 用量记录无效: {e}"))?;
-            let cost = prices.cost(&provider, &model, input, read, write, output);
-            let model_totals = models.entry((provider, model)).or_default();
-            for item in [&mut totals, model_totals] {
-                item.requests += 1;
-                item.total_tokens += tokens;
-                item.input_tokens += input;
-                item.output_tokens += output;
-                item.cache_read_tokens += read;
-                if let Some(cost) = cost {
-                    item.cost += cost;
-                } else {
-                    item.unpriced_requests += 1;
-                }
-            }
-            let bucket = timestamp.div_euclid(range.bucket_ms) * range.bucket_ms;
-            let point = trend.entry(bucket).or_default();
-            point.0 += 1;
-            point.1 += tokens;
+            })();
+            let (
+                session_file,
+                entry_id,
+                provider,
+                model,
+                timestamp,
+                input,
+                output,
+                read,
+                write,
+                tokens,
+            ) = record.map_err(|e| format!("OMP 用量记录无效: {e}"))?;
+            // The source's own UNIQUE(session_file, entry_id) stays stable
+            // when `omp stats --summary` rebuilds the database, so repeated
+            // scans archive each request exactly once.
+            records.push(UsageRecord {
+                external_id: format!("{session_file}\u{1}{entry_id}"),
+                provider,
+                model,
+                timestamp,
+                input_tokens: input,
+                output_tokens: output,
+                cache_read_tokens: read,
+                cache_write_tokens: write,
+                total_tokens: tokens,
+            });
         }
-        let synced_at = LAST_SUCCESSFUL_SYNC.load(Ordering::Relaxed).max(
-            [
-                self.stats_db.clone(),
-                self.stats_db.with_extension("db-wal"),
-            ]
-            .iter()
-            .filter_map(|path| {
-                fs::metadata(path)
-                    .ok()?
-                    .modified()
-                    .ok()?
-                    .duration_since(UNIX_EPOCH)
-                    .ok()
-            })
-            .filter_map(|time| i64::try_from(time.as_millis()).ok())
-            .max()
-            .unwrap_or(0),
-        );
-        Ok(RawUsage {
-            totals,
-            models,
-            trend,
-            synced_at,
+        let synced_at = [
+            self.stats_db.clone(),
+            self.stats_db.with_extension("db-wal"),
+        ]
+        .iter()
+        .filter_map(|path| {
+            fs::metadata(path)
+                .ok()?
+                .modified()
+                .ok()?
+                .duration_since(UNIX_EPOCH)
+                .ok()
         })
+        .filter_map(|time| i64::try_from(time.as_millis()).ok())
+        .max()
+        .unwrap_or(0);
+        Ok(SourceScan { records, synced_at })
     }
 }
 
 impl AgentUsageAdapter for OmpUsageAdapter {
-    fn sync(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
-        self.sync_cli()?;
-        let mut raw = self.read_db(range, prices)?;
-        let now = now_millis()?;
-        LAST_SUCCESSFUL_SYNC.store(now, Ordering::Relaxed);
-        raw.synced_at = now;
-        Ok(raw)
+    fn sync_source(&self) -> platform::Result<()> {
+        self.sync_cli()
     }
 
-    fn read(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage> {
-        self.read_db(range, prices)
+    fn scan(&self, since: i64) -> platform::Result<SourceScan> {
+        self.scan_db(since)
     }
 }
 
@@ -458,6 +454,28 @@ fn normalize_profile(value: &str) -> platform::Result<Option<String>> {
 mod tests {
     use super::*;
 
+    // Scans the adapter's source into a fresh archive under `root` and
+    // aggregates the requested range — the exact production flow.
+    fn archive_and_query(
+        adapter: &OmpUsageAdapter,
+        root: &Path,
+        range: &str,
+        prices: &Pricing,
+    ) -> crate::usage::UsageStats {
+        let store = crate::usage::store::UsageStore::new(root).unwrap();
+        let scan = adapter.scan(0).unwrap();
+        store.ingest("omp", &scan.records).unwrap();
+        store
+            .query(
+                Some("omp"),
+                crate::usage::UsageRange::parse(range, crate::usage::now_millis().unwrap())
+                    .unwrap(),
+                prices,
+            )
+            .unwrap()
+            .finish()
+    }
+
     #[test]
     fn custom_range_excludes_end_boundary_from_every_aggregate() {
         let root = env::temp_dir().join(format!("amc-omp-range-{}", uuid::Uuid::new_v4()));
@@ -466,31 +484,36 @@ mod tests {
         let db = Connection::open(&stats_db).unwrap();
         db.execute_batch(
             "CREATE TABLE messages (
-                session_file TEXT, entry_id TEXT, provider TEXT, model TEXT,
-                timestamp INTEGER, input_tokens INTEGER, output_tokens INTEGER,
-                cache_read_tokens INTEGER, cache_write_tokens INTEGER,
-                total_tokens INTEGER
+                session_file TEXT NOT NULL, entry_id TEXT NOT NULL,
+                provider TEXT NOT NULL, model TEXT NOT NULL,
+                timestamp INTEGER NOT NULL, input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL,
+                cache_write_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL
             )",
         )
         .unwrap();
         let start = 1_700_000_000_000_i64;
         let end = start + 86_400_000;
-        for (timestamp, model, tokens) in [
-            (start - 1, "excluded", 100),
-            (start, "gpt-6-sol", 11),
-            (end - 1, "gpt-6-sol", 13),
-            (end, "excluded", 200),
+        for (entry, timestamp, model, tokens) in [
+            ("before", start - 1, "excluded", 100),
+            ("first", start, "gpt-6-sol", 11),
+            ("last", end - 1, "gpt-6-sol", 13),
+            ("after", end, "excluded", 200),
         ] {
             db.execute(
-                "INSERT INTO messages VALUES ('session', 'entry', 'openai', ?1, ?2, 1, 2, 3, 0, ?3)",
-                params![model, timestamp, tokens],
+                "INSERT INTO messages VALUES ('session', ?1, 'openai', ?2, ?3, 1, 2, 3, 0, ?4)",
+                params![entry, model, timestamp, tokens],
             )
             .unwrap();
         }
         drop(db);
         let adapter = OmpUsageAdapter { stats_db };
-        let range = UsageRange::parse(&format!("custom:{start}:{end}"), end + 1).unwrap();
-        let stats = adapter.read_db(range, &prices()).unwrap().finish();
+        let stats = archive_and_query(
+            &adapter,
+            &root,
+            &format!("custom:{start}:{end}"),
+            &prices(),
+        );
         assert_eq!(stats.total_requests, 2);
         assert_eq!(stats.total_tokens, 24);
         assert_eq!(stats.input_tokens, 2);
@@ -525,17 +548,16 @@ mod tests {
     fn mixed_providers_show_only_priced_subtotal() {
         let root = env::temp_dir().join(format!("amc-omp-pricing-{}", uuid::Uuid::new_v4()));
         let stats_db = root.join("stats.db");
-        fixture_stats(&stats_db, 6);
+        fixture_stats(&stats_db, "fixture-entry", 6);
         let db = Connection::open(&stats_db).unwrap();
-        db.execute("INSERT INTO messages VALUES ('openai', 'gpt-6-sol', 1700000000000, 1000000, 0, 0, 0, 1000000)", []).unwrap();
+        db.execute(
+            "INSERT INTO messages VALUES ('session', 'openai-entry', 'openai', 'gpt-6-sol', 1700000000000, 1000000, 0, 0, 0, 1000000)",
+            [],
+        )
+        .unwrap();
         drop(db);
-        let stats = OmpUsageAdapter { stats_db }
-            .read_db(
-                UsageRange::parse("all", now_millis().unwrap()).unwrap(),
-                &prices(),
-            )
-            .unwrap()
-            .finish();
+        let adapter = OmpUsageAdapter { stats_db };
+        let stats = archive_and_query(&adapter, &root, "all", &prices());
         assert_eq!(stats.total_requests, 2);
         assert_eq!(stats.unpriced_requests, 1);
         assert_eq!(stats.total_cost, Some(4.0));
@@ -560,74 +582,37 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    // Records are archived once as raw tokens; editing the catalog reprices
+    // the same rows without re-reading the source.
     #[test]
     fn editing_pricing_json_reprices_saved_usage_without_resync() {
         let root = env::temp_dir().join(format!("amc-usage-reprice-{}", uuid::Uuid::new_v4()));
         let stats_db = root.join("stats.db");
-        fixture_stats(&stats_db, 6);
+        fixture_stats(&stats_db, "entry", 6);
         let price_file = root.join(crate::pricing::FILE_NAME);
         let adapter = OmpUsageAdapter { stats_db };
-        let range = UsageRange::parse("all", now_millis().unwrap()).unwrap();
+        let store = crate::usage::store::UsageStore::new(&root).unwrap();
+        let scan = adapter.scan(0).unwrap();
+        store.ingest("omp", &scan.records).unwrap();
+        let range = crate::usage::UsageRange::parse(
+            "all",
+            crate::usage::now_millis().unwrap(),
+        )
+        .unwrap();
         fs::write(&price_file, r#"{"models":{"model":{"providers":["fixture"],"input":10000,"output":20000,"cache_read":30000}}}"#).unwrap();
-        let first = adapter
-            .read_db(range, &Pricing::load(&price_file).unwrap())
+        let first = store
+            .query(Some("omp"), range, &Pricing::load(&price_file).unwrap())
             .unwrap()
             .finish();
         assert!((first.total_cost.unwrap() - 0.14).abs() < 1e-12);
         assert_eq!(first.unpriced_requests, 0);
         fs::write(&price_file, r#"{"models":{"model":{"providers":["fixture"],"input":20000,"output":30000,"cache_read":40000}}}"#).unwrap();
-        let second = adapter
-            .read_db(range, &Pricing::load(&price_file).unwrap())
+        let second = store
+            .query(Some("omp"), range, &Pricing::load(&price_file).unwrap())
             .unwrap()
             .finish();
         assert!((second.total_cost.unwrap() - 0.20).abs() < 1e-12);
         assert!((second.by_model[0].cost.unwrap() - 0.20).abs() < 1e-12);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn merged_agents_usage_sums_each_metric_per_model() {
-        let root = env::temp_dir().join(format!("amc-usage-merge-{}", uuid::Uuid::new_v4()));
-        let first_db = root.join("a/stats.db");
-        let second_db = root.join("b/stats.db");
-        fixture_stats(&first_db, 10);
-        fixture_stats(&second_db, 20);
-        let db = Connection::open(&second_db).unwrap();
-        db.execute(
-            "INSERT INTO messages VALUES ('openai', 'gpt-6-sol', 1700000000000, 1, 2, 3, 0, 40)",
-            [],
-        )
-        .unwrap();
-        drop(db);
-        let range = UsageRange::parse("all", now_millis().unwrap()).unwrap();
-        let prices = prices();
-        let first = OmpUsageAdapter { stats_db: first_db }
-            .read_db(range, &prices)
-            .unwrap();
-        let second = OmpUsageAdapter {
-            stats_db: second_db,
-        }
-        .read_db(range, &prices)
-        .unwrap();
-        let expected_synced_at = first.synced_at.max(second.synced_at);
-        let mut merged: Option<RawUsage> = None;
-        merge_into(&mut merged, first);
-        merge_into(&mut merged, second);
-        let stats = merged.unwrap().finish();
-        assert_eq!(stats.total_requests, 3);
-        assert_eq!(stats.total_tokens, 70);
-        assert_eq!(stats.unpriced_requests, 2);
-        assert_eq!(stats.total_cost, Some(22.6e-6));
-        assert_eq!(stats.by_model.len(), 2);
-        assert_eq!(stats.by_model[0].provider, "fixture");
-        assert_eq!(stats.by_model[0].requests, 2);
-        assert_eq!(stats.by_model[0].cost, None);
-        assert_eq!(stats.by_model[1].model, "gpt-6-sol");
-        assert_eq!(stats.by_model[1].requests, 1);
-        assert_eq!(stats.by_model[1].cost, Some(22.6e-6));
-        assert_eq!(stats.trend.len(), 1);
-        assert_eq!(stats.trend[0].requests, 3);
-        assert_eq!(stats.synced_at, expected_synced_at);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -708,20 +693,22 @@ mod tests {
         }
         fs::remove_dir_all(root).unwrap();
     }
-    fn fixture_stats(path: &Path, tokens: i64) {
+    fn fixture_stats(path: &Path, entry_id: &str, tokens: i64) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let db = Connection::open(path).unwrap();
         db.execute_batch(
             "CREATE TABLE messages (
-                provider TEXT, model TEXT, timestamp INTEGER, input_tokens INTEGER,
-                output_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER,
-                total_tokens INTEGER
+                session_file TEXT NOT NULL, entry_id TEXT NOT NULL,
+                provider TEXT NOT NULL, model TEXT NOT NULL,
+                timestamp INTEGER NOT NULL, input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL,
+                cache_write_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL
             )",
         )
         .unwrap();
         db.execute(
-            "INSERT INTO messages VALUES ('fixture', 'model', 1700000000000, 1, 2, 3, 0, ?1)",
-            [tokens],
+            "INSERT INTO messages VALUES ('session', ?1, 'fixture', 'model', 1700000000000, 1, 2, 3, 0, ?2)",
+            params![entry_id, tokens],
         )
         .unwrap();
     }
@@ -739,15 +726,9 @@ mod tests {
         )
         .unwrap();
         let db = home.join("from-home/stats.db");
-        fixture_stats(&db, 321);
+        fixture_stats(&db, "entry", 321);
         let adapter = OmpUsageAdapter::from_launch_context(home, &cwd, HashMap::new()).unwrap();
-        let stats = adapter
-            .read_db(
-                UsageRange::parse("all", now_millis().unwrap()).unwrap(),
-                &prices(),
-            )
-            .unwrap()
-            .finish();
+        let stats = archive_and_query(&adapter, &root, "all", &prices());
         assert_eq!(adapter.stats_db, db);
         assert_eq!(stats.total_tokens, 321);
         assert_eq!(stats.total_requests, 1);
@@ -775,7 +756,7 @@ mod tests {
         )
         .unwrap();
         let db = xdg.join("omp/stats.db");
-        fixture_stats(&db, 654);
+        fixture_stats(&db, "entry", 654);
         let adapter = OmpUsageAdapter::from_launch_context(home, &cwd, HashMap::new()).unwrap();
         let expected = if cfg!(any(target_os = "macos", target_os = "linux")) {
             db
@@ -783,16 +764,10 @@ mod tests {
             root.join("home/project-root/stats.db")
         };
         if !cfg!(any(target_os = "macos", target_os = "linux")) {
-            fixture_stats(&expected, 654);
+            fixture_stats(&expected, "entry", 654);
         }
         assert_eq!(adapter.stats_db, expected);
-        let stats = adapter
-            .read_db(
-                UsageRange::parse("all", now_millis().unwrap()).unwrap(),
-                &prices(),
-            )
-            .unwrap()
-            .finish();
+        let stats = archive_and_query(&adapter, &root, "all", &prices());
         assert_eq!(stats.total_tokens, 654);
         fs::remove_dir_all(root).unwrap();
     }
@@ -810,7 +785,7 @@ mod tests {
         )
         .unwrap();
         let db = xdg.join("omp/profiles/team/stats.db");
-        fixture_stats(&db, 987);
+        fixture_stats(&db, "entry", 987);
         let adapter = OmpUsageAdapter::from_launch_context(
             home.clone(),
             &cwd,
@@ -823,18 +798,11 @@ mod tests {
             home.join(".omp/profiles/team/stats.db")
         };
         if !cfg!(any(target_os = "macos", target_os = "linux")) {
-            fixture_stats(&expected, 987);
+            fixture_stats(&expected, "entry", 987);
         }
         assert_eq!(adapter.stats_db, expected);
         assert_eq!(
-            adapter
-                .read_db(
-                    UsageRange::parse("all", now_millis().unwrap()).unwrap(),
-                    &prices()
-                )
-                .unwrap()
-                .finish()
-                .total_tokens,
+            archive_and_query(&adapter, &root, "all", &prices()).total_tokens,
             987,
         );
         fs::remove_dir_all(root).unwrap();
@@ -906,14 +874,7 @@ mod tests {
             "AMC 必须只读 OMP 此次实际写入的 stats.db"
         );
         assert_eq!(
-            adapter
-                .read_db(
-                    UsageRange::parse("all", now_millis().unwrap()).unwrap(),
-                    &prices()
-                )
-                .unwrap()
-                .finish()
-                .total_requests,
+            archive_and_query(&adapter, &root, "all", &prices()).total_requests,
             0
         );
         fs::remove_dir_all(root).unwrap();
