@@ -163,7 +163,9 @@ impl Pricing {
     /// their own (e.g. Claude Code transcripts only name the model, which may
     /// be routed to non-Anthropic backends) use it to stay priceable.
     pub fn primary_provider(&self, model: &str) -> Option<&str> {
-        self.models.get(model).map(|entry| entry.providers[0].as_str())
+        self.models
+            .get(model)
+            .map(|entry| entry.providers[0].as_str())
     }
 
     pub fn cost(
@@ -385,14 +387,8 @@ mod tests {
                         {"above_tokens":200,"input":7}]}}}"#,
         )
         .unwrap();
-        assert_eq!(
-            prices.cost("p", "m", 150, 0, 0, 0).unwrap(),
-            150. * 3e-6
-        );
-        assert_eq!(
-            prices.cost("p", "m", 201, 0, 0, 0).unwrap(),
-            201. * 7e-6
-        );
+        assert_eq!(prices.cost("p", "m", 150, 0, 0, 0).unwrap(), 150. * 3e-6);
+        assert_eq!(prices.cost("p", "m", 201, 0, 0, 0).unwrap(), 201. * 7e-6);
     }
 
     #[test]

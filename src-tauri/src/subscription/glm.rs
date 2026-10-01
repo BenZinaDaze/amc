@@ -11,8 +11,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::{MetricUsage, ProviderReport, QuotaDetail, QuotaUsage};
 use super::store::StoredSubscription;
+use super::{MetricUsage, ProviderReport, QuotaDetail, QuotaUsage};
 
 const ZAI_HOST: &str = "api.z.ai";
 const BIGMODEL_HOST: &str = "open.bigmodel.cn";
@@ -88,7 +88,10 @@ fn truncate(value: &str, max: usize) -> String {
 
 /// The monitor endpoints wrap payloads in `data` but tolerate the bare shape.
 fn data_or_root(value: &Value) -> &Value {
-    value.get("data").filter(|data| !data.is_null()).unwrap_or(value)
+    value
+        .get("data")
+        .filter(|data| !data.is_null())
+        .unwrap_or(value)
 }
 
 fn fetch_glm(credential: &GlmCredential) -> Result<ProviderReport> {
@@ -100,7 +103,9 @@ fn fetch_glm(credential: &GlmCredential) -> Result<ProviderReport> {
             .get("msg")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let suffix = (!message.is_empty()).then(|| format!("：{message}")).unwrap_or_default();
+        let suffix = (!message.is_empty())
+            .then(|| format!("：{message}"))
+            .unwrap_or_default();
         return Err(format!("配额接口未返回数据{suffix}"));
     };
     let quota: QuotaData =
@@ -119,7 +124,10 @@ fn fetch_glm(credential: &GlmCredential) -> Result<ProviderReport> {
         &format!("{base}/api/monitor/usage/model-usage?{query}"),
         token,
     ) {
-        metrics.extend(model_metrics(data_or_root(&model_root), weekly_start.is_some()));
+        metrics.extend(model_metrics(
+            data_or_root(&model_root),
+            weekly_start.is_some(),
+        ));
     }
     if let Ok(tool_root) = get_json(
         &format!("{base}/api/monitor/usage/tool-usage?{query}"),
@@ -338,7 +346,10 @@ fn model_metrics(data: &Value, weekly: bool) -> Vec<MetricUsage> {
     let total = data.get("totalUsage");
     let suffix = if weekly { "（本周）" } else { "" };
     let mut metrics = Vec::new();
-    if let Some(tokens) = total.and_then(|t| t.get("totalTokensUsage")).and_then(Value::as_i64) {
+    if let Some(tokens) = total
+        .and_then(|t| t.get("totalTokensUsage"))
+        .and_then(Value::as_i64)
+    {
         metrics.push(MetricUsage {
             id: "tokens".to_owned(),
             label: format!("Token 用量{suffix}"),
@@ -356,7 +367,10 @@ fn model_metrics(data: &Value, weekly: bool) -> Vec<MetricUsage> {
         });
     }
     // Per-model totals as reported by the API (modelSummaryList).
-    if let Some(models) = total.and_then(|t| t.get("modelSummaryList")).and_then(Value::as_array) {
+    if let Some(models) = total
+        .and_then(|t| t.get("modelSummaryList"))
+        .and_then(Value::as_array)
+    {
         let mut models: Vec<(String, i64)> = models
             .iter()
             .filter_map(|model| {
@@ -434,9 +448,7 @@ fn weekly_cycle_start(quota: &QuotaData) -> Option<DateTime<Local>> {
     let next = quota
         .limits
         .iter()
-        .find(|limit| {
-            limit.r#type.as_deref() == Some("CREDIT_LIMIT") && limit.unit == Some(6)
-        })?
+        .find(|limit| limit.r#type.as_deref() == Some("CREDIT_LIMIT") && limit.unit == Some(6))?
         .next_reset_time
         .filter(|reset| *reset > now_millis())?;
     DateTime::from_timestamp_millis(next - 7 * 24 * 3600 * 1000)
@@ -584,8 +596,7 @@ mod tests {
                 ]
             }
         });
-        let data: QuotaData =
-            serde_json::from_value(root.get("data").cloned().unwrap()).unwrap();
+        let data: QuotaData = serde_json::from_value(root.get("data").cloned().unwrap()).unwrap();
         let quotas = quotas_from_data(&data);
         assert_eq!(quotas.len(), 2);
         assert_eq!(plan_label(&data).as_deref(), Some("Max"));
@@ -610,13 +621,30 @@ mod tests {
         assert_eq!(
             model_metrics(&model, true),
             vec![
-                MetricUsage { id: "tokens".into(), label: "Token 用量（本周）".into(), value: 50925756 },
-                MetricUsage { id: "requests".into(), label: "模型请求（本周）".into(), value: 318 },
-                MetricUsage { id: "model".into(), label: "GLM-5.3-Flash".into(), value: 44035108 },
-                MetricUsage { id: "model".into(), label: "GLM-5.3".into(), value: 6890648 },
+                MetricUsage {
+                    id: "tokens".into(),
+                    label: "Token 用量（本周）".into(),
+                    value: 50925756
+                },
+                MetricUsage {
+                    id: "requests".into(),
+                    label: "模型请求（本周）".into(),
+                    value: 318
+                },
+                MetricUsage {
+                    id: "model".into(),
+                    label: "GLM-5.3-Flash".into(),
+                    value: 44035108
+                },
+                MetricUsage {
+                    id: "model".into(),
+                    label: "GLM-5.3".into(),
+                    value: 6890648
+                },
             ]
         );
-        let no_models = json!({ "totalUsage": { "totalModelCallCount": 3, "totalTokensUsage": 100 } });
+        let no_models =
+            json!({ "totalUsage": { "totalModelCallCount": 3, "totalTokensUsage": 100 } });
         assert_eq!(model_metrics(&no_models, true).len(), 2);
         assert_eq!(model_metrics(&no_models, false)[0].label, "Token 用量");
         let tool = json!({
@@ -643,7 +671,9 @@ mod tests {
         assert!(query.starts_with("startTime=20"));
         assert!(query.contains("&endTime=20"));
         assert!(!query.contains(' '));
-        let weekly = usage_window_query(Some(Local.with_ymd_and_hms(2026, 9, 30, 12, 24, 0).unwrap()));
+        let weekly = usage_window_query(Some(
+            Local.with_ymd_and_hms(2026, 9, 30, 12, 24, 0).unwrap(),
+        ));
         assert!(weekly.starts_with("startTime=2026-09-30%2012%3A24%3A00"));
     }
 
@@ -658,15 +688,22 @@ mod tests {
         }))
         .unwrap();
         let start = weekly_cycle_start(&data).unwrap();
-        assert_eq!(start.timestamp_millis(), now + 3600 * 1000 - 7 * 24 * 3600 * 1000);
-        let no_weekly: QuotaData =
-            serde_json::from_value(json!({ "limits": [{ "type": "CREDIT_LIMIT", "unit": 3, "number": 5 }] }))
-                .unwrap();
+        assert_eq!(
+            start.timestamp_millis(),
+            now + 3600 * 1000 - 7 * 24 * 3600 * 1000
+        );
+        let no_weekly: QuotaData = serde_json::from_value(
+            json!({ "limits": [{ "type": "CREDIT_LIMIT", "unit": 3, "number": 5 }] }),
+        )
+        .unwrap();
         assert!(weekly_cycle_start(&no_weekly).is_none());
     }
 
     #[test]
     fn sanitize_strips_tokens() {
-        assert_eq!(sanitize("failed sk-secret".into(), "sk-secret"), "failed ***");
+        assert_eq!(
+            sanitize("failed sk-secret".into(), "sk-secret"),
+            "failed ***"
+        );
     }
 }

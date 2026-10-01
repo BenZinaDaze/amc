@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use crate::platform::Result;
 
-use super::{MetricUsage, ProviderReport, QuotaUsage};
 use super::store::StoredSubscription;
+use super::{MetricUsage, ProviderReport, QuotaUsage};
 
 /// Plug-in point for the vendor catalog; keeps token leakage out of errors.
 pub(super) fn fetch_entry(entry: &StoredSubscription) -> Result<ProviderReport> {
@@ -143,7 +143,10 @@ fn fetch_usage(base_url: &str, token: &str) -> Result<ProviderReport> {
 fn quota_limited_quotas(value: &Value) -> Vec<QuotaUsage> {
     let mut quotas = Vec::new();
     let quota = value.get("quota");
-    if let Some((total, used)) = quota.and_then(|q| q.get("limit").zip(q.get("used"))).and_then(money_pair) {
+    if let Some((total, used)) = quota
+        .and_then(|q| q.get("limit").zip(q.get("used")))
+        .and_then(money_pair)
+    {
         quotas.push(QuotaUsage {
             kind: "credits".to_owned(),
             label: "总额度".to_owned(),
@@ -164,7 +167,11 @@ fn quota_limited_quotas(value: &Value) -> Vec<QuotaUsage> {
         .flatten()
     {
         let window = limit.get("window").and_then(Value::as_str).unwrap_or("");
-        let Some((total, used)) = limit.get("limit").zip(limit.get("used")).and_then(money_pair) else {
+        let Some((total, used)) = limit
+            .get("limit")
+            .zip(limit.get("used"))
+            .and_then(money_pair)
+        else {
             continue;
         };
         quotas.push(QuotaUsage {
@@ -265,14 +272,20 @@ fn quota_limited_plan(value: &Value) -> Option<String> {
 fn usage_metrics(usage: Option<&Value>) -> Vec<MetricUsage> {
     let mut metrics = Vec::new();
     let total = usage.and_then(|usage| usage.get("total"));
-    if let Some(tokens) = total.and_then(|t| t.get("total_tokens")).and_then(Value::as_i64) {
+    if let Some(tokens) = total
+        .and_then(|t| t.get("total_tokens"))
+        .and_then(Value::as_i64)
+    {
         metrics.push(MetricUsage {
             id: "tokens".to_owned(),
             label: "Token 用量".to_owned(),
             value: tokens,
         });
     }
-    if let Some(requests) = total.and_then(|t| t.get("requests")).and_then(Value::as_i64) {
+    if let Some(requests) = total
+        .and_then(|t| t.get("requests"))
+        .and_then(Value::as_i64)
+    {
         metrics.push(MetricUsage {
             id: "requests".to_owned(),
             label: "请求总数".to_owned(),
@@ -280,7 +293,10 @@ fn usage_metrics(usage: Option<&Value>) -> Vec<MetricUsage> {
         });
     }
     let today = usage.and_then(|usage| usage.get("today"));
-    if let Some(tokens) = today.and_then(|t| t.get("total_tokens")).and_then(Value::as_i64) {
+    if let Some(tokens) = today
+        .and_then(|t| t.get("total_tokens"))
+        .and_then(Value::as_i64)
+    {
         metrics.push(MetricUsage {
             id: "tokens".to_owned(),
             label: "今日 Token".to_owned(),
@@ -358,8 +374,11 @@ fn rfc3339_millis(value: &str) -> Option<i64> {
 /// 直接作为 `start_date` 查询参数。
 fn window_start_date(value: &str) -> Option<String> {
     let date = value.split('T').next()?;
-    (date.len() == 10 && date.bytes().all(|byte| byte.is_ascii_digit() || byte == b'-'))
-        .then(|| date.to_owned())
+    (date.len() == 10
+        && date
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'-'))
+    .then(|| date.to_owned())
 }
 
 #[cfg(test)]
@@ -427,15 +446,30 @@ mod tests {
         // 回退数据上，但不得出现「周期内 Token」标签。
         let (port, handle) = serve(&[
             ("HTTP/1.1 200 OK", SUBSCRIPTION_BODY),
-            ("HTTP/1.1 500 Internal Server Error", r#"{"error":{"message":"boom"}}"#),
+            (
+                "HTTP/1.1 500 Internal Server Error",
+                r#"{"error":{"message":"boom"}}"#,
+            ),
         ]);
-        let report = fetch_entry(&entry(format!("http://127.0.0.1:{port}"), "sk-good-key")).unwrap();
+        let report =
+            fetch_entry(&entry(format!("http://127.0.0.1:{port}"), "sk-good-key")).unwrap();
         let requests = handle.join().unwrap();
-        assert!(requests[1].starts_with("GET /v1/usage?start_date=2026-09-28 HTTP/1.1"), "{}", requests[1]);
-        assert!(report.metrics.iter().all(|metric| metric.label != "周期内 Token"));
+        assert!(
+            requests[1].starts_with("GET /v1/usage?start_date=2026-09-28 HTTP/1.1"),
+            "{}",
+            requests[1]
+        );
+        assert!(report
+            .metrics
+            .iter()
+            .all(|metric| metric.label != "周期内 Token"));
         // 30 天回退分项仍然在。
         assert_eq!(
-            report.metrics.iter().find(|m| m.label == "claude-sonnet").map(|m| m.value),
+            report
+                .metrics
+                .iter()
+                .find(|m| m.label == "claude-sonnet")
+                .map(|m| m.value),
             Some(900000)
         );
     }
@@ -446,23 +480,39 @@ mod tests {
             window_start_date("2026-09-27T01:22:03.171467+08:00").as_deref(),
             Some("2026-09-27")
         );
-        assert_eq!(window_start_date("2026-09-28T00:00:00Z").as_deref(), Some("2026-09-28"));
+        assert_eq!(
+            window_start_date("2026-09-28T00:00:00Z").as_deref(),
+            Some("2026-09-28")
+        );
         assert_eq!(window_start_date("garbage"), None);
         assert_eq!(window_start_date("2026-9-7T00:00:00Z"), None);
     }
 
     #[test]
     fn fetch_entry_hits_v1_usage_with_bearer_key() {
-        let (port, handle) = serve(&[("HTTP/1.1 200 OK", SUBSCRIPTION_BODY), ("HTTP/1.1 200 OK", SUBSCRIPTION_BODY)]);
-        let report = fetch_entry(&entry(format!("http://127.0.0.1:{port}"), "sk-good-key")).unwrap();
+        let (port, handle) = serve(&[
+            ("HTTP/1.1 200 OK", SUBSCRIPTION_BODY),
+            ("HTTP/1.1 200 OK", SUBSCRIPTION_BODY),
+        ]);
+        let report =
+            fetch_entry(&entry(format!("http://127.0.0.1:{port}"), "sk-good-key")).unwrap();
         let requests = handle.join().unwrap();
         let first = requests[0].to_ascii_lowercase();
-        assert!(requests[0].starts_with("GET /v1/usage HTTP/1.1"), "{}", requests[0]);
-        assert!(first.contains("authorization: bearer sk-good-key"), "{}", requests[0]);
+        assert!(
+            requests[0].starts_with("GET /v1/usage HTTP/1.1"),
+            "{}",
+            requests[0]
+        );
+        assert!(
+            first.contains("authorization: bearer sk-good-key"),
+            "{}",
+            requests[0]
+        );
         // 周窗口起点回传为 start_date，第二次请求对齐重置周期。
         assert!(
             requests[1].starts_with("GET /v1/usage?start_date=2026-09-28 HTTP/1.1"),
-            "{}", requests[1]
+            "{}",
+            requests[1]
         );
 
         assert_eq!(report.plan.as_deref(), Some("Claude Max 共享"));
@@ -494,12 +544,16 @@ mod tests {
             "HTTP/1.1 401 Unauthorized",
             r#"{"error":{"type":"authentication_error","message":"Invalid API key"}}"#,
         )]);
-        let Err(error) = fetch_entry(&entry(format!("http://127.0.0.1:{port}"), "sk-leaky-key")) else {
+        let Err(error) = fetch_entry(&entry(format!("http://127.0.0.1:{port}"), "sk-leaky-key"))
+        else {
             panic!("expected 401 to fail");
         };
         let _ = handle.join().unwrap();
         assert!(error.contains("HTTP 401"), "{error}");
-        assert!(!error.to_ascii_lowercase().contains("sk-leaky-key"), "{error}");
+        assert!(
+            !error.to_ascii_lowercase().contains("sk-leaky-key"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -522,7 +576,10 @@ mod tests {
         assert_eq!(glm["platforms"][0][0], "zai");
         let sub2api = kinds.iter().find(|kind| kind["id"] == "sub2api").unwrap();
         assert_eq!(sub2api["urlLabel"], "实例地址");
-        assert_eq!(sub2api["urlPlaceholder"], "例如 https://sub2api.example.com");
+        assert_eq!(
+            sub2api["urlPlaceholder"],
+            "例如 https://sub2api.example.com"
+        );
         assert_eq!(sub2api["platforms"].as_array().unwrap().len(), 0);
     }
 

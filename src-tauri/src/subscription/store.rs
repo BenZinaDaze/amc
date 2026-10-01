@@ -68,7 +68,10 @@ struct LegacyCredential {
 fn migrate_legacy(mut stored: StoredSubscriptions) -> StoredSubscriptions {
     if stored.entries.is_empty()
         && stored.plans.iter().any(|id| id == "glm")
-        && stored.glm.as_ref().is_some_and(|glm| !glm.key.trim().is_empty())
+        && stored
+            .glm
+            .as_ref()
+            .is_some_and(|glm| !glm.key.trim().is_empty())
     {
         if let Some(legacy) = stored.glm.take() {
             stored.entries.push(StoredSubscription {
@@ -108,8 +111,7 @@ fn write_stored_entries(data_dir: &Path, stored: StoredSubscriptions) -> Result<
     let mut clean = stored;
     clean.glm = None;
     clean.plans = Vec::new();
-    let bytes =
-        serde_json::to_vec_pretty(&clean).map_err(|e| format!("序列化失败: {e}"))?;
+    let bytes = serde_json::to_vec_pretty(&clean).map_err(|e| format!("序列化失败: {e}"))?;
     write_private(&path, &bytes)
 }
 
@@ -248,14 +250,38 @@ mod tests {
         assert!(add_plan(&dir, "glm", "名", "unknown", "12345678", None).is_err());
         assert!(add_plan(&dir, "glm", "名", "zai", "short", None).is_err());
         assert!(add_plan(&dir, "sub2api", "名", "", "sk-abcdef123456", None).is_err());
-        assert!(add_plan(&dir, "sub2api", "名", "", "sk-abcdef123456", Some("ftp://x")).is_err());
-        assert!(add_plan(&dir, "sub2api", "名", "zai", "sk-abcdef123456", Some("https://x.y")).is_err());
+        assert!(add_plan(
+            &dir,
+            "sub2api",
+            "名",
+            "",
+            "sk-abcdef123456",
+            Some("ftp://x")
+        )
+        .is_err());
+        assert!(add_plan(
+            &dir,
+            "sub2api",
+            "名",
+            "zai",
+            "sk-abcdef123456",
+            Some("https://x.y")
+        )
+        .is_err());
         assert!(fetch_all(&dir).is_empty());
 
         // The same vendor can be added twice with different keys.
         add_plan(&dir, "glm", "  主号  ", "zai", "  12345678abcdef  ", None).unwrap();
         add_plan(&dir, "glm", "备用", "bigmodel", "fedcba9876543210", None).unwrap();
-        add_plan(&dir, "sub2api", "自建", "", "sk-abcdef123456", Some("  https://sub.example.com/  ")).unwrap();
+        add_plan(
+            &dir,
+            "sub2api",
+            "自建",
+            "",
+            "sk-abcdef123456",
+            Some("  https://sub.example.com/  "),
+        )
+        .unwrap();
         let entries = read_stored(&dir).entries;
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].id, "1");
@@ -267,7 +293,10 @@ mod tests {
         assert_eq!(entries[0].hint(), "…cdef");
         assert_eq!(entries[0].base_url, None);
         assert_eq!(entries[2].platform, "");
-        assert_eq!(entries[2].base_url.as_deref(), Some("https://sub.example.com"));
+        assert_eq!(
+            entries[2].base_url.as_deref(),
+            Some("https://sub.example.com")
+        );
 
         // A missing key keeps the stored one; a blank one is rejected.
         update_plan(&dir, "1", "主力", "bigmodel", None, None).unwrap();
@@ -281,7 +310,10 @@ mod tests {
         assert!(update_plan(&dir, "99", "x", "zai", None, None).is_err());
         // The instance URL is replaced on every edit.
         update_plan(&dir, "3", "自建", "", None, Some("http://127.0.0.1:9")).unwrap();
-        assert_eq!(read_stored(&dir).entries[2].base_url.as_deref(), Some("http://127.0.0.1:9"));
+        assert_eq!(
+            read_stored(&dir).entries[2].base_url.as_deref(),
+            Some("http://127.0.0.1:9")
+        );
 
         remove_plan(&dir, "1").unwrap();
         assert_eq!(read_stored(&dir).entries.len(), 2);
@@ -330,7 +362,11 @@ mod tests {
             "glm": { "platform": "zai", "key": "12345678abcdef" },
             "plans": ["glm"]
         });
-        fs::write(dir.join(SUBSCRIPTIONS_FILE), serde_json::to_vec(&legacy).unwrap()).unwrap();
+        fs::write(
+            dir.join(SUBSCRIPTIONS_FILE),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
         remove_plan(&dir, "1").unwrap();
         add_plan(&dir, "glm", "新的", "zai", "12345678abcdef", None).unwrap();
         let stored = read_stored(&dir);
@@ -341,7 +377,11 @@ mod tests {
         let file = json!({ "entries": [
             { "id": "5", "kind": "glm", "name": "手写", "platform": "zai", "key": "12345678abcdef" }
         ] });
-        fs::write(dir.join(SUBSCRIPTIONS_FILE), serde_json::to_vec(&file).unwrap()).unwrap();
+        fs::write(
+            dir.join(SUBSCRIPTIONS_FILE),
+            serde_json::to_vec(&file).unwrap(),
+        )
+        .unwrap();
         remove_plan(&dir, "5").unwrap();
         add_plan(&dir, "glm", "新的", "zai", "12345678abcdef", None).unwrap();
         let stored = read_stored(&dir);
@@ -355,7 +395,11 @@ mod tests {
             "glm": { "platform": "zai", "key": "12345678abcdef" },
             "plans": ["glm"]
         });
-        fs::write(dir.join(SUBSCRIPTIONS_FILE), serde_json::to_vec(&legacy).unwrap()).unwrap();
+        fs::write(
+            dir.join(SUBSCRIPTIONS_FILE),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
         let statuses = fetch_all(&dir);
         assert_eq!(statuses.len(), 1);
         assert_eq!(statuses[0].id, "1");
@@ -372,7 +416,11 @@ mod tests {
         // A legacy key whose plan was never added stays hidden, as before.
         let dir = temp_dir("legacy-hidden");
         let legacy = json!({ "glm": { "platform": "zai", "key": "12345678abcdef" } });
-        fs::write(dir.join(SUBSCRIPTIONS_FILE), serde_json::to_vec(&legacy).unwrap()).unwrap();
+        fs::write(
+            dir.join(SUBSCRIPTIONS_FILE),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
         assert!(fetch_all(&dir).is_empty());
     }
 }

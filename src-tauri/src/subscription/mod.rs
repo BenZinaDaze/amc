@@ -171,9 +171,9 @@ pub(super) fn validate_base_url(kind: &str, base_url: Option<&str>) -> Result<Op
         (true, None) => Err("请填写实例地址".to_owned()),
         (false, _) => Ok(None),
         (true, Some(url)) => {
-            let (scheme, rest) = url.split_once("://").ok_or_else(|| {
-                "实例地址必须以 http:// 或 https:// 开头".to_owned()
-            })?;
+            let (scheme, rest) = url
+                .split_once("://")
+                .ok_or_else(|| "实例地址必须以 http:// 或 https:// 开头".to_owned())?;
             if !matches!(scheme, "http" | "https")
                 || rest.is_empty()
                 || rest.split(['/', '?', '#']).next().is_none_or(str::is_empty)

@@ -177,11 +177,9 @@ async fn sync_agents_usage(
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join(pricing::FILE_NAME);
-    tauri::async_runtime::spawn_blocking(move || {
-        usage::sync_agents_usage(&range, &price_file)
-    })
-    .await
-    .map_err(|e| format!("后台操作失败: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || usage::sync_agents_usage(&range, &price_file))
+        .await
+        .map_err(|e| format!("后台操作失败: {e}"))?
 }
 
 #[tauri::command]
@@ -194,11 +192,9 @@ async fn get_agents_usage(
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join(pricing::FILE_NAME);
-    tauri::async_runtime::spawn_blocking(move || {
-        usage::get_agents_usage(&range, &price_file)
-    })
-    .await
-    .map_err(|e| format!("后台操作失败: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || usage::get_agents_usage(&range, &price_file))
+        .await
+        .map_err(|e| format!("后台操作失败: {e}"))?
 }
 
 #[tauri::command]
@@ -227,10 +223,7 @@ async fn refresh_pricing(app: tauri::AppHandle) -> platform::Result<String> {
 async fn fetch_subscriptions(
     app: tauri::AppHandle,
 ) -> platform::Result<Vec<subscription::SubscriptionStatus>> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || Ok(subscription::fetch_all(&data_dir)))
         .await
         .map_err(|e| format!("后台操作失败: {e}"))?
@@ -250,12 +243,16 @@ async fn add_subscription_plan(
     key: String,
     base_url: Option<String>,
 ) -> platform::Result<subscription::Message> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        subscription::add_plan(&data_dir, &kind, &name, &platform, &key, base_url.as_deref())?;
+        subscription::add_plan(
+            &data_dir,
+            &kind,
+            &name,
+            &platform,
+            &key,
+            base_url.as_deref(),
+        )?;
         Ok(subscription::Message {
             message: format!("已添加订阅套餐 {name}"),
         })
@@ -273,10 +270,7 @@ async fn update_subscription_plan(
     key: Option<String>,
     base_url: Option<String>,
 ) -> platform::Result<subscription::Message> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         subscription::update_plan(
             &data_dir,
@@ -299,10 +293,7 @@ async fn remove_subscription_plan(
     app: tauri::AppHandle,
     id: String,
 ) -> platform::Result<subscription::Message> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         subscription::remove_plan(&data_dir, &id)?;
         Ok(subscription::Message {
