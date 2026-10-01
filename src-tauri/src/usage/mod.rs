@@ -17,10 +17,11 @@ trait AgentUsageAdapter {
     fn read(&self, range: UsageRange, prices: &Pricing) -> platform::Result<RawUsage>;
 }
 
-pub(crate) mod agents;
+mod agents;
 
 pub(crate) use agents::claude::{claude_code_status, ClaudeCodeStatus};
 pub(crate) use agents::codex::{codex_status, CodexStatus};
+pub(crate) use agents::omp::status as omp_status;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

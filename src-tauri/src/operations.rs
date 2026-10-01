@@ -111,7 +111,7 @@ impl Core {
 
     pub fn state(&self, workspace: Workspace) -> Result<State> {
         let root = workspace::root(&workspace)?;
-        let (installed, version) = crate::usage::agents::omp::status();
+        let (installed, version) = crate::usage::omp_status();
         let installations = self
             .store
             .installations()?
