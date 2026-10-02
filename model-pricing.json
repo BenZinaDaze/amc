@@ -1,7 +1,7 @@
 {
   "version": 1,
   "units": "USD per 1M tokens; tiers override rates once prompt tokens (input+cache) exceed above_tokens",
-  "updated": "2026-09-30",
+  "updated": "2026-10-02",
   "models": {
     "claude-3-7-sonnet-20250219": {
       "providers": [
@@ -1564,6 +1564,25 @@
           "output": 18,
           "cache_read": 0.4,
           "cache_write": 5
+        }
+      ]
+    },
+    "gpt-6-astra": {
+      "providers": [
+        "openai",
+        "openai-free"
+      ],
+      "input": 10,
+      "output": 50,
+      "cache_read": 1,
+      "cache_write": 12.5,
+      "tiers": [
+        {
+          "above_tokens": 272000,
+          "input": 20,
+          "output": 75,
+          "cache_read": 2,
+          "cache_write": 25
         }
       ]
     },
