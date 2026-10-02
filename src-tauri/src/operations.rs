@@ -27,6 +27,9 @@ pub struct AgentInfo {
 pub struct State {
     workspace: Workspace,
     agent: AgentInfo,
+    /// 检测到已安装的 Agent（扫描目录中存在可执行文件，与 Agents 页
+    /// 同源）；MCP / Skills 的 Agent 开关只对列表内的 Agent 显示。
+    installed_agents: Vec<Agent>,
     mcp: Vec<mcp::McpView>,
     /// 分发管理的技能（skills 表 + 中央副本投影到用户级目录）。
     skills: Vec<skills::SkillView>,
@@ -103,6 +106,8 @@ impl Core {
     pub fn state(&self, workspace: Workspace) -> Result<State> {
         let root = workspace::root(&workspace)?;
         let (installed, version) = crate::usage::omp_status();
+        let claude = crate::usage::claude_code_status();
+        let codex = crate::usage::codex_status();
         let skill_views = skills::state(&self.store)?;
         let targets = skills::Targets::from_env()?;
         // 检测列表只排除启用中的投影；停用目标上的目录（可能是用户
@@ -127,6 +132,15 @@ impl Core {
         Ok(State {
             workspace: workspace::from_root(&root),
             agent: AgentInfo { installed, version },
+            installed_agents: [
+                (Agent::Omp, installed),
+                (Agent::Claude, claude.installed),
+                (Agent::Codex, codex.installed),
+            ]
+            .into_iter()
+            .filter(|&(_, present)| present)
+            .map(|(agent, _)| agent)
+            .collect(),
             mcp: mcp::state(&self.store)?,
             skills: skill_views,
             detected,

@@ -86,6 +86,33 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/// MCP 卡片描述行：URL 剥离查询串/片段与 userinfo（可能携带凭证，保留
+/// 「?…」提示有参数被隐藏）；stdio 只显示命令名与参数个数——args 内容
+/// 可能内联密钥，与列表 redacted 姿态一致，一律不展示。
+function mcpCardDetail(config: Record<string, unknown>): string {
+  const rawUrl = config.url;
+  if (typeof rawUrl === "string" && rawUrl) {
+    const withoutFragment = rawUrl.split("#", 1)[0];
+    const queryStart = withoutFragment.indexOf("?");
+    const hasQuery = queryStart !== -1;
+    const noQuery = hasQuery ? withoutFragment.slice(0, queryStart) : withoutFragment;
+    const schemeEnd = noQuery.indexOf("://");
+    let display = noQuery;
+    if (schemeEnd !== -1) {
+      const authorityAndPath = noQuery.slice(schemeEnd + 3);
+      const pathStart = authorityAndPath.indexOf("/");
+      const authority = pathStart === -1 ? authorityAndPath : authorityAndPath.slice(0, pathStart);
+      const atSign = authority.lastIndexOf("@");
+      display = noQuery.slice(0, schemeEnd + 3) + (atSign === -1 ? authority : authority.slice(atSign + 1)) + (pathStart === -1 ? "" : authorityAndPath.slice(pathStart));
+    }
+    return display + (hasQuery ? "?…" : "");
+  }
+  const command = config.command;
+  if (typeof command !== "string" || !command) return "";
+  const argCount = Array.isArray(config.args) ? config.args.length : 0;
+  return argCount > 0 ? `${command}(+${argCount} 参数)` : command;
+}
+
 function repositoryWebUrl(repository?: Repository): string | null {
   if (!repository || repository.localPath) return null;
   const value = repository.url.trim();
@@ -652,7 +679,7 @@ function App() {
       ({ name, spec: config } = unwrapMcpEnvelope(parsed, name));
     }
     catch (reason) { setError(`配置无效：${errorText(reason)}`); return; }
-    if (mcpOriginal && mcpOriginal !== name) { setError("修改服务名称需先删除旧服务，再添加新服务。"); return; }
+    if (mcpOriginal && mcpOriginal !== name) { setError("修改服务名称需先移除旧服务，再添加新服务。"); return; }
     if (state?.mcp.some((server) => server.name === name && server.name !== mcpOriginal)) { setError("同名 MCP 服务已存在。"); return; }
     const agents = (Object.keys(mcpAgentFlags) as McpAgent[]).filter((agent) => mcpAgentFlags[agent]);
     const result = await operation("预览 MCP 变更", () => api.planMcp(name, config, agents));
@@ -673,6 +700,9 @@ function App() {
     codex: { label: "Codex", path: "~/.agents/skills" },
     claude: { label: "Claude Code", path: "~/.claude/skills" },
   };
+
+  // Agent 图标开关只对检测到已安装的 Agent 显示。
+  const installedAgents = state?.installedAgents ?? [];
 
   async function toggleSkillTarget(skill: Skill, target: SkillTarget) {
     const enabled = target === "omp" ? !skill.omp : target === "codex" ? !skill.codex : !skill.claude;
@@ -810,37 +840,42 @@ function App() {
               </div>
               {state.mcp.length ? (
                 <div className="card-list">
-                  {state.mcp.map((server) => <article className="item-card" key={server.name}>
+                  {state.mcp.map((server) => {
+                    const detail = mcpCardDetail(server.config);
+                    return <article className="item-card" key={server.name}>
                     <div className="item-icon purple"><Glyph name="plug" /></div>
                     <div className="item-content">
                       <div className="item-title">
                         <h3>{server.name}</h3>
                         <span className="tag tag-muted">{String(server.config.type || "stdio")}</span>
                       </div>
+                      {detail && <p className="item-desc" title={detail}>{detail}</p>}
                     </div>
                     <div className="item-actions">
                       <div className="mcp-agents">
-                        {(["omp", "claude", "codex"] as McpAgent[]).map((agent) => {
+                        {(["omp", "claude", "codex"] as McpAgent[]).filter((agent) => installedAgents.includes(agent) || server.agents.includes(agent)).map((agent) => {
                           const enabled = server.agents.includes(agent);
-                          return <button key={agent} type="button" className={`mcp-agent-mark ${enabled ? "on" : ""}`} disabled={isBusy} aria-pressed={enabled} aria-label={`${agentMeta[agent].label} ${enabled ? "停用" : "启用"}`} title={`${agentMeta[agent].label} · ${enabled ? "已启用，点击停用" : "未启用，点击启用"}`} onClick={() => void toggleMcpAgent(server, agent)}>
-                            <AgentMark agent={agent} active={enabled} />
+                          const detected = installedAgents.includes(agent);
+                          return <button key={agent} type="button" className={`mcp-agent-mark ${enabled && detected ? "on" : ""}`} disabled={isBusy} aria-pressed={enabled} aria-label={`${agentMeta[agent].label} ${enabled ? "停用" : "启用"}`} title={`${agentMeta[agent].label}${detected ? "" : " · 未检测到安装"} · ${enabled ? "已启用，点击停用" : "未启用，点击启用"}`} onClick={() => void toggleMcpAgent(server, agent)}>
+                            <AgentMark agent={agent} active={enabled && detected} />
                           </button>;
                         })}
                       </div>
                       <button className="button button-muted" onClick={() => openMcp(server)} disabled={isBusy}>编辑</button>
-                      <button className="button button-danger-ghost" onClick={() => void prepare("预览删除服务", () => api.planMcp(server.name, null, []))} disabled={isBusy}>删除</button>
+                      <button className="button button-danger-ghost" onClick={() => void prepare("预览移除服务", () => api.planMcp(server.name, null, []))} disabled={isBusy}>移除</button>
                     </div>
-                  </article>)}
+                  </article>;
+                  })}
                 </div>
               ) : <Empty icon="plug" title="还没有 MCP 服务" description="添加 stdio、HTTP 或 SSE 服务，勾选要写入的 Agent，先预览再应用。AMC 只管理通过它保存的服务。" action="添加服务" onClick={() => openMcp()} />}
             </>}
             {page === "skills" && <>
-              <div className="section-heading section-heading-top skills-heading">
-                <div className="skills-context"><p>{skillTab === "installed" ? "分发技能写入用户级目录，图标即开关。" : "从已添加的仓库发现技能，逐个选择安装。"}</p></div>
+              <div className="section-heading section-heading-top">
+                <div><h2>{skillTab === "installed" ? "技能列表" : "发现技能"} <span className="count">{skillTab === "installed" ? distributedSkills.length : discoveredSkills.length}</span></h2><p>{skillTab === "installed" ? "分发技能写入用户级目录，图标即开关。" : "从已添加的仓库发现技能，逐个选择安装。"}</p></div>
                 <div className="section-actions">
                   <div className="skill-tabs" role="tablist" aria-label="Skills 视图">
-                    <button className={`skill-tab ${skillTab === "installed" ? "active" : ""}`} role="tab" aria-selected={skillTab === "installed"} onClick={() => setSkillTab("installed")}>已分发 <span>{distributedSkills.length}</span></button>
-                    <button className={`skill-tab ${skillTab === "discover" ? "active" : ""}`} role="tab" aria-selected={skillTab === "discover"} onClick={() => setSkillTab("discover")}>发现技能 <span>{discoveredSkills.length}</span></button>
+                    <button className={`skill-tab ${skillTab === "installed" ? "active" : ""}`} role="tab" aria-selected={skillTab === "installed"} onClick={() => setSkillTab("installed")}>已分发</button>
+                    <button className={`skill-tab ${skillTab === "discover" ? "active" : ""}`} role="tab" aria-selected={skillTab === "discover"} onClick={() => setSkillTab("discover")}>发现技能</button>
                   </div>
                   {skillTab === "discover" && <>
                     <div className="skill-tool-buttons">
@@ -859,15 +894,16 @@ function App() {
                       <div className="item-icon amber"><Glyph name="spark" /></div>
                       <div className="item-content">
                         <div className="item-title"><h3>{skill.name}</h3>{skill.updateAvailable && <span className="tag tag-info">有更新</span>}</div>
-                        <p className="skill-desc" title={skill.description}>{skill.description || "此技能未提供说明"}</p>
+                        <p className="item-desc" title={skill.description}>{skill.description || "此技能未提供说明"}</p>
                       </div>
                       <div className="item-actions">
                         <div className="skill-targets">
-                          {(["omp", "codex", "claude"] as SkillTarget[]).map((target) => {
+                          {(["omp", "codex", "claude"] as SkillTarget[]).filter((target) => installedAgents.includes(target) || (target === "omp" ? skill.omp : target === "codex" ? skill.codex : skill.claude)).map((target) => {
                             const enabled = target === "omp" ? skill.omp : target === "codex" ? skill.codex : skill.claude;
+                            const detected = installedAgents.includes(target);
                             const note = target === "claude" ? "" : "（与另一 Agent 共用目录，停用写入其配置文件）";
-                            return <button key={target} type="button" className={`mcp-agent-mark skill-target-mark ${enabled ? "on" : ""}`} disabled={isBusy} aria-pressed={enabled} aria-label={`${skillTargetMeta[target].label} ${enabled ? "停用" : "启用"}`} title={`${skillTargetMeta[target].label} · ${skillTargetMeta[target].path}${note} · ${enabled ? "已启用，点击停用" : "未启用，点击启用"}`} onClick={() => void toggleSkillTarget(skill, target)}>
-                              <AgentMark agent={target} active={enabled} />
+                            return <button key={target} type="button" className={`mcp-agent-mark ${enabled && detected ? "on" : ""}`} disabled={isBusy} aria-pressed={enabled} aria-label={`${skillTargetMeta[target].label} ${enabled ? "停用" : "启用"}`} title={`${skillTargetMeta[target].label} · ${skillTargetMeta[target].path}${note}${detected ? "" : " · 未检测到安装"} · ${enabled ? "已启用，点击停用" : "未启用，点击启用"}`} onClick={() => void toggleSkillTarget(skill, target)}>
+                              <AgentMark agent={target} active={enabled && detected} />
                             </button>;
                           })}
                         </div>
@@ -971,11 +1007,11 @@ function App() {
             {!rawConfig && <div>
               <span className="field-label">写入到哪些 Agent</span>
               <div className="mcp-agents">
-                {(["omp", "claude", "codex"] as McpAgent[]).map((agent) => (
-                  <label key={agent} className="checkbox-row mcp-agent-option">
+                {(["omp", "claude", "codex"] as McpAgent[]).filter((agent) => installedAgents.includes(agent) || mcpAgentFlags[agent]).map((agent) => (
+                  <label key={agent} className="checkbox-row mcp-agent-option" title={installedAgents.includes(agent) ? undefined : "未检测到该 Agent 的安装"}>
                     <input type="checkbox" checked={mcpAgentFlags[agent]} onChange={(event) => setMcpAgentFlags((flags) => ({ ...flags, [agent]: event.target.checked }))} />
-                    <AgentMark agent={agent} active={mcpAgentFlags[agent]} />
-                    {agentMeta[agent].label}
+                    <AgentMark agent={agent} active={mcpAgentFlags[agent] && installedAgents.includes(agent)} />
+                    {agentMeta[agent].label}{installedAgents.includes(agent) ? "" : "（未检测到安装）"}
                   </label>
                 ))}
               </div>
