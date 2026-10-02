@@ -232,11 +232,31 @@ textarea{resize:vertical;line-height:1.55}
 .omp-range-extras{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:0 12px 12px}
 .omp-range-extras button{padding:7px 4px;font-size:12px}
 .omp-range-custom{padding:16px 17px 14px;border-top:1px solid #edf0f5}
-.omp-range-dates{display:flex;align-items:flex-end;gap:7px}
-.omp-range-dates label{flex:1;min-width:0;color:#737f92;font-size:12px;font-weight:600}
-.omp-range-dates input{display:block;width:100%;min-width:0;margin-top:7px;padding:9px 6px;border:1px solid #dce1eb;border-radius:8px;background:#f8f9fc;color:#394158;color-scheme:light;font-size:12px}
-.omp-range-dates input[aria-invalid="true"]{border-color:#c65262}
-.omp-range-arrow{padding-bottom:10px;color:#939cb0;font-size:17px}
+.omp-range-dates{display:flex;align-items:center;gap:7px}
+.omp-date-field{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:6px 10px;border:1px solid #dce1eb;border-radius:8px;background:#f8f9fc;color:#737f92;font-size:12px;font-weight:600;text-align:left;cursor:pointer;transition:border-color .15s}
+.omp-date-field:hover{border-color:#afa9e6}
+.omp-date-field:focus-visible{border-color:var(--accent-focus);box-shadow:0 0 0 3px #8478eb1c;outline:none}
+.omp-date-field strong{color:#394158;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
+.omp-date-field strong.unset{color:#a6aebd;font-weight:600}
+.omp-date-field[aria-invalid="true"]{border-color:#c65262}
+.omp-range-arrow{color:#939cb0;font-size:17px}
+.omp-date-pop{position:fixed;z-index:20;width:256px;padding:8px;border:1px solid #dfe3ed;border-radius:12px;background:#fff;box-shadow:0 16px 40px #25304d2b;color:#394158}
+.omp-cal-header{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.omp-cal-title{flex:1;text-align:center;color:#394158;font-size:12px;font-weight:700}
+.omp-cal-navbtn{display:grid;place-items:center;width:26px;height:26px;padding:0;border:1px solid #dce1eb;border-radius:7px;background:#fff;color:#647085;cursor:pointer;transition:border-color .15s,color .15s}
+.omp-cal-navbtn:hover{border-color:#afa9e6;color:var(--accent-strong)}
+.omp-cal-navbtn:focus-visible{border-color:var(--accent-focus);box-shadow:0 0 0 3px #8478eb1c;outline:none}
+.omp-cal-grid{width:238px}
+.omp-cal-week{display:grid;grid-template-columns:repeat(7,34px)}
+.omp-cal-weekdays .omp-cal-weekday{padding:2px 0 4px;text-align:center;color:#939cb0;font-size:11px;font-weight:600}
+.omp-cal-cell{display:grid;place-items:center;height:28px}
+.omp-cal-day{width:34px;height:28px;padding:0;border:0;border-radius:8px;background:transparent;color:#394158;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;cursor:pointer;transition:background .12s,color .12s}
+.omp-cal-day:hover{background:var(--accent-wash);color:var(--accent-strong)}
+.omp-cal-day:focus-visible{outline:none;box-shadow:0 0 0 2px #fff,0 0 0 4px var(--accent-focus)}
+.omp-cal-day.today{box-shadow:inset 0 0 0 1px #c9c4f2}
+.omp-cal-day.is-selected{background:var(--accent);color:#fff;font-weight:700}
+.omp-cal-day.is-selected:hover{background:var(--accent-strong);color:#fff}
+.omp-cal-day.is-selected.today{box-shadow:none}
 .omp-range-error{margin:9px 0 0;color:#b44050;font-size:12px}
 .omp-range-actions{display:flex;justify-content:flex-end;margin-top:16px}
 .omp-range-actions .button{min-width:78px;padding:9px 16px}

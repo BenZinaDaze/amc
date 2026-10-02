@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import ompIcon from "./assets/omp.svg";
 import zaiIcon from "./assets/zai.svg";
@@ -153,6 +153,7 @@ function Glyph({ name, size = 20 }: { name: string; size?: number }) {
     spark: <><path d="m12 2 1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2ZM19 17l.7 1.3L21 19l-1.3.7L19 21l-.7-1.3L17 19l1.3-.7L19 17Z" /></>,
     repo: <><rect x="3" y="3" width="18" height="18" rx="3" /><path d="M8 3v18M12 8h5m-5 4h5" /></>,
     arrow: <path d="m9 18 6-6-6-6" />,
+    "arrow-left": <path d="m15 18-6-6 6-6" />,
     plus: <path d="M12 5v14M5 12h14" />,
     refresh: <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M5.5 9a7 7 0 0 1 12.6-2L20 12M4 12l1.9 5a7 7 0 0 0 12.6-2" /></>,
     search: <path d="m21 21-4.4-4.4m2.4-5.1a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z" />,
@@ -1325,6 +1326,146 @@ function UsageTrend({ trend, range }: { trend: UsageStats["trend"]; range: Usage
   </div>;
 }
 
+const calendarWeekdays = ["一", "二", "三", "四", "五", "六", "日"];
+
+/// 某月按周一开头的 7 列网格展开，跨月空位补 null。
+function calendarMonthCells(year: number, month: number): (string | null)[] {
+  const cells: (string | null)[] = Array((new Date(year, month, 1).getDay() + 6) % 7).fill(null);
+  const days = new Date(year, month + 1, 0).getDate();
+  for (let day = 1; day <= days; day++) cells.push(localDateString(new Date(year, month, day)));
+  while (cells.length % 7) cells.push(null);
+  return cells;
+}
+
+function shiftDate(date: Date, days: number): Date {
+  const shifted = new Date(date);
+  shifted.setDate(shifted.getDate() + days);
+  return shifted;
+}
+
+/// 自绘日期下拉：单月网格，替代原生 <input type="date">。固定定位于
+/// 触发字段下方（视口放不下时上翻），点击或键盘（方向键/Home/End/
+/// PageUp/PageDown，加 Alt 翻年）选择日期，Escape 或点击外部关闭。
+function DateCalendar({ field, value, onPick, onClose }: { field: HTMLElement; value: string; onPick: (iso: string) => void; onClose: () => void }) {
+  const initial = localMidnight(value) ?? new Date();
+  const [view, setView] = useState(() => new Date(initial.getFullYear(), initial.getMonth(), 1));
+  const [focusDay, setFocusDay] = useState(() => value || localDateString(new Date()));
+  const [focusTick, setFocusTick] = useState(0);
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function place() {
+      const rect = field.getBoundingClientRect();
+      const height = popRef.current?.offsetHeight ?? 250;
+      const width = popRef.current?.offsetWidth ?? 256;
+      const below = rect.bottom + 6 + height <= window.innerHeight;
+      setPosition({
+        left: Math.round(Math.min(Math.max(8, rect.left), window.innerWidth - width - 8)),
+        top: Math.round(below ? rect.bottom + 6 : Math.max(8, rect.top - height - 6)),
+      });
+    }
+    place();
+    window.addEventListener("resize", place);
+    document.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      document.removeEventListener("scroll", place, true);
+    };
+  }, [field, view]);
+
+  useEffect(() => {
+    if (!focusTick) return;
+    gridRef.current?.querySelector<HTMLButtonElement>(`button[data-date="${focusDay}"]`)?.focus();
+  }, [focusTick]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    }
+    function onPointerDown(event: PointerEvent) {
+      const target = event.target instanceof Node ? event.target : null;
+      if (target && !popRef.current?.contains(target) && !field.contains(target)) onClose();
+    }
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [field, onClose]);
+
+  function moveFocus(day: Date) {
+    setFocusDay(localDateString(day));
+    setFocusTick((tick) => tick + 1);
+    setView((current) => {
+      const first = new Date(day.getFullYear(), day.getMonth(), 1);
+      const anchor = new Date(current.getFullYear(), current.getMonth(), 1);
+      return first.getTime() === anchor.getTime() ? current : first;
+    });
+  }
+
+  function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const base = localMidnight(focusDay);
+    if (!base) return;
+    let next: Date | null = null;
+    switch (event.key) {
+      case "ArrowLeft": next = shiftDate(base, -1); break;
+      case "ArrowRight": next = shiftDate(base, 1); break;
+      case "ArrowUp": next = shiftDate(base, -7); break;
+      case "ArrowDown": next = shiftDate(base, 7); break;
+      case "Home": next = shiftDate(base, -((base.getDay() + 6) % 7)); break;
+      case "End": next = shiftDate(base, 6 - ((base.getDay() + 6) % 7)); break;
+      case "PageUp": next = new Date(base.getFullYear(), base.getMonth() - (event.altKey ? 12 : 1), 1); break;
+      case "PageDown": next = new Date(base.getFullYear(), base.getMonth() + (event.altKey ? 12 : 1), 1); break;
+    }
+    if (!next) return;
+    event.preventDefault();
+    moveFocus(next);
+  }
+
+  function shiftMonth(months: number) {
+    const first = new Date(view.getFullYear(), view.getMonth() + months, 1);
+    setView(first);
+    setFocusDay(localDateString(first));
+  }
+
+  const cells = calendarMonthCells(view.getFullYear(), view.getMonth());
+  const weeks: (string | null)[][] = [];
+  for (let index = 0; index < cells.length; index += 7) weeks.push(cells.slice(index, index + 7));
+  const today = localDateString(new Date());
+  const title = `${view.getFullYear()}年${view.getMonth() + 1}月`;
+
+  return <div ref={popRef} className="omp-date-pop" role="dialog" aria-label="选择日期"
+    style={position ? { left: position.left, top: position.top } : { visibility: "hidden" }}>
+    <div className="omp-cal-header">
+      <button type="button" className="omp-cal-navbtn" aria-label="上一月" onClick={() => shiftMonth(-1)}><Glyph name="arrow-left" size={14} /></button>
+      <div className="omp-cal-title" aria-hidden="true">{title}</div>
+      <button type="button" className="omp-cal-navbtn" aria-label="下一月" onClick={() => shiftMonth(1)}><Glyph name="arrow" size={14} /></button>
+    </div>
+    <div ref={gridRef} role="grid" aria-label={`选择 ${title} 的日期`} className="omp-cal-grid" onKeyDown={onKeyDown}>
+      <div role="row" className="omp-cal-week omp-cal-weekdays">
+        {calendarWeekdays.map((day) => <span role="columnheader" className="omp-cal-weekday" key={day}>{day}</span>)}
+      </div>
+      {weeks.map((week, weekIndex) => <div role="row" className="omp-cal-week" key={weekIndex}>
+        {week.map((iso, dayIndex) => {
+          if (iso === null) return <span role="gridcell" className="omp-cal-cell" key={dayIndex} />;
+          const selected = iso === value;
+          return <span role="gridcell" className="omp-cal-cell" key={dayIndex}>
+            <button type="button" className={`omp-cal-day${iso === today ? " today" : ""}${selected ? " is-selected" : ""}`}
+              data-date={iso} tabIndex={iso === focusDay ? 0 : -1} aria-selected={selected}
+              onClick={() => onPick(iso)}>{Number(iso.slice(8))}</button>
+          </span>;
+        })}
+      </div>)}
+    </div>
+  </div>;
+}
+
 function UsageRangePicker({ range, label, activeChoice, onApply }: {
   range: UsageRange;
   label: string;
@@ -1334,13 +1475,16 @@ function UsageRangePicker({ range, label, activeChoice, onApply }: {
   const [open, setOpen] = useState(false);
   const [draftChoice, setDraftChoice] = useState<UsageChoice>(activeChoice);
   const [dates, setDates] = useState(() => dateFieldsForChoice(activeChoice, range));
+  const [editingDate, setEditingDate] = useState<"start" | "end" | null>(null);
   const container = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const popup = useRef<HTMLDivElement>(null);
+  const startField = useRef<HTMLButtonElement>(null);
+  const endField = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
-    popup.current?.querySelector<HTMLButtonElement | HTMLInputElement>('button[aria-pressed="true"], input')?.focus();
+    popup.current?.querySelector<HTMLButtonElement>('button[aria-pressed="true"], .omp-cal-day[tabindex="0"]')?.focus();
     function onPointerDown(event: PointerEvent) {
       if (event.target instanceof Node && !container.current?.contains(event.target)) setOpen(false);
     }
@@ -1392,6 +1536,7 @@ function UsageRangePicker({ range, label, activeChoice, onApply }: {
       if (!open) {
         setDraftChoice(activeChoice);
         setDates(dateFieldsForChoice(activeChoice, range));
+        setEditingDate(null);
       }
       setOpen(!open);
     }}>
@@ -1406,10 +1551,24 @@ function UsageRangePicker({ range, label, activeChoice, onApply }: {
       </div>
       <div className="omp-range-custom">
         <div className="omp-range-dates">
-          <label>开始日期<input type="date" value={dates.start} onChange={(event) => { setDates({ ...dates, start: event.target.value }); setDraftChoice("custom"); }} aria-invalid={draftChoice === "custom" && !!dateError} /></label>
+          <button ref={startField} type="button" className="omp-date-field" aria-haspopup="dialog" aria-expanded={editingDate === "start"} aria-invalid={draftChoice === "custom" && !!dateError} onClick={() => setEditingDate((current) => current === "start" ? null : "start")}>
+            <small>开始日期</small><strong className={dates.start ? undefined : "unset"}>{dates.start ? dates.start.replace(/-/g, "/") : "—"}</strong>
+          </button>
           <span className="omp-range-arrow" aria-hidden="true">→</span>
-          <label>结束日期<input type="date" value={dates.end} onChange={(event) => { setDates({ ...dates, end: event.target.value }); setDraftChoice("custom"); }} aria-invalid={draftChoice === "custom" && !!dateError} /></label>
+          <button ref={endField} type="button" className="omp-date-field" aria-haspopup="dialog" aria-expanded={editingDate === "end"} aria-invalid={draftChoice === "custom" && !!dateError} onClick={() => setEditingDate((current) => current === "end" ? null : "end")}>
+            <small>结束日期</small><strong className={dates.end ? undefined : "unset"}>{dates.end ? dates.end.replace(/-/g, "/") : "—"}</strong>
+          </button>
         </div>
+        {editingDate !== null && <DateCalendar
+          field={(editingDate === "start" ? startField : endField).current!}
+          value={editingDate === "start" ? dates.start : dates.end}
+          onPick={(iso) => {
+            setDates(editingDate === "start" ? { ...dates, start: iso } : { ...dates, end: iso });
+            setDraftChoice("custom");
+            setEditingDate(null);
+            (editingDate === "start" ? startField : endField).current?.focus();
+          }}
+          onClose={() => setEditingDate(null)} />}
         {draftChoice === "custom" && dateError && <p className="omp-range-error" role="alert">{dateError}</p>}
         <div className="omp-range-actions"><button type="button" className="button button-primary" disabled={draftChoice === "custom" && !!dateError} onClick={apply}>应用</button></div>
       </div>
