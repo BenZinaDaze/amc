@@ -162,8 +162,8 @@ fn state_uses_canonical_workspace_and_only_lists_amc_managed_mcp() {
     );
     let names: Vec<&str> = state.mcp.iter().map(|server| server.name.as_str()).collect();
     assert_eq!(names, vec!["demo"]);
-    assert_eq!(state.skills[0].source, "Claude · detected");
-    assert!(!state.skills[0].managed);
+    assert_eq!(state.detected[0].source, "Claude · detected");
+    assert!(state.skills.is_empty());
 }
 
 #[test]
@@ -648,59 +648,609 @@ fn mcp_toggle_only_touches_target_agent_and_skips_uninstalled() {
 }
 
 
-#[test]
-fn skill_sync_blocks_local_edits_and_rollback_restores_previous_version() {
-    let fixture = Fixture::new();
-    let workspace = fixture.workspace();
+/// 建一个含单个技能 example 的本地仓库并注册到 core，返回 (仓库路径, 仓库 id)。
+fn distribution_repo(fixture: &Fixture, core: &mut Core, body: &str) -> (PathBuf, i64) {
     let repo = fixture.root.join("source");
     fs::create_dir_all(repo.join("skills/example")).unwrap();
     git(&repo, &["init", "-b", "main"]);
     git(&repo, &["config", "user.name", "AMC test"]);
     git(&repo, &["config", "user.email", "amc@example.invalid"]);
-    let source = repo.join("skills/example/SKILL.md");
     fs::write(
-        &source,
-        "---\nname: example\ndescription: First version\n---\nOriginal\n",
+        repo.join("skills/example/SKILL.md"),
+        format!("---\nname: example\ndescription: Demo\n---\n{body}\n"),
     )
     .unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-m", "first"]);
-
-    let mut core = fixture.core();
     let registered = core
         .add_repository(repo.to_string_lossy().into_owned(), "main".into())
         .unwrap();
+    (repo, registered.id)
+}
+
+#[test]
+fn skill_distribution_installs_toggles_updates_and_removes() {
+    let fixture = Fixture::new();
+    let home = fixture.root.clone();
+    let _env = McpEnv::new(&home);
+    let mut core = fixture.core();
+    let (repo, repository_id) = distribution_repo(&fixture, &mut core, "First");
+    let agents_dir = home.join(".agents/skills/example");
+    let claude_dir = home.join(".claude/skills/example");
+    let central = fixture.root.join("data/skills/example");
+
+    // 安装：默认两个投影目标都写入，中央副本落地。
     let plan = core
-        .plan_skill(workspace.clone(), registered.id, "skills/example".into())
+        .plan_skill(repository_id, "skills/example".into())
         .unwrap();
     core.apply(plan.id).unwrap();
-    let installed = Path::new(&workspace.path).join(".agents/skills/example/SKILL.md");
-    assert!(fs::read_to_string(&installed).unwrap().contains("Original"));
-    let record = core.store.records().unwrap().remove(0);
+    assert!(fs::read_to_string(agents_dir.join("SKILL.md")).unwrap().contains("First"));
+    assert!(fs::read_to_string(claude_dir.join("SKILL.md")).unwrap().contains("First"));
+    assert!(central.join("SKILL.md").is_file());
+    let record = core.store.skill("example").unwrap().unwrap();
+    assert!(record.omp && record.codex && record.claude);
 
-    fs::write(&installed, "Local edit\n").unwrap();
-    assert!(core.plan_sync_record(record.clone()).is_err());
+    // 停用 Claude：只删 ~/.claude 投影。停用 Codex：OMP 仍启用，目录
+    // 保留并写入 Codex 禁用项；再停用 OMP：双关后目录移除、配置清理。
+    let plan = core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Claude, false)
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    assert!(!claude_dir.exists() && agents_dir.exists());
+    let codex_config = home.join("codex/config.toml");
+    // 预置含凭据的 Codex 配置：技能开关的预览必须脱敏。
+    fs::create_dir_all(home.join("codex")).unwrap();
     fs::write(
-        &installed,
-        "---\nname: example\ndescription: First version\n---\nOriginal\n",
+        &codex_config,
+        "[model_providers.custom]\nexperimental_bearer_token = \"sk-test-bearer-123\"\n\n[mcp_servers.thing]\n[mcp_servers.thing.env]\nAPI_KEY = \"sk-test-env-456\"\n",
     )
     .unwrap();
+    let plan = core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Codex, false)
+        .unwrap();
+    let config_change = plan
+        .changes
+        .iter()
+        .find(|change| change.path.contains("config.toml"))
+        .expect("预览应包含 codex config.toml 变更");
+    assert!(!config_change.before.contains("sk-test-bearer-123"));
+    assert!(!config_change.before.contains("sk-test-env-456"));
+    assert!(!config_change.after.contains("sk-test-bearer-123"));
+    assert!(!config_change.after.contains("sk-test-env-456"));
+    assert!(config_change.after.contains("[[skills.config]]"));
+    assert!(plan.warnings.iter().any(|w| w.contains("共享目录保留")), "{:?}", plan.warnings);
+    core.apply(plan.id).unwrap();
+    assert!(agents_dir.exists() && !claude_dir.exists());
+    let codex_text = fs::read_to_string(&codex_config).unwrap();
+    assert!(codex_text.contains("[[skills.config]]") && codex_text.contains("enabled = false"), "{codex_text}");
+    assert!(codex_text.contains(&agents_dir.join("SKILL.md").to_string_lossy().as_ref()), "{codex_text}");
+    let record = core.store.skill("example").unwrap().unwrap();
+    assert!(record.omp && !record.codex && !record.claude);
+    let omp_config = home.join("omp/config.yml");
+    let plan = core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Omp, false)
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    assert!(!agents_dir.exists() && !claude_dir.exists());
+    let config_text = fs::read_to_string(&omp_config).unwrap_or_default();
+    assert!(!config_text.contains("example"), "{config_text}");
+    assert!(central.join("SKILL.md").is_file());
+    let record = core.store.skill("example").unwrap().unwrap();
+    assert!(!record.omp && !record.codex && !record.claude);
+
+    // 重新启用 Codex：目录恢复，禁用项移除。
+    let plan = core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Codex, true)
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    assert!(agents_dir.join("SKILL.md").is_file());
+    assert!(!fs::read_to_string(&codex_config).unwrap().contains("skills.config"));
+    assert!(central.join("SKILL.md").is_file());
+    let record = core.store.skill("example").unwrap().unwrap();
+    assert!(!record.omp && record.codex && !record.claude);
+    // 再启用 OMP：目录已在（Codex 视角所有、内容一致）→ 不冲突。
+    let plan = core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Omp, true)
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    assert!(fs::read_to_string(agents_dir.join("SKILL.md")).unwrap().contains("First"));
+
+    // 手动修改过的共享目录拒绝双关移除（OMP 先关成功——目录归 Codex，
+    // 改动不影响；Codex 关闭触发移除时校验失败）。
+    let plan = core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Omp, false)
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    fs::write(agents_dir.join("SKILL.md"), "tampered\n").unwrap();
+    assert!(core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Codex, false)
+        .is_err());
+    assert!(fs::read_to_string(agents_dir.join("SKILL.md")).unwrap().contains("tampered"));
     fs::write(
-        &source,
-        "---\nname: example\ndescription: Second version\n---\nUpdated\n",
+        agents_dir.join("SKILL.md"),
+        "---\nname: example\ndescription: Demo\n---\nFirst\n",
+    )
+    .unwrap();
+
+    // 仓库更新后 plan_skill 走更新路径，重新投影启用中的目标。
+    fs::write(
+        repo.join("skills/example/SKILL.md"),
+        "---\nname: example\ndescription: Demo\n---\nSecond\n",
     )
     .unwrap();
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-m", "second"]);
-    let message = core.check_all_updates().unwrap();
-    assert!(message.message.contains("1 个仓库"));
-    assert!(core.store.installations().unwrap()[0].update_available);
-    let plan = core.plan_sync_record(record).unwrap();
-    core.apply(plan.id).unwrap();
-    assert!(fs::read_to_string(&installed).unwrap().contains("Updated"));
+    core.check_all_updates().unwrap();
     let plan = core
-        .rollback_skill(core.store.records().unwrap()[0].id)
+        .plan_skill(repository_id, "skills/example".into())
         .unwrap();
     core.apply(plan.id).unwrap();
-    assert!(fs::read_to_string(&installed).unwrap().contains("Original"));
+    assert!(fs::read_to_string(agents_dir.join("SKILL.md")).unwrap().contains("Second"));
+    assert!(!claude_dir.exists());
+
+    // 移除：清掉启用中的投影与中央副本，记录删除。
+    let plan = core.plan_skill_remove("example".into()).unwrap();
+    core.apply(plan.id).unwrap();
+    assert!(!agents_dir.exists() && !central.exists());
+    assert!(core.store.skill("example").unwrap().is_none());
 }
+
+#[test]
+fn skill_distribution_refuses_unmanaged_and_foreign_sources() {
+    let fixture = Fixture::new();
+    let home = fixture.root.clone();
+    let _env = McpEnv::new(&home);
+    let mut core = fixture.core();
+
+    // ~/.claude 下已有同名非 AMC 技能：安装必须整体失败，不写入任何目标。
+    let claude_dir = home.join(".claude/skills/example");
+    fs::create_dir_all(&claude_dir).unwrap();
+    fs::write(claude_dir.join("SKILL.md"), "---\nname: example\ndescription: Mine\n---\n").unwrap();
+    let (_, repository_id) = distribution_repo(&fixture, &mut core, "First");
+    let error = core
+        .plan_skill(repository_id, "skills/example".into())
+        .unwrap_err();
+    assert!(error.contains("拒绝覆盖"), "{error}");
+    assert!(!home.join(".agents/skills/example").exists());
+    assert!(!fixture.root.join("data/skills/example").exists());
+    assert!(core.store.skill("example").unwrap().is_none());
+
+    // 清掉障碍后安装成功；随后另一仓库携带同名技能时拒绝接管。
+    fs::remove_dir_all(&claude_dir).unwrap();
+    let plan = core
+        .plan_skill(repository_id, "skills/example".into())
+        .unwrap();
+    core.apply(plan.id).unwrap();
+
+    let repo_b = fixture.root.join("source-b");
+    fs::create_dir_all(repo_b.join("skills/example")).unwrap();
+    git(&repo_b, &["init", "-b", "main"]);
+    git(&repo_b, &["config", "user.name", "AMC test"]);
+    git(&repo_b, &["config", "user.email", "amc@example.invalid"]);
+    fs::write(
+        repo_b.join("skills/example/SKILL.md"),
+        "---\nname: example\ndescription: Other\n---\n",
+    )
+    .unwrap();
+    git(&repo_b, &["add", "."]);
+    git(&repo_b, &["commit", "-m", "first"]);
+    let registered_b = core
+        .add_repository(repo_b.to_string_lossy().into_owned(), "main".into())
+        .unwrap();
+    let error = core
+        .plan_skill(registered_b.id, "skills/example".into())
+        .unwrap_err();
+    assert!(error.contains("其他来源"), "{error}");
+}
+
+#[test]
+fn skill_distribution_spares_user_restored_copy_on_disabled_target() {
+    let fixture = Fixture::new();
+    let home = fixture.root.clone();
+    let _env = McpEnv::new(&home);
+    let mut core = fixture.core();
+    let (_, repository_id) = distribution_repo(&fixture, &mut core, "First");
+    let agents_dir = home.join(".agents/skills/example");
+    let claude_dir = home.join(".claude/skills/example");
+    let plan = core
+        .plan_skill(repository_id, "skills/example".into())
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    // 停用 Claude 投影后，用户手动放回一份内容完全相同的副本：
+    // 内容相等不能证明归属，重新启用必须冲突而不是静默接管。
+    let plan = core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Claude, false)
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    fs::create_dir_all(&claude_dir).unwrap();
+    fs::write(
+        claude_dir.join("SKILL.md"),
+        "---\nname: example\ndescription: Demo\n---\nFirst\n",
+    )
+    .unwrap();
+    let error = core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Claude, true)
+        .unwrap_err();
+    assert!(error.contains("拒绝覆盖"), "{error}");
+    // 整体移除只清理启用中的投影；停用目标上的用户副本原样保留。
+    let plan = core.plan_skill_remove("example".into()).unwrap();
+    core.apply(plan.id).unwrap();
+    assert!(claude_dir.is_dir());
+    assert!(!agents_dir.exists());
+    assert!(!fixture.root.join("data/skills/example").exists());
+    assert!(core.store.skill("example").unwrap().is_none());
+}
+
+#[test]
+fn skill_distribution_refuses_even_identical_unmanaged_copy() {
+    let fixture = Fixture::new();
+    let home = fixture.root.clone();
+    let _env = McpEnv::new(&home);
+    let mut core = fixture.core();
+    let (_, repository_id) = distribution_repo(&fixture, &mut core, "First");
+    // 用户自放的同名目录（内容与仓库不同）→ 安装冲突。
+    let dir = home.join(".agents/skills/example");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: example\ndescription: Mine\n---\n",
+    )
+    .unwrap();
+    let error = core
+        .plan_skill(repository_id, "skills/example".into())
+        .unwrap_err();
+    assert!(error.contains("拒绝覆盖"), "{error}");
+    // 内容与仓库完全相同的用户副本同样冲突：内容相等不证明归属。
+    fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: example\ndescription: Demo\n---\nFirst\n",
+    )
+    .unwrap();
+    let error = core
+        .plan_skill(repository_id, "skills/example".into())
+        .unwrap_err();
+    assert!(error.contains("拒绝覆盖"), "{error}");
+    assert!(dir.is_dir());
+    assert!(core.store.skill("example").unwrap().is_none());
+}
+
+#[test]
+fn enabling_one_from_both_off_restores_other_isolation() {
+    let fixture = Fixture::new();
+    let home = fixture.root.clone();
+    let _env = McpEnv::new(&home);
+    let mut core = fixture.core();
+    let (_, repository_id) = distribution_repo(&fixture, &mut core, "First");
+    let agents_dir = home.join(".agents/skills/example");
+    let codex_config = home.join("codex/config.toml");
+    let omp_config = home.join("omp/config.yml");
+    let plan = core
+        .plan_skill(repository_id, "skills/example".into())
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    // 双关：目录移除、两份配置清空。
+    for target in [skills::SkillTarget::Codex, skills::SkillTarget::Omp] {
+        let plan = core.plan_skill_toggle("example".into(), target, false).unwrap();
+        core.apply(plan.id).unwrap();
+    }
+    assert!(!agents_dir.exists());
+    assert!(!fs::read_to_string(&codex_config).unwrap_or_default().contains("example"));
+    assert!(!fs::read_to_string(&omp_config).unwrap_or_default().contains("example"));
+
+    // 双关 → 仅 Codex：目录恢复，Codex 禁用项清空，同时必须写 OMP 忽略项
+    // 维持隔离（否则 OMP 也会加载）。
+    let plan = core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Codex, true)
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    assert!(agents_dir.join("SKILL.md").is_file());
+    assert!(!fs::read_to_string(&codex_config).unwrap().contains("example"));
+    let omp_text = fs::read_to_string(&omp_config).unwrap();
+    assert!(omp_text.contains("ignoredSkills") && omp_text.contains("example"), "{omp_text}");
+    let record = core.store.skill("example").unwrap().unwrap();
+    assert!(!record.omp && record.codex);
+
+    // 回到双关，再验证双关 → 仅 OMP 的反向转换。
+    let plan = core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Codex, false)
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    let plan = core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Omp, true)
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    assert!(agents_dir.join("SKILL.md").is_file());
+    let omp_text = fs::read_to_string(&omp_config).unwrap();
+    assert!(!omp_text.contains("example"), "{omp_text}");
+    let codex_text = fs::read_to_string(&codex_config).unwrap();
+    assert!(codex_text.contains("[[skills.config]]") && codex_text.contains("enabled = false"), "{codex_text}");
+    assert!(codex_text.contains(&agents_dir.join("SKILL.md").to_string_lossy().as_ref()), "{codex_text}");
+    let record = core.store.skill("example").unwrap().unwrap();
+    assert!(record.omp && !record.codex);
+}
+
+#[test]
+fn omp_disable_writes_ignored_skills_and_enable_cleans_it() {
+    let fixture = Fixture::new();
+    let home = fixture.root.clone();
+    let _env = McpEnv::new(&home);
+    let mut core = fixture.core();
+    let (_, repository_id) = distribution_repo(&fixture, &mut core, "First");
+    let agents_dir = home.join(".agents/skills/example");
+    let plan = core
+        .plan_skill(repository_id, "skills/example".into())
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    // OMP 停用（Codex 仍启用）：目录保留，config.yml 写入忽略项。
+    let plan = core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Omp, false)
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    assert!(agents_dir.join("SKILL.md").is_file());
+    let omp_config = home.join("omp/config.yml");
+    let text = fs::read_to_string(&omp_config).unwrap();
+    assert!(text.contains("ignoredSkills") && text.contains("example"), "{text}");
+    let record = core.store.skill("example").unwrap().unwrap();
+    assert!(!record.omp && record.codex);
+    // 重新启用：忽略项移除。
+    let plan = core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Omp, true)
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    let text = fs::read_to_string(&omp_config).unwrap();
+    assert!(!text.contains("example"), "{text}");
+    let record = core.store.skill("example").unwrap().unwrap();
+    assert!(record.omp && record.codex);
+}
+
+#[test]
+fn apply_skill_writes_rolls_back_all_steps_when_later_parent_is_file() {
+    let fixture = Fixture::new();
+    let home = fixture.root.clone();
+    let _env = McpEnv::new(&home);
+    let mut core = fixture.core();
+    let (_, repository_id) = distribution_repo(&fixture, &mut core, "First");
+    // 第二个投影目标的父路径被普通文件占用：整个事务必须完全回滚。
+    fs::create_dir_all(home.join(".agents/skills")).unwrap();
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    fs::write(home.join(".claude/skills"), "not a directory").unwrap();
+    let plan = core
+        .plan_skill(repository_id, "skills/example".into())
+        .unwrap();
+    let error = core.apply(plan.id).unwrap_err();
+    assert!(error.contains("创建目录"), "{error}");
+    let data = fixture.root.join("data");
+    assert!(!data.join("skills/example").exists(), "中央副本应回滚");
+    assert!(!home.join(".agents/skills/example").exists(), "agents 投影应回滚");
+    assert!(core.store.skill("example").unwrap().is_none());
+    let backups = data.join("backups/skills");
+    assert!(!backups.exists() || fs::read_dir(&backups).unwrap().next().is_none(), "备份应清理");
+}
+
+#[test]
+fn undo_skill_writes_keeps_backup_and_reports_path_on_failed_restore() {
+    let root = std::env::temp_dir().join(format!("amc-undo-{}", Uuid::new_v4()));
+    let backup_dir = root.join("backups");
+    let backup = backup_dir.join("0");
+    fs::create_dir_all(&backup).unwrap();
+    fs::write(backup.join("SKILL.md"), "old").unwrap();
+    // 目标父目录不存在，恢复 rename 必然失败。
+    let target = root.join("missing-parent").join("example");
+    let done = vec![SkillUndo {
+        had_before: true,
+        backup: backup.clone(),
+        target: target.clone(),
+    }];
+    let error = undo_skill_writes(&backup_dir, &done).unwrap_err();
+    assert!(error.contains("备份保留在"), "{error}");
+    assert!(error.contains(&backup.display().to_string()), "{error}");
+    assert!(backup.is_dir(), "恢复失败的旧副本必须保留");
+    assert!(!target.exists());
+    // 父目录恢复后重试：成功路径会清理整个备份目录。
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    undo_skill_writes(&backup_dir, &done).unwrap();
+    assert!(target.is_dir());
+    assert!(!backup_dir.exists());
+}
+
+#[test]
+fn legacy_installations_migrate_into_distribution_on_startup() {
+    let fixture = Fixture::new();
+    let home = fixture.root.clone();
+    let _env = McpEnv::new(&home);
+    let data = fixture.root.join("data");
+    fs::create_dir_all(&data).unwrap();
+    // 造一个旧 schema 数据库：仓库 + 一条活跃工作区安装。
+    let db = rusqlite::Connection::open(data.join("amc.sqlite3")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE repositories (id INTEGER PRIMARY KEY, url TEXT NOT NULL, git_ref TEXT NOT NULL, UNIQUE(url, git_ref));
+         CREATE TABLE installations (id INTEGER PRIMARY KEY, repository_id INTEGER NOT NULL REFERENCES repositories(id), skill_path TEXT NOT NULL, name TEXT NOT NULL, target_path TEXT NOT NULL UNIQUE, git_commit TEXT NOT NULL, content_hash TEXT NOT NULL, rollback_path TEXT, rollback_commit TEXT, rollback_hash TEXT, active INTEGER NOT NULL DEFAULT 1);",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO repositories(url, git_ref) VALUES ('https://example.org/skills.git', '')",
+        [],
+    )
+    .unwrap();
+    let repo_id = db.last_insert_rowid();
+    drop(db);
+    // 旧安装的真实文件位置（工作区即 home）。
+    let target = home.join(".agents/skills/example");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(
+        target.join("SKILL.md"),
+        "---\nname: example\ndescription: Demo\n---\nLegacy\n",
+    )
+    .unwrap();
+    let hash = platform::tree_hash(&platform::snapshot(&target).unwrap());
+    let db = rusqlite::Connection::open(data.join("amc.sqlite3")).unwrap();
+    db.execute(
+        "INSERT INTO installations(repository_id,skill_path,name,target_path,git_commit,content_hash) VALUES (?1,'skills/example','example',?2,'abc123',?3)",
+        rusqlite::params![repo_id, target.to_str().unwrap(), hash],
+    )
+    .unwrap();
+    drop(db);
+
+    let core = Core::new(data.clone()).unwrap();
+    // 迁移结果：skills 记录 + 中央副本 + Claude 投影；旧表已删除。
+    let record = core.store.skill("example").unwrap().unwrap();
+    assert!(record.omp && record.codex && record.claude);
+    assert_eq!(record.hash, hash);
+    assert_eq!(record.repository_id, repo_id);
+    assert!(data.join("skills/example/SKILL.md").is_file());
+    assert!(home.join(".claude/skills/example/SKILL.md").is_file());
+    assert!(fs::read_to_string(home.join(".claude/skills/example/SKILL.md")).unwrap().contains("Legacy"));
+    let exists: i64 = core
+        .store
+        .db
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='installations'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(exists, 0);
+    // 再次启动为无操作。
+    let core = Core::new(data).unwrap();
+    assert_eq!(core.store.skills().unwrap().len(), 1);
+}
+
+#[test]
+fn migration_does_not_claim_existing_user_claude_directory() {
+    let fixture = Fixture::new();
+    let home = fixture.root.clone();
+    let _env = McpEnv::new(&home);
+    let data = fixture.root.join("data");
+    fs::create_dir_all(&data).unwrap();
+    let db = rusqlite::Connection::open(data.join("amc.sqlite3")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE repositories (id INTEGER PRIMARY KEY, url TEXT NOT NULL, git_ref TEXT NOT NULL, UNIQUE(url, git_ref));
+         CREATE TABLE installations (id INTEGER PRIMARY KEY, repository_id INTEGER NOT NULL REFERENCES repositories(id), skill_path TEXT NOT NULL, name TEXT NOT NULL, target_path TEXT NOT NULL UNIQUE, git_commit TEXT NOT NULL, content_hash TEXT NOT NULL, rollback_path TEXT, rollback_commit TEXT, rollback_hash TEXT, active INTEGER NOT NULL DEFAULT 1);",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO repositories(url, git_ref) VALUES ('https://example.org/skills.git', '')",
+        [],
+    )
+    .unwrap();
+    let repo_id = db.last_insert_rowid();
+    drop(db);
+    // 用户自己在 ~/.claude/skills 放的同名目录：内容与旧安装不同。
+    let user_dir = home.join(".claude/skills/example");
+    fs::create_dir_all(&user_dir).unwrap();
+    fs::write(
+        user_dir.join("SKILL.md"),
+        "---\nname: example\ndescription: Mine\n---\nUser copy\n",
+    )
+    .unwrap();
+    // 旧安装（工作区即 home）。
+    let target = home.join(".agents/skills/example");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(
+        target.join("SKILL.md"),
+        "---\nname: example\ndescription: Demo\n---\nLegacy\n",
+    )
+    .unwrap();
+    let hash = platform::tree_hash(&platform::snapshot(&target).unwrap());
+    let db = rusqlite::Connection::open(data.join("amc.sqlite3")).unwrap();
+    db.execute(
+        "INSERT INTO installations(repository_id,skill_path,name,target_path,git_commit,content_hash) VALUES (?1,'skills/example','example',?2,'abc123',?3)",
+        rusqlite::params![repo_id, target.to_str().unwrap(), hash],
+    )
+    .unwrap();
+    drop(db);
+
+    let core = Core::new(data.clone()).unwrap();
+    // 只接管 agents；用户目录不被声明、不被触碰。
+    let record = core.store.skill("example").unwrap().unwrap();
+    assert!(record.omp && record.codex && !record.claude);
+    assert!(fs::read_to_string(user_dir.join("SKILL.md")).unwrap().contains("User copy"));
+    let exists: i64 = core
+        .store
+        .db
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='installations'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(exists, 0);
+    // 停用目标上的用户目录仍出现在检测列表中。
+    let state = core.state(fixture.workspace()).unwrap();
+    assert!(state
+        .detected
+        .iter()
+        .any(|skill| skill.name == "example" && skill.path.contains(".claude")));
+}
+
+#[test]
+fn migration_retries_after_claude_write_failure() {
+    let fixture = Fixture::new();
+    let home = fixture.root.clone();
+    let _env = McpEnv::new(&home);
+    let data = fixture.root.join("data");
+    fs::create_dir_all(&data).unwrap();
+    let db = rusqlite::Connection::open(data.join("amc.sqlite3")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE repositories (id INTEGER PRIMARY KEY, url TEXT NOT NULL, git_ref TEXT NOT NULL, UNIQUE(url, git_ref));
+         CREATE TABLE installations (id INTEGER PRIMARY KEY, repository_id INTEGER NOT NULL REFERENCES repositories(id), skill_path TEXT NOT NULL, name TEXT NOT NULL, target_path TEXT NOT NULL UNIQUE, git_commit TEXT NOT NULL, content_hash TEXT NOT NULL, rollback_path TEXT, rollback_commit TEXT, rollback_hash TEXT, active INTEGER NOT NULL DEFAULT 1);",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO repositories(url, git_ref) VALUES ('https://example.org/skills.git', '')",
+        [],
+    )
+    .unwrap();
+    let repo_id = db.last_insert_rowid();
+    drop(db);
+    // ~/.claude 是普通文件：Claude 投影必然写入失败。
+    fs::write(home.join(".claude"), "not a directory").unwrap();
+    let target = home.join(".agents/skills/example");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(
+        target.join("SKILL.md"),
+        "---\nname: example\ndescription: Demo\n---\nLegacy\n",
+    )
+    .unwrap();
+    let hash = platform::tree_hash(&platform::snapshot(&target).unwrap());
+    let db = rusqlite::Connection::open(data.join("amc.sqlite3")).unwrap();
+    db.execute(
+        "INSERT INTO installations(repository_id,skill_path,name,target_path,git_commit,content_hash) VALUES (?1,'skills/example','example',?2,'abc123',?3)",
+        rusqlite::params![repo_id, target.to_str().unwrap(), hash],
+    )
+    .unwrap();
+    drop(db);
+
+    // 启动不因迁移失败而中断；记录未提交、旧表保留待重试。
+    let core = Core::new(data.clone()).unwrap();
+    assert!(core.store.skill("example").unwrap().is_none());
+    let exists: i64 = core
+        .store
+        .db
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='installations'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(exists, 1);
+    assert!(!home.join(".claude/skills").exists());
+
+    // 排除障碍后重启：迁移完成并删除旧表。
+    fs::remove_file(home.join(".claude")).unwrap();
+    let core = Core::new(data).unwrap();
+    let record = core.store.skill("example").unwrap().unwrap();
+    assert!(record.omp && record.codex && record.claude);
+    assert!(home.join(".claude/skills/example/SKILL.md").is_file());
+    let exists: i64 = core
+        .store
+        .db
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='installations'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(exists, 0);
+}
+

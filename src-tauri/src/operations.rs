@@ -1,7 +1,8 @@
 use crate::{
     mcp::{self, Agent, McpAction, McpWrite},
     platform::{self, Result},
-    store::{InstallRecord, Installation, McpRecord, Repository, Store},
+    skills::{self, SkillTarget, SkillWrite},
+    store::{McpRecord, Repository, SkillRecord, Store},
     workspace::{self, Workspace},
 };
 use serde::Serialize;
@@ -27,12 +28,14 @@ pub struct State {
     workspace: Workspace,
     agent: AgentInfo,
     mcp: Vec<mcp::McpView>,
-    skills: Vec<platform::SkillView>,
+    /// 分发管理的技能（skills 表 + 中央副本投影到用户级目录）。
+    skills: Vec<skills::SkillView>,
+    /// 工作区内检测到、但不归 AMC 管理的技能（只读展示）。
+    detected: Vec<platform::SkillView>,
     repositories: Vec<Repository>,
-    installations: Vec<Installation>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Change {
     path: String,
@@ -40,7 +43,7 @@ pub struct Change {
     after: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct Plan {
     id: String,
     summary: String,
@@ -48,7 +51,7 @@ pub struct Plan {
     warnings: Vec<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct Message {
     message: String,
 }
@@ -60,9 +63,6 @@ pub struct RepositorySkill {
     description: String,
 }
 
-/// `record_target` 的返回：(安装根目录, 目标路径, 内容校验哈希, 目标快照)。
-type RecordTarget = (PathBuf, PathBuf, Option<String>, Vec<(PathBuf, Vec<u8>)>);
-
 pub struct Core {
     pub store: Store,
     plans: HashMap<String, Pending>,
@@ -70,7 +70,7 @@ pub struct Core {
 
 enum Pending {
     Mcp(Box<McpPending>),
-    Skill(Box<SkillPending>),
+    Skills(Box<SkillsPending>),
 }
 
 struct McpPending {
@@ -78,33 +78,24 @@ struct McpPending {
     action: McpAction,
 }
 
-struct SkillPending {
-    root: PathBuf,
-    target: PathBuf,
-    old_hash: Option<String>,
-    record: Option<InstallRecord>,
-    action: SkillAction,
+/// 分发技能的待执行写入：目录级投影 + 配置文件投影 + 动作。
+struct SkillsPending {
+    writes: Vec<SkillWrite>,
+    config_writes: Vec<skills::ConfigWrite>,
+    action: skills::SkillAction,
 }
 
-enum SkillAction {
-    Install {
-        repository_id: i64,
-        skill_path: String,
-        name: String,
-        commit: String,
-        files: Vec<(PathBuf, Vec<u8>)>,
-        hash: String,
-    },
-    Remove,
-    Rollback {
-        backup: PathBuf,
-    },
-}
+/// `validated_skill_source` 的返回：(技能名, 文件快照, 内容哈希, 提交)。
+type ValidatedSource = (String, Vec<(PathBuf, Vec<u8>)>, String, String);
 
 impl Core {
     pub fn new(root: PathBuf) -> Result<Self> {
+        let store = Store::new(root)?;
+        // 一次性迁移：旧版工作区安装（installations 表）→ 分发模型，
+        // 完成后旧表即被删除。
+        skills::migrate_legacy(&store)?;
         Ok(Self {
-            store: Store::new(root)?,
+            store,
             plans: HashMap::new(),
         })
     }
@@ -112,19 +103,34 @@ impl Core {
     pub fn state(&self, workspace: Workspace) -> Result<State> {
         let root = workspace::root(&workspace)?;
         let (installed, version) = crate::usage::omp_status();
-        let installations = self
-            .store
-            .installations()?
+        let skill_views = skills::state(&self.store)?;
+        let targets = skills::Targets::from_env()?;
+        // 检测列表只排除启用中的投影；停用目标上的目录（可能是用户
+        // 自己的副本）照常展示。OMP 与 Codex 共用 ~/.agents/skills。
+        let managed_paths: Vec<PathBuf> = skill_views
+            .iter()
+            .flat_map(|view| {
+                let mut dirs = Vec::new();
+                if view.omp || view.codex {
+                    dirs.push(targets.skill_dir(skills::SkillTarget::Omp, &view.name));
+                }
+                if view.claude {
+                    dirs.push(targets.skill_dir(skills::SkillTarget::Claude, &view.name));
+                }
+                dirs
+            })
+            .collect();
+        let detected = workspace::scan_skills(&root)?
             .into_iter()
-            .filter(|entry| workspace::is_installation_target(&root, Path::new(&entry.target_path)))
+            .filter(|skill| !managed_paths.contains(&PathBuf::from(&skill.path)))
             .collect();
         Ok(State {
             workspace: workspace::from_root(&root),
             agent: AgentInfo { installed, version },
             mcp: mcp::state(&self.store)?,
-            skills: workspace::scan_skills(&root)?,
+            skills: skill_views,
+            detected,
             repositories: self.store.repositories()?,
-            installations,
         })
     }
 
@@ -336,7 +342,7 @@ impl Core {
         let commit = self.store.update_repository(&repo)?;
         Ok(Message {
             message: format!(
-                "已更新仓库缓存至 {}；安装记录将显示可用更新",
+                "已更新仓库缓存至 {}；技能列表将显示可用更新",
                 &commit[..commit.len().min(12)]
             ),
         })
@@ -360,7 +366,7 @@ impl Core {
             }
         }
         let message = if failures.is_empty() {
-            format!("已刷新 {} 个仓库；安装记录已更新", refreshed)
+            format!("已刷新 {} 个仓库", refreshed)
         } else {
             format!(
                 "已刷新 {}/{} 个仓库；失败：{}",
@@ -371,52 +377,14 @@ impl Core {
         };
         Ok(Message { message })
     }
-    pub fn plan_skill(
-        &mut self,
-        workspace: Workspace,
+    /// 校验仓库内的技能来源，返回 (name, files, hash, commit)。
+    fn validated_skill_source(
+        &self,
         repository_id: i64,
-        skill_path: String,
-    ) -> Result<Plan> {
-        let workspace_root = workspace::root(&workspace)?;
-        let root = workspace::installation_root(&workspace_root)
-            .parent()
-            .ok_or("工作区安装目录无效")?
-            .to_path_buf();
-        self.plan_skill_at(root, repository_id, skill_path, None)
-    }
-
-    pub fn plan_sync_record(&mut self, record: InstallRecord) -> Result<Plan> {
-        if !record.active {
-            return Err("已移除的技能无法同步，请先回滚".into());
-        }
-        let path = PathBuf::from(&record.target_path);
-        let skills_root = path.parent().ok_or("安装路径无效")?.to_path_buf();
-        let workspace_root = skills_root
-            .parent()
-            .and_then(Path::parent)
-            .ok_or("安装路径无效")?
-            .to_path_buf();
-        if !workspace::is_installation_target(&workspace_root, &path) {
-            return Err("安装目标不在工作区 .agents/skills 内".into());
-        }
-        let root = skills_root.parent().ok_or("安装路径无效")?.to_path_buf();
-        self.plan_skill_at(
-            root,
-            record.repository_id,
-            record.skill_path.clone(),
-            Some(path),
-        )
-    }
-
-    fn plan_skill_at(
-        &mut self,
-        root: PathBuf,
-        repository_id: i64,
-        skill_path: String,
-        expected_target: Option<PathBuf>,
-    ) -> Result<Plan> {
+        skill_path: &str,
+    ) -> Result<ValidatedSource> {
         let repo_root = self.store.repo_dir(repository_id);
-        let relative = Path::new(&skill_path);
+        let relative = Path::new(skill_path);
         if skill_path != "."
             && (relative.as_os_str().is_empty()
                 || !relative
@@ -440,139 +408,122 @@ impl Core {
         let files = platform::source_snapshot(&source, &repo_root)?;
         let hash = platform::tree_hash(&files);
         let commit = self.store.commit(repository_id)?;
-        let target = root.join("skills").join(&name);
-        let workspace_root = root.parent().ok_or("工作区安装目录无效")?;
-        if !workspace::is_installation_target(workspace_root, &target) {
-            return Err("安装目标不在工作区 .agents/skills 内".into());
-        }
-        if expected_target.is_some_and(|expected| expected != target) {
-            return Err("技能名称已更改；不能原地同步旧安装".into());
-        }
-        platform::no_links(&target, &root)?;
-        let existing = self.store.by_path(&target)?;
-        let old = existing.as_ref().filter(|r| r.active);
-        if target.exists() && old.is_none() {
-            return Err("目标已有非 AMC 管理的技能，拒绝覆盖".into());
-        }
-        if let Some(record) = old {
-            if record.repository_id != repository_id || record.skill_path != skill_path {
-                return Err("目标技能来自另一个仓库，拒绝覆盖".into());
+        Ok((name, files, hash, commit))
+    }
+
+    /// 分发安装/更新：刷新数据目录中的中央副本，并把启用中的目标重新
+    /// 投影。新装默认同时启用两个用户级目标；同名记录若来自其他来源
+    /// 则拒绝覆盖。
+    pub fn plan_skill(&mut self, repository_id: i64, skill_path: String) -> Result<Plan> {
+        let (name, files, hash, commit) = self.validated_skill_source(repository_id, &skill_path)?;
+        let previous = self.store.skill(&name)?;
+        if let Some(previous) = &previous {
+            if previous.repository_id != repository_id || previous.skill_path != skill_path {
+                return Err("同名技能已存在且来自其他来源，拒绝覆盖".into());
             }
         }
-        let old_hash = checked_target(&target, old)?;
-        let old_files = platform::snapshot(&target)?;
-        let changes = diff_files(&target, &old_files, &files);
+        let record = SkillRecord {
+            id: previous.as_ref().map_or(0, |record| record.id),
+            repository_id,
+            skill_path: skill_path.clone(),
+            name: name.clone(),
+            commit,
+            hash,
+            omp: previous.as_ref().is_none_or(|record| record.omp),
+            codex: previous.as_ref().is_none_or(|record| record.codex),
+            claude: previous.as_ref().is_none_or(|record| record.claude),
+        };
+        let summary = if previous.is_some() {
+            format!("更新技能 {name} 并同步已启用的投影目录")
+        } else {
+            format!("安装技能 {name} → 通用目录 (OMP/Codex) + Claude Code")
+        };
+        let source = self.store.repo_dir(repository_id).join(&skill_path);
+        let action = skills::SkillAction::Save {
+            record,
+            files,
+            source,
+        };
+        let targets = skills::Targets::from_env()?;
+        let (writes, config_writes, warnings) = skills::project(&self.store, &targets, &action)?;
+        let changes = writes
+            .iter()
+            .flat_map(dir_changes)
+            .chain(config_writes.iter().map(config_change))
+            .collect();
         Ok(self.enqueue(
-            format!("{}技能 {name}", if old.is_some() { "更新" } else { "安装" }),
+            summary,
             changes,
-            vec!["只复制技能文件；不会运行仓库脚本。".into()],
-            Pending::Skill(Box::new(SkillPending {
-                root,
-                target,
-                old_hash,
-                record: existing,
-                action: SkillAction::Install {
-                    repository_id,
-                    skill_path,
-                    name,
-                    commit,
-                    files,
-                    hash,
-                },
+            warnings,
+            Pending::Skills(Box::new(SkillsPending {
+                writes,
+                config_writes,
+                action,
             })),
         ))
     }
 
-    pub fn plan_remove_skill(&mut self, installation_id: i64) -> Result<Plan> {
-        let record = self.store.record(installation_id)?;
-        if !record.active {
-            return Err("技能已移除".into());
+    pub fn plan_skill_toggle(
+        &mut self,
+        name: String,
+        target: SkillTarget,
+        enabled: bool,
+    ) -> Result<Plan> {
+        if !platform::valid_skill_name(&name) {
+            return Err("技能名称无效".into());
         }
-        let (root, target, old_hash, files) = self.record_target(&record)?;
-        let changes = diff_files(&target, &files, &[]);
+        let action = skills::SkillAction::Toggle {
+            name: name.clone(),
+            target,
+            enabled,
+        };
+        let targets = skills::Targets::from_env()?;
+        let (writes, config_writes, warnings) = skills::project(&self.store, &targets, &action)?;
+        let summary = format!(
+            "在 {} 中{} {name}",
+            target.title(),
+            if enabled { "启用" } else { "停用" }
+        );
+        let changes = writes
+            .iter()
+            .flat_map(dir_changes)
+            .chain(config_writes.iter().map(config_change))
+            .collect();
         Ok(self.enqueue(
-            format!("移除技能 {}", record.name),
+            summary,
             changes,
-            vec!["只移除 AMC 管理且未被手动修改的安装。".into()],
-            Pending::Skill(Box::new(SkillPending {
-                root,
-                target,
-                old_hash,
-                record: Some(record),
-                action: SkillAction::Remove,
+            warnings,
+            Pending::Skills(Box::new(SkillsPending {
+                writes,
+                config_writes,
+                action,
             })),
         ))
     }
 
-    pub fn rollback_skill(&mut self, installation_id: i64) -> Result<Plan> {
-        let record = self.store.record(installation_id)?;
-        let backup = record
-            .rollback_path
-            .as_ref()
-            .map(PathBuf::from)
-            .ok_or("该安装没有可回滚的版本")?;
-        if record.rollback_commit.is_none() || record.rollback_hash.is_none() {
-            return Err("回滚备份缺少提交编号或文件校验".into());
+    pub fn plan_skill_remove(&mut self, name: String) -> Result<Plan> {
+        if !platform::valid_skill_name(&name) {
+            return Err("技能名称无效".into());
         }
-        let target = PathBuf::from(&record.target_path);
-        let skills_root = target.parent().ok_or("安装路径无效")?.to_path_buf();
-        let workspace_root = skills_root
-            .parent()
-            .and_then(Path::parent)
-            .ok_or("安装路径无效")?
-            .to_path_buf();
-        let root = skills_root.parent().ok_or("安装路径无效")?.to_path_buf();
-        if !workspace::is_installation_target(&workspace_root, &target) {
-            return Err("安装目标不在工作区 .agents/skills 内".into());
-        }
-        platform::no_links(&target, &root)?;
-        platform::no_links(&backup, &root)?;
-        if !backup.is_dir() {
-            return Err("回滚备份不存在".into());
-        }
-        let old_hash = checked_target(&target, if record.active { Some(&record) } else { None })?;
-        if !record.active && target.exists() {
-            return Err("目标路径已被占用，无法回滚".into());
-        }
-        let backup_files = platform::snapshot(&backup)?;
-        if record.rollback_hash.as_deref() != Some(platform::tree_hash(&backup_files).as_str()) {
-            return Err("回滚备份已变化".into());
-        }
-        let files = platform::snapshot(&target)?;
-        let changes = diff_files(&target, &files, &backup_files);
+        let action = skills::SkillAction::Remove { name: name.clone() };
+        let targets = skills::Targets::from_env()?;
+        let (writes, config_writes, warnings) = skills::project(&self.store, &targets, &action)?;
+        let summary = format!("移除技能 {name}（删除所有投影目录与中央副本）");
+        let changes = writes
+            .iter()
+            .flat_map(dir_changes)
+            .chain(config_writes.iter().map(config_change))
+            .collect();
         Ok(self.enqueue(
-            format!("回滚技能 {}", record.name),
+            summary,
             changes,
-            vec![],
-            Pending::Skill(Box::new(SkillPending {
-                root,
-                target,
-                old_hash,
-                record: Some(record),
-                action: SkillAction::Rollback { backup },
+            warnings,
+            Pending::Skills(Box::new(SkillsPending {
+                writes,
+                config_writes,
+                action,
             })),
         ))
-    }
-
-    fn record_target(
-        &self,
-        record: &InstallRecord,
-    ) -> Result<RecordTarget> {
-        let target = PathBuf::from(&record.target_path);
-        let skills_root = target.parent().ok_or("安装路径无效")?.to_path_buf();
-        let workspace_root = skills_root
-            .parent()
-            .and_then(Path::parent)
-            .ok_or("安装路径无效")?
-            .to_path_buf();
-        let root = skills_root.parent().ok_or("安装路径无效")?.to_path_buf();
-        if !workspace::is_installation_target(&workspace_root, &target) {
-            return Err("安装目标不在工作区 .agents/skills 内".into());
-        }
-        platform::no_links(&target, &root)?;
-        let hash = checked_target(&target, Some(record))?;
-        let files = platform::snapshot(&target)?;
-        Ok((root, target, hash, files))
     }
 
     pub fn apply(&mut self, id: String) -> Result<Message> {
@@ -607,214 +558,264 @@ impl Core {
                 };
                 Ok(Message { message })
             }
-            Pending::Skill(pending) => {
-                let SkillPending {
-                    root,
-                    target,
-                    old_hash,
-                    record,
+            Pending::Skills(pending) => {
+                let SkillsPending {
+                    writes,
+                    config_writes,
                     action,
                 } = *pending;
-                let skills_root = target.parent().ok_or("安装路径无效")?;
-                let workspace_root = skills_root
-                    .parent()
-                    .and_then(Path::parent)
-                    .ok_or("安装路径无效")?;
-                if !workspace::is_installation_target(workspace_root, &target) {
-                    return Err("安装目标不在工作区 .agents/skills 内".into());
-                }
-                platform::no_links(&target, &root)?;
-                if let Some(previous) = &record {
-                    let current = self.store.record(previous.id)?;
-                    if current.commit != previous.commit
-                        || current.hash != previous.hash
-                        || current.active != previous.active
-                        || current.rollback_path != previous.rollback_path
-                        || current.rollback_hash != previous.rollback_hash
-                        || current.rollback_commit != previous.rollback_commit
+                if let skills::SkillAction::Save {
+                    record,
+                    source,
+                    ..
+                } = &action
+                {
+                    if self.store.commit(record.repository_id)? != record.commit
+                        || platform::tree_hash(&platform::source_snapshot(
+                            source,
+                            &self.store.repo_dir(record.repository_id),
+                        )?) != record.hash
                     {
-                        return Err("安装记录已改变，请重新预览".into());
+                        return Err("仓库提交或技能文件自预览后已变化".into());
                     }
-                } else if self.store.by_path(&target)?.is_some() {
-                    return Err("安装目标已被占用".into());
                 }
-                let current = if target.exists() {
-                    Some(platform::tree_hash(&platform::snapshot(&target)?))
-                } else {
-                    None
+                let (backup_dir, undo_steps) =
+                    apply_skill_writes(&self.store.root, &id, &writes)?;
+                apply_config_writes(&id, &config_writes)?;
+                let result = match &action {
+                    skills::SkillAction::Save { record, .. } => self
+                        .store
+                        .save_skill(record)
+                        .map(|_| format!("技能 {} 已保存并同步到启用的投影目录", record.name)),
+                    skills::SkillAction::Toggle {
+                        name,
+                        target,
+                        enabled,
+                    } => {
+                        let mut stored =
+                            self.store.skill(name)?.ok_or("方案已失效，请重新预览")?;
+                        match target {
+                            SkillTarget::Omp => stored.omp = *enabled,
+                            SkillTarget::Codex => stored.codex = *enabled,
+                            SkillTarget::Claude => stored.claude = *enabled,
+                        }
+                        self.store.save_skill(&stored).map(|_| {
+                            format!(
+                                "已在 {} 中{} {name}",
+                                target.title(),
+                                if *enabled { "启用" } else { "停用" }
+                            )
+                        })
+                    }
+                    skills::SkillAction::Remove { name } => self
+                        .store
+                        .delete_skill(name)
+                        .map(|_| format!("技能 {name} 已从投影目录与 AMC 移除")),
                 };
-                if current != old_hash {
-                    return Err("技能文件自预览后已变化，请重新预览".into());
+                match result {
+                    Ok(message) => {
+                        let _ = fs::remove_dir_all(&backup_dir);
+                        Ok(Message { message })
+                    }
+                    Err(error) => {
+                        undo_config_writes(&config_writes);
+                        if let Err(recovery) = undo_skill_writes(&backup_dir, &undo_steps) {
+                            Err(format!("{error}；{recovery}"))
+                        } else {
+                            Err(error)
+                        }
+                    }
                 }
-                self.apply_skill(&id, root, target, record, action)
             }
         }
     }
 
-    fn apply_skill(
-        &mut self,
-        id: &str,
-        root: PathBuf,
-        target: PathBuf,
-        record: Option<InstallRecord>,
-        action: SkillAction,
-    ) -> Result<Message> {
-        let parent = target.parent().ok_or("技能安装目录无效")?;
-        let backup_root = root.join(".amc-backups");
-        let new_backup = backup_root.join(id);
-        platform::no_links(&new_backup, &root)?;
+}
+
+/// 预览一个目录级写入：对比 before/after 快照生成变更列表。
+fn dir_changes(write: &SkillWrite) -> Vec<Change> {
+    let before = write.before.clone().unwrap_or_default();
+    let after = write.after.clone().unwrap_or_default();
+    diff_files(&write.path, &before, &after)
+}
+
+/// 预览一个配置文件写入：before 为空表示文件将新建。Codex config.toml
+/// 与 MCP 共用一份文件，内含 env/http_headers/bearer_token 等凭据，
+/// 预览必须走整份脱敏（preview_redacted）。
+fn config_change(write: &skills::ConfigWrite) -> Change {
+    let render = |bytes: &[u8]| -> String {
+        if write.path.extension().is_some_and(|e| e == "toml") {
+            mcp::codex::preview_redacted(bytes)
+        } else {
+            preview(bytes)
+        }
+    };
+    Change {
+        path: write.path.display().to_string(),
+        before: write
+            .before
+            .as_deref()
+            .map_or_else(|| "（新建）".to_owned(), |bytes| render(bytes)),
+        after: render(&write.after),
+    }
+}
+
+/// 配置文件写入（OMP config.yml / Codex config.toml）：先全量校验
+/// before 防漂移，再以临时文件 + rename 原子替换。回滚所需旧字节保留在
+/// ConfigWrite.before 中（见 undo_config_writes），无需磁盘备份。
+fn apply_config_writes(id: &str, writes: &[skills::ConfigWrite]) -> Result<()> {
+    for write in writes {
+        let actual = match fs::read(&write.path) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("读取 {} 失败: {e}", write.path.display())),
+        };
+        if actual != write.before {
+            return Err(format!(
+                "{} 自预览后已变化，请重新预览",
+                write.path.display()
+            ));
+        }
+    }
+    for (index, write) in writes.iter().enumerate() {
+        let parent = write.path.parent().ok_or("配置文件路径无效")?;
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        fs::create_dir_all(&backup_root).map_err(|e| e.to_string())?;
-        let stage = backup_root.join(format!(".stage-{id}"));
-        let (new_files, source, message) = match &action {
-            SkillAction::Install {
-                repository_id,
-                skill_path,
-                files,
-                hash,
-                commit,
-                ..
-            } => {
-                let source = self.store.repo_dir(*repository_id).join(skill_path);
-                if self.store.commit(*repository_id)? != *commit
-                    || platform::tree_hash(&platform::source_snapshot(
-                        &source,
-                        &self.store.repo_dir(*repository_id),
-                    )?) != *hash
-                {
-                    return Err("仓库提交或技能文件自预览后已变化".into());
-                }
-                (Some(files), Some(source), "技能已安装/更新")
+        let temp = parent.join(format!(".amc-cfg-{id}-{index}.tmp"));
+        write_private(&temp, &write.after)?;
+        fs::rename(&temp, &write.path).map_err(|error| {
+            let _ = fs::remove_file(&temp);
+            format!("写入 {} 失败: {error}", write.path.display())
+        })?;
+    }
+    Ok(())
+}
+
+/// 回滚配置写入：还原旧字节；新建的配置文件直接删除。
+fn undo_config_writes(writes: &[skills::ConfigWrite]) {
+    for write in writes.iter().rev() {
+        match &write.before {
+            Some(bytes) => {
+                let _ = fs::write(&write.path, bytes);
             }
-            SkillAction::Remove => (None, None, "技能已移除；可使用安装编号回滚"),
-            SkillAction::Rollback { backup } => {
-                let old = record.as_ref().ok_or("安装记录不存在")?;
-                if old.rollback_commit.is_none() || old.rollback_hash.is_none() {
-                    return Err("回滚备份缺少提交编号或文件校验".into());
-                }
-                if old.rollback_hash.as_ref()
-                    != Some(&platform::tree_hash(&platform::snapshot(backup)?))
-                {
-                    return Err("回滚备份已变化".into());
-                }
-                (None, None, "技能已回滚")
-            }
-        };
-        if let Some(files) = new_files {
-            fs::create_dir(&stage).map_err(|e| e.to_string())?;
-            if let Err(e) = stage_files(&stage, files, source.as_deref().ok_or("技能来源缺失")?)
-            {
-                let _ = fs::remove_dir_all(&stage);
-                return Err(e);
+            None => {
+                let _ = fs::remove_file(&write.path);
             }
         }
-        let had_target = target.exists();
-        if had_target {
-            fs::rename(&target, &new_backup).map_err(|e| {
-                let _ = fs::remove_dir_all(&stage);
-                e.to_string()
-            })?;
-        }
-        let incoming = match &action {
-            SkillAction::Rollback { backup } => Some(backup.as_path()),
-            SkillAction::Install { .. } => Some(stage.as_path()),
-            SkillAction::Remove => None,
-        };
-        if let Some(incoming) = incoming {
-            if let Err(e) = fs::rename(incoming, &target) {
-                if had_target {
-                    let _ = fs::rename(&new_backup, &target);
-                }
-                let _ = fs::remove_dir_all(&stage);
-                return Err(format!("替换技能失败: {e}"));
+    }
+}
+
+struct SkillUndo {
+    had_before: bool,
+    backup: PathBuf,
+    target: PathBuf,
+}
+
+/// 回滚已执行的目录写入：被替换/删除的目录从备份还原，新出现的删除。
+fn undo_skill_writes(backup_dir: &Path, done: &[SkillUndo]) -> Result<()> {
+    let mut failures = Vec::new();
+    for step in done.iter().rev() {
+        if step.target.exists() {
+            if let Err(error) = fs::remove_dir_all(&step.target) {
+                failures.push(format!("无法移除 {}: {error}", step.target.display()));
+                continue;
             }
         }
-        let db_result = self.save_install(
-            &target,
-            record.as_ref(),
-            &action,
-            if had_target { Some(&new_backup) } else { None },
-        );
-        if let Err(error) = db_result {
-            let undo = match &action {
-                SkillAction::Rollback { backup } if target.exists() => fs::rename(&target, backup),
-                _ if target.exists() => fs::remove_dir_all(&target),
-                _ => Ok(()),
-            };
-            if let Err(recovery) = undo {
-                return Err(format!(
-                    "{error}; 无法恢复技能文件 ({recovery})，请检查 {} 和 {}",
-                    target.display(),
-                    new_backup.display()
+        if step.had_before {
+            if let Err(error) = fs::rename(&step.backup, &step.target) {
+                failures.push(format!(
+                    "恢复失败，旧副本保留在 {}: {error}",
+                    step.backup.display()
                 ));
             }
-            if had_target {
-                fs::rename(&new_backup, &target).map_err(|recovery| {
-                    format!(
-                        "{error}; 无法恢复原始技能 ({recovery})，备份位于 {}",
-                        new_backup.display()
-                    )
-                })?;
-            }
-            return Err(error);
         }
-        if let Some(previous) = record.and_then(|r| r.rollback_path) {
-            let previous = PathBuf::from(previous);
-            if previous != target
-                && previous != new_backup
-                && previous.starts_with(&backup_root)
-                && previous.exists()
-            {
-                let _ = fs::remove_dir_all(previous);
-            }
-        }
-        Ok(Message {
-            message: message.into(),
-        })
     }
+    // 只有全部恢复成功才清理备份目录；任何失败都保留现场并报告路径。
+    if failures.is_empty() {
+        let _ = fs::remove_dir_all(backup_dir);
+        Ok(())
+    } else {
+        Err(format!(
+            "回滚未完全成功，备份保留在 {}：{}",
+            backup_dir.display(),
+            failures.join("；")
+        ))
+    }
+}
 
-    fn save_install(
-        &mut self,
-        target: &Path,
-        previous: Option<&InstallRecord>,
-        action: &SkillAction,
-        backup: Option<&Path>,
-    ) -> Result<()> {
-        let path = target.to_str().ok_or("技能安装路径必须是 UTF-8")?;
-        match action {
-            SkillAction::Install {
-                repository_id,
-                skill_path,
-                name,
-                commit,
-                hash,
-                ..
-            } => {
-                if let Some(old) = previous {
-                    self.store.db.execute("UPDATE installations SET repository_id=?1,skill_path=?2,name=?3,git_commit=?4,content_hash=?5,rollback_path=?6,rollback_commit=?7,rollback_hash=?8,active=1 WHERE id=?9",
-                        rusqlite::params![repository_id,skill_path,name,commit,hash,backup.map(|p| p.to_string_lossy().into_owned()),
-                            backup.map(|_| old.commit.as_str()),backup.map(|_| old.hash.as_str()),old.id]).map_err(|e| e.to_string())?;
-                } else {
-                    self.store.db.execute("INSERT INTO installations(repository_id,skill_path,name,target_path,git_commit,content_hash) VALUES (?1,?2,?3,?4,?5,?6)",
-                        rusqlite::params![repository_id,skill_path,name,path,commit,hash]).map_err(|e| e.to_string())?;
+/// 目录级分发写入：先全量校验 before 防漂移，再逐个换入；每个被替换或
+/// 删除的目录先 rename 进备份目录，任一步失败立即回滚已执行步骤。
+/// 返回备份目录与回滚账目，供调用方在数据库写入失败时回滚、成功后清理。
+fn apply_skill_writes(
+    data_dir: &Path,
+    id: &str,
+    writes: &[SkillWrite],
+) -> Result<(PathBuf, Vec<SkillUndo>)> {
+    for write in writes {
+        let parent = write.path.parent().ok_or("技能目标路径无效")?;
+        let exists = write.path.exists();
+        match (&write.before, exists) {
+            (None, true) => {
+                return Err(format!("{} 自预览后已出现，请重新预览", write.path.display()))
+            }
+            (Some(_), false) => {
+                return Err(format!("{} 自预览后已消失，请重新预览", write.path.display()))
+            }
+            (Some(before), true) => {
+                platform::no_links(&write.path, parent)?;
+                let actual = platform::snapshot(&write.path)?;
+                if platform::tree_hash(&actual) != platform::tree_hash(before) {
+                    return Err("技能目录自预览后已变化，请重新预览".into());
                 }
             }
-            SkillAction::Remove => {
-                let old = previous.ok_or("安装记录不存在")?;
-                self.store.db.execute("UPDATE installations SET rollback_path=?1,rollback_commit=?2,rollback_hash=?3,active=0 WHERE id=?4",
-                    rusqlite::params![backup.map(|p| p.to_string_lossy().into_owned()),old.commit,old.hash,old.id]).map_err(|e| e.to_string())?;
+            (None, false) => {}
+        }
+    }
+    let backup_dir = data_dir.join("backups/skills").join(id);
+    fs::create_dir_all(&backup_dir).map_err(|e| e.to_string())?;
+    let mut done: Vec<SkillUndo> = Vec::new();
+    // 所有写入后错误都汇入同一个出口：先回滚 done（含当前失败步骤），
+    // 恢复失败时保留备份并把路径并入错误信息。
+    let failure = (|| -> Result<()> {
+        for (index, write) in writes.iter().enumerate() {
+            let backup = backup_dir.join(index.to_string());
+            let had_before = write.path.exists();
+            if had_before {
+                fs::rename(&write.path, &backup)
+                    .map_err(|error| format!("备份旧技能目录失败: {error}"))?;
             }
-            SkillAction::Rollback { .. } => {
-                let old = previous.ok_or("安装记录不存在")?;
-                let new_commit = old.rollback_commit.as_ref().ok_or("备份缺少提交编号")?;
-                let new_hash = old.rollback_hash.as_ref().ok_or("备份缺少文件校验")?;
-                self.store.db.execute("UPDATE installations SET git_commit=?1,content_hash=?2,rollback_path=?3,rollback_commit=?4,rollback_hash=?5,active=1 WHERE id=?6",
-                    rusqlite::params![new_commit,new_hash,backup.map(|p| p.to_string_lossy().into_owned()),
-                        backup.map(|_| old.commit.as_str()), backup.map(|_| old.hash.as_str()), old.id]).map_err(|e| e.to_string())?;
-            }
+            let placed = (|| -> Result<()> {
+                if let Some(after) = &write.after {
+                    let parent = write.path.parent().ok_or("技能目标路径无效")?;
+                    fs::create_dir_all(parent)
+                        .map_err(|e| format!("创建目录 {} 失败: {e}", parent.display()))?;
+                    let stage = backup_dir.join(format!("stage-{index}"));
+                    fs::create_dir(&stage).map_err(|e| e.to_string())?;
+                    let source = write.source.as_deref().ok_or("技能来源缺失")?;
+                    if let Err(error) = stage_files(&stage, after, source) {
+                        let _ = fs::remove_dir_all(&stage);
+                        return Err(error);
+                    }
+                    fs::rename(&stage, &write.path)
+                        .map_err(|error| format!("写入技能目录失败: {error}"))?;
+                }
+                Ok(())
+            })();
+            done.push(SkillUndo {
+                had_before,
+                backup,
+                target: write.path.clone(),
+            });
+            placed?;
         }
         Ok(())
+    })();
+    if let Err(error) = failure {
+        return match undo_skill_writes(&backup_dir, &done) {
+            Ok(()) => Err(error),
+            Err(recovery) => Err(format!("{error}；{recovery}")),
+        };
     }
+    Ok((backup_dir, done))
 }
 
 fn apply_mcp(data_dir: &Path, id: &str, writes: &[McpWrite]) -> Result<()> {
@@ -916,23 +917,6 @@ fn apply_mcp(data_dir: &Path, id: &str, writes: &[McpWrite]) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn checked_target(target: &Path, record: Option<&InstallRecord>) -> Result<Option<String>> {
-    if let Some(record) = record {
-        if !target.is_dir() {
-            return Err("已管理的技能目录已丢失，请手动恢复后重试".into());
-        }
-        let hash = platform::tree_hash(&platform::snapshot(target)?);
-        if hash != record.hash {
-            return Err("技能已被手动修改，拒绝覆盖；请先备份或恢复原文件".into());
-        }
-        Ok(Some(hash))
-    } else if target.exists() {
-        Err("目标已有非 AMC 管理的技能，拒绝覆盖".into())
-    } else {
-        Ok(None)
-    }
 }
 
 fn preview_mcp(path: &Path, data: &[u8]) -> String {

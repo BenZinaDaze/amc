@@ -410,6 +410,9 @@ textarea{resize:vertical;line-height:1.55}
 .mcp-agent-mark svg{opacity:.4;filter:grayscale(1);transition:opacity .15s,filter .15s}
 .mcp-agent-mark.on svg{opacity:1;filter:none}
 .mcp-agent-mark.on:hover:not(:disabled){background:color-mix(in srgb,currentColor 8%,transparent)}
+.skill-targets{display:flex;align-items:center;gap:4px;margin-right:6px}
+.skill-target-mark{width:auto;padding:0;gap:4px}
+.skill-desc{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mcp-agent-option{font-size:12.5px;color:#535f74;gap:6px;padding:4px 8px;border:1px solid #e3e7ef;border-radius:8px}
 label.mcp-agent-option{cursor:pointer}
 label.mcp-agent-option:has(input:checked){border-color:var(--accent);color:var(--accent)}

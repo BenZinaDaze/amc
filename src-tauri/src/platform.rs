@@ -401,7 +401,6 @@ pub struct SkillView {
     pub name: String,
     pub path: String,
     pub source: String,
-    pub managed: bool,
     pub shadowed: bool,
     pub description: String,
 }

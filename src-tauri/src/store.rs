@@ -1,7 +1,6 @@
 use crate::{
     mcp::Agent,
     platform::{self, Result},
-    workspace,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -18,21 +17,6 @@ pub struct Repository {
     pub id: i64,
     pub url: String,
     pub reference: String,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Installation {
-    pub id: i64,
-    pub repository_id: i64,
-    pub skill_path: String,
-    pub name: String,
-    pub target_path: String,
-    pub commit: String,
-    pub modified: bool,
-    pub update_available: bool,
-    pub active: bool,
-    pub rollback_available: bool,
 }
 
 /// 统一 MCP 服务器记录：`spec` 是中立的 JSON 配置，三个布尔是各 Agent
@@ -80,19 +64,22 @@ impl McpRecord {
     }
 }
 
-#[derive(Clone)]
-pub struct InstallRecord {
+/// 分发技能记录：仓库来源 + 固定的提交/内容哈希。投影目录只有两个
+/// 物理位置：`~/.agents/skills`（OMP 与 Codex 共用）与
+/// `~/.claude/skills`。`omp`、`codex` 的分离不靠目录，而靠各自配置
+/// 文件里的禁用项（OMP config.yml ignoredSkills / Codex config.toml
+/// [[skills.config]]），所以两列都为 0 时目录才会被移除。
+#[derive(Clone, Serialize)]
+pub struct SkillRecord {
     pub id: i64,
     pub repository_id: i64,
     pub skill_path: String,
     pub name: String,
-    pub target_path: String,
     pub commit: String,
     pub hash: String,
-    pub rollback_path: Option<String>,
-    pub rollback_commit: Option<String>,
-    pub rollback_hash: Option<String>,
-    pub active: bool,
+    pub omp: bool,
+    pub codex: bool,
+    pub claude: bool,
 }
 
 pub struct Store {
@@ -111,12 +98,16 @@ impl Store {
                 id INTEGER PRIMARY KEY, url TEXT NOT NULL, git_ref TEXT NOT NULL,
                 UNIQUE(url, git_ref)
             );
-            CREATE TABLE IF NOT EXISTS installations (
-                id INTEGER PRIMARY KEY, repository_id INTEGER NOT NULL REFERENCES repositories(id),
-                skill_path TEXT NOT NULL, name TEXT NOT NULL, target_path TEXT NOT NULL UNIQUE,
-                git_commit TEXT NOT NULL, content_hash TEXT NOT NULL,
-                rollback_path TEXT, rollback_commit TEXT, rollback_hash TEXT,
-                active INTEGER NOT NULL DEFAULT 1
+            CREATE TABLE IF NOT EXISTS skills (
+                id INTEGER PRIMARY KEY,
+                repository_id INTEGER NOT NULL REFERENCES repositories(id),
+                skill_path TEXT NOT NULL,
+                name TEXT NOT NULL UNIQUE,
+                git_commit TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                omp INTEGER NOT NULL DEFAULT 0,
+                codex INTEGER NOT NULL DEFAULT 0,
+                claude INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS mcp_servers (
                 name TEXT PRIMARY KEY,
@@ -127,6 +118,8 @@ impl Store {
                 managed INTEGER NOT NULL DEFAULT 0
             );
             DROP TABLE IF EXISTS local_origins;",
+            // installations 旧表由 skills::migrate_legacy 读取后才删除，
+            // 不能在 schema 阶段无条件 drop。
         )
         .map_err(|e| format!("初始化 AMC 数据库失败: {e}"))?;
         // 旧库迁移：历史遗留行（含旧版自动导入）默认 managed=0，
@@ -144,6 +137,26 @@ impl Store {
                 [],
             )
             .map_err(|e| format!("迁移 mcp_servers 表失败: {e}"))?;
+        }
+        // 旧库迁移：skills.agents（OMP+Codex 共用目录的单一开关）拆分为
+        // omp/codex 两个独立开关——目录仍是共享投影，分离靠各自的配置
+        // 文件（OMP config.yml ignoredSkills / Codex config.toml
+        // [[skills.config]]）。
+        let has_agents: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('skills') WHERE name='agents'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("检查 skills 表结构失败: {e}"))?;
+        if has_agents > 0 {
+            db.execute_batch(
+                "ALTER TABLE skills ADD COLUMN omp INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE skills ADD COLUMN codex INTEGER NOT NULL DEFAULT 0;
+                 UPDATE skills SET omp=agents, codex=agents;
+                 ALTER TABLE skills DROP COLUMN agents;",
+            )
+            .map_err(|e| format!("迁移 skills 表失败: {e}"))?;
         }
         Ok(Self { db, root })
     }
@@ -226,6 +239,100 @@ impl Store {
         Ok(removed > 0)
     }
 
+    pub fn skills(&self) -> Result<Vec<SkillRecord>> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT id,repository_id,skill_path,name,git_commit,content_hash,omp,codex,claude FROM skills ORDER BY name")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(SkillRecord {
+                    id: r.get(0)?,
+                    repository_id: r.get(1)?,
+                    skill_path: r.get(2)?,
+                    name: r.get(3)?,
+                    commit: r.get(4)?,
+                    hash: r.get(5)?,
+                    omp: r.get::<_, i64>(6)? != 0,
+                    codex: r.get::<_, i64>(7)? != 0,
+                    claude: r.get::<_, i64>(8)? != 0,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())
+    }
+
+    pub fn skill(&self, name: &str) -> Result<Option<SkillRecord>> {
+        self.db
+            .query_row(
+                "SELECT id,repository_id,skill_path,name,git_commit,content_hash,omp,codex,claude FROM skills WHERE name=?1",
+                [name],
+                |r| {
+                    Ok(SkillRecord {
+                        id: r.get(0)?,
+                        repository_id: r.get(1)?,
+                        skill_path: r.get(2)?,
+                        name: r.get(3)?,
+                        commit: r.get(4)?,
+                        hash: r.get(5)?,
+                        omp: r.get::<_, i64>(6)? != 0,
+                        codex: r.get::<_, i64>(7)? != 0,
+                        claude: r.get::<_, i64>(8)? != 0,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 保存分发技能记录。`id == 0` 表示新记录：自增插入并返回新 id；
+    /// 否则按 id 原地更新（name 唯一且不改名）。
+    pub fn save_skill(&self, record: &SkillRecord) -> Result<i64> {
+        if record.id == 0 {
+            self.db
+                .execute(
+                    "INSERT INTO skills(repository_id,skill_path,name,git_commit,content_hash,omp,codex,claude) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                    params![
+                        record.repository_id,
+                        record.skill_path,
+                        record.name,
+                        record.commit,
+                        record.hash,
+                        record.omp as i64,
+                        record.codex as i64,
+                        record.claude as i64,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(self.db.last_insert_rowid())
+        } else {
+            self.db
+                .execute(
+                    "UPDATE skills SET repository_id=?1,skill_path=?2,git_commit=?3,content_hash=?4,omp=?5,codex=?6,claude=?7 WHERE id=?8",
+                    params![
+                        record.repository_id,
+                        record.skill_path,
+                        record.commit,
+                        record.hash,
+                        record.omp as i64,
+                        record.codex as i64,
+                        record.claude as i64,
+                        record.id,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(record.id)
+        }
+    }
+
+    pub fn delete_skill(&self, name: &str) -> Result<bool> {
+        let removed = self
+            .db
+            .execute("DELETE FROM skills WHERE name=?1", [name])
+            .map_err(|e| e.to_string())?;
+        Ok(removed > 0)
+    }
+
     pub fn repository(&self, id: i64) -> Result<Repository> {
         self.db
             .query_row(
@@ -244,40 +351,44 @@ impl Store {
             .ok_or_else(|| "仓库不存在".into())
     }
 
-    pub fn records(&self) -> Result<Vec<InstallRecord>> {
-        let mut stmt = self.db.prepare("SELECT id,repository_id,skill_path,name,target_path,git_commit,content_hash,rollback_path,rollback_commit,rollback_hash,active FROM installations ORDER BY id")
+    /// 读取旧版 installations 表的活跃安装（迁移专用；表不存在时为空）。
+    pub fn legacy_records(&self) -> Result<Vec<LegacyInstall>> {
+        let exists: i64 = self
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='installations'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if exists == 0 {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self
+            .db
+            .prepare("SELECT repository_id,skill_path,name,target_path,git_commit,content_hash FROM installations WHERE active=1 ORDER BY id")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], Self::row_record)
+            .query_map([], |r| {
+                Ok(LegacyInstall {
+                    repository_id: r.get(0)?,
+                    skill_path: r.get(1)?,
+                    name: r.get(2)?,
+                    target_path: r.get(3)?,
+                    commit: r.get(4)?,
+                    hash: r.get(5)?,
+                })
+            })
             .map_err(|e| e.to_string())?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| e.to_string())
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())
     }
 
-    fn row_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstallRecord> {
-        Ok(InstallRecord {
-            id: row.get(0)?,
-            repository_id: row.get(1)?,
-            skill_path: row.get(2)?,
-            name: row.get(3)?,
-            target_path: row.get(4)?,
-            commit: row.get(5)?,
-            hash: row.get(6)?,
-            rollback_path: row.get(7)?,
-            rollback_commit: row.get(8)?,
-            rollback_hash: row.get(9)?,
-            active: row.get(10)?,
-        })
-    }
-
-    pub fn record(&self, id: i64) -> Result<InstallRecord> {
-        self.db.query_row("SELECT id,repository_id,skill_path,name,target_path,git_commit,content_hash,rollback_path,rollback_commit,rollback_hash,active FROM installations WHERE id=?1", [id], Self::row_record)
-            .optional().map_err(|e| e.to_string())?.ok_or_else(|| "安装记录不存在".into())
-    }
-
-    pub fn by_path(&self, path: &Path) -> Result<Option<InstallRecord>> {
-        self.db.query_row("SELECT id,repository_id,skill_path,name,target_path,git_commit,content_hash,rollback_path,rollback_commit,rollback_hash,active FROM installations WHERE target_path=?1", [path.to_string_lossy().as_ref()], Self::row_record)
-            .optional().map_err(|e| e.to_string())
+    /// 迁移完成后删除旧表。
+    pub fn drop_installations(&self) -> Result<()> {
+        self.db
+            .execute("DROP TABLE IF EXISTS installations", [])
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn repo_dir(&self, id: i64) -> PathBuf {
@@ -313,76 +424,26 @@ impl Store {
 
     pub fn remove_repository(&mut self, id: i64) -> Result<String> {
         self.repository(id)?;
-        let records: Vec<_> = self
-            .records()?
-            .into_iter()
-            .filter(|record| record.repository_id == id)
-            .collect();
-        if records.iter().any(|record| record.active) {
-            return Err("该仓库仍有已安装的技能；请先移除这些安装再删除仓库".into());
-        }
-        let mut cleanup = Vec::new();
-        for record in &records {
-            let Some(backup_path) = &record.rollback_path else {
-                continue;
-            };
-            let backup = PathBuf::from(backup_path);
-            let target = Path::new(&record.target_path);
-            let skills_root = target.parent().ok_or("历史安装路径无效")?;
-            let workspace_root = skills_root
-                .parent()
-                .and_then(Path::parent)
-                .ok_or("历史安装路径无效")?;
-            if !workspace::is_installation_target(workspace_root, target) {
-                return Err("历史安装路径不在工作区 .agents/skills 内".into());
-            }
-            let canonical_workspace =
-                fs::canonicalize(workspace_root).map_err(|_| "历史工作区路径无效")?;
-            let root = canonical_workspace.join(".agents");
-            let expected_parent =
-                fs::canonicalize(root.join(".amc-backups")).map_err(|_| "历史备份目录无效")?;
-            let backup_parent = fs::canonicalize(backup.parent().ok_or("历史备份路径无效")?)
-                .map_err(|_| "历史备份目录无效")?;
-            let owned_backup = backup_parent == expected_parent
-                && backup
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| uuid::Uuid::parse_str(name).is_ok());
-            let canonical_backup = fs::canonicalize(&backup).map_err(|_| "历史备份路径无效")?;
-            platform::no_links(&canonical_backup, &root)?;
-            if !owned_backup {
-                return Err(format!(
-                    "历史备份不在 AMC 管理目录内，拒绝删除: {}",
-                    backup.display()
-                ));
-            }
-            cleanup.push(backup);
+        if self.skills()?.iter().any(|skill| skill.repository_id == id) {
+            return Err("该仓库仍有分发的技能；请先移除这些技能再删除仓库".into());
         }
         let cache = self.repo_dir(id);
         platform::no_links(&cache, &self.root)?;
-        cleanup.push(cache);
         let tx = self
             .db
             .transaction()
             .map_err(|e| format!("开始仓库删除事务失败: {e}"))?;
-        tx.execute(
-            "DELETE FROM installations WHERE repository_id=?1 AND active=0",
-            [id],
-        )
-        .map_err(|e| format!("清理安装历史失败: {e}"))?;
         tx.execute("DELETE FROM repositories WHERE id=?1", [id])
             .map_err(|e| format!("删除仓库记录失败: {e}"))?;
         tx.commit().map_err(|e| format!("提交仓库删除失败: {e}"))?;
         let mut leftovers = Vec::new();
-        for path in cleanup {
-            if let Err(error) = fs::remove_dir_all(&path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    leftovers.push(format!("{} ({error})", path.display()));
-                }
+        if let Err(error) = fs::remove_dir_all(&cache) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                leftovers.push(format!("{} ({error})", cache.display()));
             }
         }
         if leftovers.is_empty() {
-            Ok("仓库及关联的已移除技能历史、缓存已删除".into())
+            Ok("仓库及 Git 缓存已删除".into())
         } else {
             Ok(format!(
                 "仓库记录已删除，但目录清理失败；请手动检查: {}",
@@ -461,46 +522,16 @@ impl Store {
         platform::no_links(&directory.join(".git"), &self.root)?;
         git_commit(&directory)
     }
+}
 
-    pub fn installations(&self) -> Result<Vec<Installation>> {
-        let mut result = Vec::new();
-        for record in self.records()? {
-            let target = Path::new(&record.target_path);
-            let modified = record.active
-                && platform::snapshot(target)
-                    .map(|files| platform::tree_hash(&files) != record.hash)
-                    .unwrap_or(true);
-            let source = self.repo_dir(record.repository_id).join(&record.skill_path);
-            let update_available = record.active
-                && platform::source_snapshot(&source, &self.repo_dir(record.repository_id))
-                    .map(|files| !files.is_empty() && platform::tree_hash(&files) != record.hash)
-                    .unwrap_or(false);
-            let target_free = matches!(fs::symlink_metadata(target), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
-            let rollback_available = (if record.active {
-                !modified
-            } else {
-                target_free
-            }) && record
-                .rollback_path
-                .as_deref()
-                .is_some_and(|path| Path::new(path).is_dir())
-                && record.rollback_commit.is_some()
-                && record.rollback_hash.is_some();
-            result.push(Installation {
-                id: record.id,
-                repository_id: record.repository_id,
-                skill_path: record.skill_path,
-                name: record.name,
-                target_path: record.target_path,
-                commit: record.commit,
-                modified,
-                update_available,
-                active: record.active,
-                rollback_available,
-            });
-        }
-        Ok(result)
-    }
+/// 旧版工作区安装记录（迁移专用快照）。
+pub struct LegacyInstall {
+    pub repository_id: i64,
+    pub skill_path: String,
+    pub name: String,
+    pub target_path: String,
+    pub commit: String,
+    pub hash: String,
 }
 
 fn validated_url(url: &str) -> Result<String> {
@@ -598,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_repository_requires_no_active_installations_and_purges_removed_history() {
+    fn removing_repository_requires_no_distribution_skills_and_purges_cache() {
         let fixture = Fixture(
             std::env::temp_dir().join(format!("amc-repo-removal-{}", uuid::Uuid::new_v4())),
         );
@@ -613,35 +644,27 @@ mod tests {
         let repo_id = store.db.last_insert_rowid();
         let cache = store.repo_dir(repo_id);
         fs::create_dir_all(&cache).unwrap();
-        let target = fixture.0.join("project/.agents/skills/sample");
-        fs::create_dir_all(&target).unwrap();
-        let backup = fixture
-            .0
-            .join("project/.agents/.amc-backups")
-            .join(uuid::Uuid::new_v4().to_string());
-        fs::create_dir_all(&backup).unwrap();
-        store.db.execute(
-            "INSERT INTO installations(repository_id,skill_path,name,target_path,git_commit,content_hash,rollback_path,rollback_commit,rollback_hash,active)
-             VALUES (?1,'skills/sample','sample',?2,'commit','hash',?3,'previous','previous_hash',1)",
-            params![repo_id, target.to_str().unwrap(), backup.to_str().unwrap()],
-        ).unwrap();
-        let installation_id = store.db.last_insert_rowid();
-
+        // 有分发技能时拒绝删除。
+        store
+            .save_skill(&SkillRecord {
+                id: 0,
+                repository_id: repo_id,
+                skill_path: "skills/sample".into(),
+                name: "sample".into(),
+                commit: "c".into(),
+                hash: "h".into(),
+                omp: true,
+                codex: false,
+                claude: false,
+            })
+            .unwrap();
         assert!(store.remove_repository(repo_id).is_err());
         assert!(store.repository(repo_id).is_ok());
-        assert!(cache.is_dir() && backup.is_dir() && target.is_dir());
-
-        store
-            .db
-            .execute(
-                "UPDATE installations SET active=0 WHERE id=?1",
-                [installation_id],
-            )
-            .unwrap();
-        fs::remove_dir_all(&target).unwrap();
+        assert!(cache.is_dir());
+        // 移除技能后可删，Git 缓存一并清理。
+        store.delete_skill("sample").unwrap();
         store.remove_repository(repo_id).unwrap();
         assert!(store.repository(repo_id).is_err());
-        assert!(store.record(installation_id).is_err());
-        assert!(!cache.exists() && !backup.exists());
+        assert!(!cache.exists());
     }
 }

@@ -4,7 +4,7 @@ import ompIcon from "./assets/omp.svg";
 import zaiIcon from "./assets/zai.svg";
 import sub2apiIcon from "./assets/sub2api.svg";
 import { version } from "../package.json";
-import { api, type ClaudeCodeStatus, type CodexStatus, type McpAgent, type McpServer, type Plan, type Repository, type RepositorySkill, type State, type SubscriptionKind, type SubscriptionStatus, type UsageRange, type UsageStats, type Workspace } from "./api";
+import { api, type ClaudeCodeStatus, type CodexStatus, type McpAgent, type McpServer, type Plan, type Repository, type RepositorySkill, type Skill, type SkillTarget, type State, type SubscriptionKind, type SubscriptionStatus, type UsageRange, type UsageStats, type Workspace } from "./api";
 import "./App.css";
 
 type Page = "overview" | "agents" | "omp" | "claude" | "codex" | "mcp" | "skills" | "repositories";
@@ -668,6 +668,18 @@ function App() {
     if (result) setPlan(result);
   }
 
+  const skillTargetMeta: Record<SkillTarget, { label: string; path: string }> = {
+    omp: { label: "OMP", path: "~/.agents/skills" },
+    codex: { label: "Codex", path: "~/.agents/skills" },
+    claude: { label: "Claude Code", path: "~/.claude/skills" },
+  };
+
+  async function toggleSkillTarget(skill: Skill, target: SkillTarget) {
+    const enabled = target === "omp" ? !skill.omp : target === "codex" ? !skill.codex : !skill.claude;
+    const result = await operation(`${enabled ? "启用" : "停用"} ${skill.name}`, () => api.planSkillToggle(skill.name, target, enabled));
+    if (result) setPlan(result);
+  }
+
   async function addRepository(event: FormEvent) {
     event.preventDefault();
     const url = repoUrl.trim();
@@ -717,13 +729,8 @@ function App() {
   }
 
   const selectedWorkspace = workspace ?? state?.workspace;
-  const installations = state?.installations || [];
-  const activeInstallations = installations.filter((item) => item.active);
-  const installedSkills = activeInstallations.map((installation) => ({
-    installation,
-    skill: state?.skills.find((skill) => skill.path === installation.targetPath),
-  }));
-  const detectedOnlySkills = (state?.skills || []).filter((skill) => !activeInstallations.some((installation) => installation.targetPath === skill.path));
+  const distributedSkills = state?.skills || [];
+  const detectedOnlySkills = state?.detected || [];
   const discoveredSkills: DiscoveredSkill[] = state?.repositories.flatMap((repository) => (repositorySkills[repository.id] || []).map((skill) => ({ ...skill, repositoryId: repository.id }))) || [];
   const normalizedDiscoverSearch = discoverSearch.trim().toLocaleLowerCase();
   const filteredDiscoveredSkills = normalizedDiscoverSearch ? discoveredSkills.filter((skill) => {
@@ -731,9 +738,7 @@ function App() {
     return [skill.name, skill.description, skill.path, repository?.url, repository?.localPath, repository?.reference].filter(Boolean).join(" ").toLocaleLowerCase().includes(normalizedDiscoverSearch);
   }) : discoveredSkills;
   const repositoryFailureCount = Object.keys(repositorySkillErrors).length;
-  const repositoryRecords = repositoryRemoval ? state?.installations.filter((item) => item.repositoryId === repositoryRemoval.id) || [] : [];
-  const activeRepositoryCount = repositoryRecords.filter((item) => item.active).length;
-  const inactiveRepositoryCount = repositoryRecords.length - activeRepositoryCount;
+  const repositoryRecords = repositoryRemoval ? distributedSkills.filter((item) => item.repositoryId === repositoryRemoval.id) : [];
   const isBusy = Boolean(busy);
   const contentHeader = {
     overview: ["概览", "集中管理 MCP、Skills 与仓库状态。"],
@@ -770,7 +775,7 @@ function App() {
           {page === "codex" && <AgentUsagePanel agentLabel="Codex CLI" stats={codexUsage} range={codexUsageSelection.range} rangeLabel={codexUsageSelection.label} activeChoice={codexUsageSelection.choice} loading={codexUsageLoading} error={codexUsageError} onRangeChange={changeCodexUsageRange} onRefresh={() => void loadCodexUsage("sync", codexUsageRangeRef.current)} />}
           {!loading && state && <>
             {page === "overview" && <>
-              <div className="stat-grid"><button className="stat-card" onClick={() => setPage("mcp")}><span className="stat-icon purple"><Glyph name="plug" /></span><span className="stat-value">{state.mcp.length}</span><span className="stat-title">MCP 服务</span><small>查看配置来源 <Glyph name="arrow" size={13} /></small></button><button className="stat-card" onClick={() => setPage("skills")}><span className="stat-icon amber"><Glyph name="spark" /></span><span className="stat-value">{state.skills.length}</span><span className="stat-title">检测到的 Skills</span><small>查看技能来源 <Glyph name="arrow" size={13} /></small></button><button className="stat-card" onClick={() => setPage("repositories")}><span className="stat-icon mint"><Glyph name="repo" /></span><span className="stat-value">{state.repositories.length}</span><span className="stat-title">Git 仓库</span><small>发现更多技能 <Glyph name="arrow" size={13} /></small></button></div>
+              <div className="stat-grid"><button className="stat-card" onClick={() => setPage("mcp")}><span className="stat-icon purple"><Glyph name="plug" /></span><span className="stat-value">{state.mcp.length}</span><span className="stat-title">MCP 服务</span><small>查看配置来源 <Glyph name="arrow" size={13} /></small></button><button className="stat-card" onClick={() => setPage("skills")}><span className="stat-icon amber"><Glyph name="spark" /></span><span className="stat-value">{state.skills.length}</span><span className="stat-title">已分发 Skills</span><small>管理技能开关与来源 <Glyph name="arrow" size={13} /></small></button><button className="stat-card" onClick={() => setPage("repositories")}><span className="stat-icon mint"><Glyph name="repo" /></span><span className="stat-value">{state.repositories.length}</span><span className="stat-title">Git 仓库</span><small>发现更多技能 <Glyph name="arrow" size={13} /></small></button></div>
               <SubscriptionSection statuses={subscriptions} loading={subscriptionsLoading} error={subscriptionsError} onRefresh={() => void loadSubscriptions(true)} onAddPlan={() => setPlanForm({ mode: "add" })} onMenu={(status, x, y) => setCardMenu({ x, y, status, confirming: false })} />
             </>}
             {page === "agents" && <>
@@ -831,10 +836,10 @@ function App() {
             </>}
             {page === "skills" && <>
               <div className="section-heading section-heading-top skills-heading">
-                <div className="skills-context"><p>{skillTab === "installed" ? "管理已安装技能，预览更新、回滚或卸载。" : "从已添加的仓库发现技能，逐个选择安装。"}</p></div>
+                <div className="skills-context"><p>{skillTab === "installed" ? "分发技能写入用户级目录，图标即开关。" : "从已添加的仓库发现技能，逐个选择安装。"}</p></div>
                 <div className="section-actions">
                   <div className="skill-tabs" role="tablist" aria-label="Skills 视图">
-                    <button className={`skill-tab ${skillTab === "installed" ? "active" : ""}`} role="tab" aria-selected={skillTab === "installed"} onClick={() => setSkillTab("installed")}>已安装 <span>{activeInstallations.length}</span></button>
+                    <button className={`skill-tab ${skillTab === "installed" ? "active" : ""}`} role="tab" aria-selected={skillTab === "installed"} onClick={() => setSkillTab("installed")}>已分发 <span>{distributedSkills.length}</span></button>
                     <button className={`skill-tab ${skillTab === "discover" ? "active" : ""}`} role="tab" aria-selected={skillTab === "discover"} onClick={() => setSkillTab("discover")}>发现技能 <span>{discoveredSkills.length}</span></button>
                   </div>
                   {skillTab === "discover" && <>
@@ -848,38 +853,36 @@ function App() {
               </div>
               {skillTab === "discover" && discoverSearchOpen && <div className="skill-search-row"><div className="skill-search"><Glyph name="search" size={16} /><input autoFocus value={discoverSearch} onChange={(event) => setDiscoverSearch(event.target.value)} placeholder="搜索名称、描述或来源" aria-label="搜索发现的 Skill" /><button type="button" className="icon-button skill-search-clear" aria-label="关闭搜索" onClick={() => { setDiscoverSearch(""); setDiscoverSearchOpen(false); }}><Glyph name="close" size={15} /></button></div></div>}
               {skillTab === "installed" ? <>
-                {installedSkills.length ? <div className="card-list">
-                  {installedSkills.map(({ installation, skill }) => {
-                    return <article className="item-card" key={installation.id}>
+                {distributedSkills.length ? <div className="card-list">
+                  {distributedSkills.map((skill) => {
+                    return <article className="item-card" key={skill.id}>
                       <div className="item-icon amber"><Glyph name="spark" /></div>
                       <div className="item-content">
-                        <div className="item-title"><h3>{skill?.name || installation.name}</h3><span className="tag tag-good">已安装</span>{installation.modified && <span className="tag tag-warn">本地已修改</span>}{installation.updateAvailable && <span className="tag tag-info">有更新</span>}</div>
-                        <p>{skill?.description || "已安装技能，当前扫描中未找到对应文件。"}</p>
+                        <div className="item-title"><h3>{skill.name}</h3>{skill.updateAvailable && <span className="tag tag-info">有更新</span>}</div>
+                        <p className="skill-desc" title={skill.description}>{skill.description || "此技能未提供说明"}</p>
                       </div>
                       <div className="item-actions">
-                        {installation.updateAvailable && <button className="button button-primary" disabled={isBusy} onClick={() => void prepare("预览技能更新", () => api.planSync(installation.id))}>更新</button>}
-                        {installation.rollbackAvailable && <button className="button button-muted" disabled={isBusy} onClick={() => void prepare("预览技能回滚", () => api.rollbackSkill(installation.id))}>回滚</button>}
-                        <button className="button button-danger-ghost" disabled={isBusy} onClick={() => void prepare("预览移除技能", () => api.planRemoveSkill(installation.id))}>移除</button>
+                        <div className="skill-targets">
+                          {(["omp", "codex", "claude"] as SkillTarget[]).map((target) => {
+                            const enabled = target === "omp" ? skill.omp : target === "codex" ? skill.codex : skill.claude;
+                            const note = target === "claude" ? "" : "（与另一 Agent 共用目录，停用写入其配置文件）";
+                            return <button key={target} type="button" className={`mcp-agent-mark skill-target-mark ${enabled ? "on" : ""}`} disabled={isBusy} aria-pressed={enabled} aria-label={`${skillTargetMeta[target].label} ${enabled ? "停用" : "启用"}`} title={`${skillTargetMeta[target].label} · ${skillTargetMeta[target].path}${note} · ${enabled ? "已启用，点击停用" : "未启用，点击启用"}`} onClick={() => void toggleSkillTarget(skill, target)}>
+                              <AgentMark agent={target} active={enabled} />
+                            </button>;
+                          })}
+                        </div>
+                        {skill.updateAvailable && <button className="button button-primary" disabled={isBusy} onClick={() => void prepare("预览技能更新", () => api.planSkill(skill.repositoryId, skill.skillPath))}>更新</button>}
+                        <button className="button button-danger-ghost" disabled={isBusy} onClick={() => void prepare("预览移除技能", () => api.planSkillRemove(skill.name))}>移除</button>
                       </div>
                     </article>;
                   })}
-                </div> : <Empty icon="spark" title="还没有已安装的技能" description="切换到“发现技能”，从已添加的仓库选择要安装的 Skill。" action="发现技能" onClick={() => setSkillTab("discover")} />}
+                </div> : <Empty icon="spark" title="还没有分发的技能" description="切换到“发现技能”，从已添加的仓库安装；安装会写入 ~/.agents/skills（OMP 与 Codex）与 ~/.claude/skills，图标即开关。" action="发现技能" onClick={() => setSkillTab("discover")} />}
                 {detectedOnlySkills.length > 0 && <section className="section-block detected-skills">
-                  <div className="section-heading"><div><h2>已检测到的其他 Skills <span className="count">{detectedOnlySkills.length}</span></h2><p>这些技能来自本地通用或兼容来源，但没有 AMC 安装记录；这里只读展示，不提供更新或卸载操作。</p></div></div>
+                  <div className="section-heading"><div><h2>已检测到的其他 Skills <span className="count">{detectedOnlySkills.length}</span></h2><p>这些技能来自本地通用或兼容来源，不属于 AMC 分发管理；这里只读展示，不提供更新或卸载操作。</p></div></div>
                   <div className="card-list">
                     {detectedOnlySkills.map((skill) => <article className="item-card" key={`${skill.source}:${skill.path}`}>
                       <div className="item-icon amber"><Glyph name="spark" /></div>
-                      <div className="item-content"><div className="item-title"><h3>{skill.name}</h3>{skill.shadowed && <span className="tag tag-warn">同名来源</span>}<span className="tag tag-muted">{skill.managed ? "通用检测" : "只读检测"}</span></div><p>{skill.description || "此技能未提供说明"}</p></div>
-                    </article>)}
-                  </div>
-                </section>}
-                {installations.some((item) => !item.active) && <section className="section-block">
-                  <div className="section-heading"><h2>安装记录</h2></div>
-                  <div className="card-list">
-                    {installations.filter((item) => !item.active).map((item) => <article className="item-card" key={item.id}>
-                      <div className="item-icon mint"><Glyph name="branch" /></div>
-                      <div className="item-content"><div className="item-title"><h3>{item.name}</h3><span className="tag tag-muted">已移除</span></div><p>{item.targetPath} · {item.commit ? item.commit.slice(0, 8) : "—"}</p></div>
-                      <div className="item-actions">{item.rollbackAvailable && <button className="button button-muted" disabled={isBusy} onClick={() => void prepare("预览技能回滚", () => api.rollbackSkill(item.id))}>回滚</button>}</div>
+                      <div className="item-content"><div className="item-title"><h3>{skill.name}</h3>{skill.shadowed && <span className="tag tag-warn">同名来源</span>}<span className="tag tag-muted">{skill.source}</span></div><p>{skill.description || "此技能未提供说明"}</p></div>
                     </article>)}
                   </div>
                 </section>}
@@ -894,12 +897,11 @@ function App() {
                     {filteredDiscoveredSkills.map((skill) => {
                       const repository = state.repositories.find((item) => item.id === skill.repositoryId);
                       const skillUrl = skillWebUrl(repository, skill.path);
-                      const installed = activeInstallations.find((item) => item.repositoryId === skill.repositoryId && item.skillPath === skill.path);
-                      const removed = installations.find((item) => !item.active && item.repositoryId === skill.repositoryId && item.skillPath === skill.path);
+                      const installed = distributedSkills.find((item) => item.repositoryId === skill.repositoryId && item.skillPath === skill.path);
                       return <article className="item-card skill-discovery-card" key={`${skill.repositoryId}:${skill.path}`}>
-                        <div className="skill-card-heading"><div className="item-icon amber"><Glyph name="spark" /></div><div className="item-title"><h3>{skill.name}</h3>{installed && <span className="tag tag-good">已安装</span>}{!installed && removed && <span className="tag tag-muted">已移除</span>}{installed?.modified && <span className="tag tag-warn">本地已修改</span>}{installed?.updateAvailable && <span className="tag tag-info">有更新</span>}</div></div>
+                        <div className="skill-card-heading"><div className="item-icon amber"><Glyph name="spark" /></div><div className="item-title"><h3>{skill.name}</h3>{installed && <span className="tag tag-good">已分发</span>}{installed?.updateAvailable && <span className="tag tag-info">有更新</span>}</div></div>
                         <div className="item-content skill-card-body"><p>{skill.description || "此技能未提供说明"}</p></div>
-                        <div className="item-actions">{skillUrl && <button type="button" className="icon-button skill-source-link" title="打开 GitHub 技能目录" aria-label={`打开 ${skill.name} 的 GitHub 技能目录`} onClick={() => openRepository(skillUrl)}><Glyph name="external" size={15} /></button>}{installed ? <>{installed.updateAvailable && <button className="button button-primary" disabled={isBusy} onClick={() => void prepare("预览技能更新", () => api.planSync(installed.id))}>更新</button>}{installed.rollbackAvailable && <button className="button button-muted" disabled={isBusy} onClick={() => void prepare("预览技能回滚", () => api.rollbackSkill(installed.id))}>回滚</button>}<button className="button button-danger-ghost" disabled={isBusy} onClick={() => void prepare("预览移除技能", () => api.planRemoveSkill(installed.id))}>移除</button></> : <>{removed?.rollbackAvailable && <button className="button button-muted" disabled={isBusy} onClick={() => void prepare("预览技能回滚", () => api.rollbackSkill(removed.id))}>回滚</button>}<button className="button button-primary skill-install-button" disabled={isBusy || !selectedWorkspace} onClick={() => { if (selectedWorkspace) void prepare("预览安装技能", () => api.planSkill(selectedWorkspace, skill.repositoryId, skill.path)); }}>{removed ? "重新安装" : "安装"}</button></>}</div>
+                        <div className="item-actions">{skillUrl && <button type="button" className="icon-button skill-source-link" title="打开 GitHub 技能目录" aria-label={`打开 ${skill.name} 的 GitHub 技能目录`} onClick={() => openRepository(skillUrl)}><Glyph name="external" size={15} /></button>}{installed ? <>{installed.updateAvailable && <button className="button button-primary" disabled={isBusy} onClick={() => void prepare("预览技能更新", () => api.planSkill(installed.repositoryId, installed.skillPath))}>更新</button>}<button className="button button-danger-ghost" disabled={isBusy} onClick={() => void prepare("预览移除技能", () => api.planSkillRemove(installed.name))}>移除</button></> : <button className="button button-primary skill-install-button" disabled={isBusy} onClick={() => void prepare("预览安装技能", () => api.planSkill(skill.repositoryId, skill.path))}>安装</button>}</div>
                       </article>;
                     })}
                   </div>
@@ -926,7 +928,7 @@ function App() {
                   const repositoryUrl = repositoryWebUrl(repo);
                   return <article className="item-card repo-card" key={repo.id}>
                     <div className="item-icon mint"><Glyph name={repo.localPath ? "folder" : "repo"} /></div>
-                    <div className="item-content"><h3>{repo.localPath ? "本地 Git 仓库" : repo.url}</h3>{repo.localPath && <p className="path-line">{repo.localPath}</p>}<p>{repo.localPath ? "本地仓库工作树" : `引用：${repo.reference || "默认分支"}`} · {repositorySkills[repo.id]?.length ?? (repositoryScanLoading ? "扫描中" : 0)} 项技能 · {activeInstallations.filter((item) => item.repositoryId === repo.id).length} 项已安装</p></div>
+                    <div className="item-content"><h3>{repo.localPath ? "本地 Git 仓库" : repo.url}</h3>{repo.localPath && <p className="path-line">{repo.localPath}</p>}<p>{repo.localPath ? "本地仓库工作树" : `引用：${repo.reference || "默认分支"}`} · {repositorySkills[repo.id]?.length ?? (repositoryScanLoading ? "扫描中" : 0)} 项技能 · {distributedSkills.filter((item) => item.repositoryId === repo.id).length} 项已分发</p></div>
                     <div className="item-actions">
                       {repositoryUrl && <button type="button" className="icon-button skill-source-link" title="打开 GitHub 仓库" aria-label={`打开 ${repo.url} 的 GitHub 仓库`} onClick={() => openRepository(repositoryUrl)}><Glyph name="external" size={15} /></button>}
                       <button className="button button-muted" disabled={isBusy || repositoryScanLoading} onClick={() => void checkUpdates(repo.id)}>检查更新</button>
@@ -948,11 +950,11 @@ function App() {
           <div className="modal-body">
             {error && <div className="alert alert-error" role="alert"><Glyph name="warning" size={18} /><span>{error}</span></div>}
             <p className="repo-remove-url">{repositoryRemoval.localPath || repositoryRemoval.url}</p>
-            {activeRepositoryCount > 0 ? <div className="plan-warnings"><p><Glyph name="warning" size={16} />此来源还有 {activeRepositoryCount} 项已安装技能。请先移除这些安装，再移除来源。</p></div> :
-              <div className="plan-warnings"><p><Glyph name="warning" size={16} />将删除来源记录及 AMC 管理的{repositoryRemoval.localPath ? "本地 Git 缓存" : "Git 缓存"}{inactiveRepositoryCount > 0 ? `，并永久清理 ${inactiveRepositoryCount} 条已移除技能的安装历史与回滚备份` : ""}。{repositoryRemoval.localPath && "原始路径不会删除。"}此操作无法撤销。</p></div>}
+            {repositoryRecords.length > 0 ? <div className="plan-warnings"><p><Glyph name="warning" size={16} />此来源还有 {repositoryRecords.length} 项已分发技能。请先移除这些技能，再移除来源。</p></div> :
+              <div className="plan-warnings"><p><Glyph name="warning" size={16} />将删除来源记录及 AMC 管理的{repositoryRemoval.localPath ? "本地 Git 缓存" : "Git 缓存"}。{repositoryRemoval.localPath && "原始路径不会删除。"}此操作无法撤销。</p></div>}
             <div className="modal-actions">
               <button className="button button-muted" disabled={isBusy} onClick={() => setRepositoryRemoval(null)}>取消</button>
-              <button className="button button-danger" disabled={isBusy || activeRepositoryCount > 0} onClick={() => void removeRepository()}>{isBusy ? "正在移除…" : repositoryRemoval.localPath ? "确认移除来源" : "确认移除仓库"}</button>
+              <button className="button button-danger" disabled={isBusy || repositoryRecords.length > 0} onClick={() => void removeRepository()}>{isBusy ? "正在移除…" : repositoryRemoval.localPath ? "确认移除来源" : "确认移除仓库"}</button>
             </div>
           </div>
         </div>

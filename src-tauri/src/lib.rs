@@ -2,6 +2,7 @@ mod mcp;
 mod operations;
 mod platform;
 mod pricing;
+mod skills;
 mod store;
 #[cfg(test)]
 mod test_support;
@@ -114,42 +115,31 @@ async fn check_all_updates(state: State<'_, Shared>) -> platform::Result<operati
 #[tauri::command]
 async fn plan_skill(
     state: State<'_, Shared>,
-    workspace: workspace::Workspace,
     repository_id: i64,
     skill_path: String,
 ) -> platform::Result<operations::Plan> {
+    dispatch(state, move |core| core.plan_skill(repository_id, skill_path)).await
+}
+
+#[tauri::command]
+async fn plan_skill_toggle(
+    state: State<'_, Shared>,
+    name: String,
+    target: skills::SkillTarget,
+    enabled: bool,
+) -> platform::Result<operations::Plan> {
     dispatch(state, move |core| {
-        core.plan_skill(workspace, repository_id, skill_path)
+        core.plan_skill_toggle(name, target, enabled)
     })
     .await
 }
 
 #[tauri::command]
-async fn plan_sync(
+async fn plan_skill_remove(
     state: State<'_, Shared>,
-    installation_id: i64,
+    name: String,
 ) -> platform::Result<operations::Plan> {
-    dispatch(state, move |core| {
-        let record = core.store.record(installation_id)?;
-        core.plan_sync_record(record)
-    })
-    .await
-}
-
-#[tauri::command]
-async fn plan_remove_skill(
-    state: State<'_, Shared>,
-    installation_id: i64,
-) -> platform::Result<operations::Plan> {
-    dispatch(state, move |core| core.plan_remove_skill(installation_id)).await
-}
-
-#[tauri::command]
-async fn rollback_skill(
-    state: State<'_, Shared>,
-    installation_id: i64,
-) -> platform::Result<operations::Plan> {
-    dispatch(state, move |core| core.rollback_skill(installation_id)).await
+    dispatch(state, move |core| core.plan_skill_remove(name)).await
 }
 
 #[tauri::command]
@@ -340,9 +330,8 @@ pub fn run() {
             check_updates,
             check_all_updates,
             plan_skill,
-            plan_sync,
-            plan_remove_skill,
-            rollback_skill,
+            plan_skill_toggle,
+            plan_skill_remove,
             sync_agent_usage,
             get_agent_usage,
             sync_agents_usage,
