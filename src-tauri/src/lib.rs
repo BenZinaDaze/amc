@@ -1,7 +1,10 @@
+mod mcp;
 mod operations;
 mod platform;
 mod pricing;
 mod store;
+#[cfg(test)]
+mod test_support;
 mod subscription;
 mod usage;
 mod workspace;
@@ -40,11 +43,29 @@ async fn get_state(
 #[tauri::command]
 async fn plan_mcp(
     state: State<'_, Shared>,
-    workspace: workspace::Workspace,
     name: String,
     config: Option<serde_json::Value>,
+    agents: Vec<mcp::Agent>,
 ) -> platform::Result<operations::Plan> {
-    dispatch(state, move |core| core.plan_mcp(workspace, name, config)).await
+    dispatch(
+        state,
+        move |core| core.plan_mcp(name, config, agents),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn plan_mcp_toggle(
+    state: State<'_, Shared>,
+    name: String,
+    agent: mcp::Agent,
+    enabled: bool,
+) -> platform::Result<operations::Plan> {
+    dispatch(
+        state,
+        move |core| core.plan_mcp_toggle(name, agent, enabled),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -311,6 +332,7 @@ pub fn run() {
             get_default_workspace,
             get_state,
             plan_mcp,
+            plan_mcp_toggle,
             apply_plan,
             add_repository,
             remove_repository,

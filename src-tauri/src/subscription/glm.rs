@@ -103,9 +103,11 @@ fn fetch_glm(credential: &GlmCredential) -> Result<ProviderReport> {
             .get("msg")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let suffix = (!message.is_empty())
-            .then(|| format!("：{message}"))
-            .unwrap_or_default();
+        let suffix = if message.is_empty() {
+            String::new()
+        } else {
+            format!("：{message}")
+        };
         return Err(format!("配额接口未返回数据{suffix}"));
     };
     let quota: QuotaData =

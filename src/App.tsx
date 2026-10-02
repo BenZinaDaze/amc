@@ -4,7 +4,7 @@ import ompIcon from "./assets/omp.svg";
 import zaiIcon from "./assets/zai.svg";
 import sub2apiIcon from "./assets/sub2api.svg";
 import { version } from "../package.json";
-import { api, type ClaudeCodeStatus, type CodexStatus, type McpServer, type Plan, type Repository, type RepositorySkill, type State, type SubscriptionKind, type SubscriptionStatus, type UsageRange, type UsageStats, type Workspace } from "./api";
+import { api, type ClaudeCodeStatus, type CodexStatus, type McpAgent, type McpServer, type Plan, type Repository, type RepositorySkill, type State, type SubscriptionKind, type SubscriptionStatus, type UsageRange, type UsageStats, type Workspace } from "./api";
 import "./App.css";
 
 type Page = "overview" | "agents" | "omp" | "claude" | "codex" | "mcp" | "skills" | "repositories";
@@ -143,6 +143,36 @@ function Glyph({ name, size = 20 }: { name: string; size?: number }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
 
+/// 各 Agent 的品牌图标开关：激活为品牌色，未激活灰色。
+/// Claude / Codex（OpenAI）path 取自 simple-icons（CC0）；OMP 内联
+/// oh-my-pi 官方图标的 π 形几何（assets/icon.svg）。
+const agentMeta: Record<McpAgent, { label: string; color: string }> = {
+  omp: { label: "OMP", color: "#f97316" },
+  claude: { label: "Claude Code", color: "#d97757" },
+  codex: { label: "Codex", color: "#10a37f" },
+};
+
+function AgentMark({ agent, active }: { agent: McpAgent; active: boolean }) {
+  const { label, color } = agentMeta[agent];
+  return (
+    <svg viewBox="0 0 24 24" width={16} height={16} aria-hidden="true" style={{ color: active ? color : "#98a1b3" }}>
+      {agent === "claude" && <path fill="currentColor" d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z" />}
+      {agent === "codex" && <path fill="currentColor" d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z" />}
+      {agent === "omp" && (
+        <g fill="currentColor">
+          <rect x="2" y="3" width="20" height="2.6" rx="1" />
+          <rect x="5" y="6.6" width="2.6" height="14" rx="1" />
+          <rect x="15.2" y="6.6" width="2.6" height="10" rx="1" />
+          <rect x="14" y="13.6" width="5" height="4.4" rx="1.2" />
+          <rect x="15" y="14.7" width="0.9" height="2.2" rx="0.4" />
+          <rect x="17.1" y="14.7" width="0.9" height="2.2" rx="0.4" />
+        </g>
+      )}
+      <title>{label}</title>
+    </svg>
+  );
+}
+
 const navigation: { id: Page; title: string; icon: string; group?: boolean; child?: boolean }[] = [
   { id: "overview", title: "概览", icon: "grid" },
   { id: "agents", title: "Agents", icon: "agents", group: true },
@@ -168,7 +198,7 @@ function App() {
   const [mcpName, setMcpName] = useState("");
   const [mcpMode, setMcpMode] = useState<McpMode>("stdio");
   const [mcpCommand, setMcpCommand] = useState("");
-  const [mcpEnabled, setMcpEnabled] = useState(true);
+  const [mcpAgentFlags, setMcpAgentFlags] = useState<Record<McpAgent, boolean>>({ omp: false, claude: false, codex: false });
   const [mcpArgs, setMcpArgs] = useState("");
   const [mcpUrl, setMcpUrl] = useState("");
   const [mcpExtra, setMcpExtra] = useState("{}");
@@ -464,7 +494,7 @@ function App() {
     } catch (reason) {
       if (request === loadId.current) {
         setState(null);
-        setError(`无法读取自动发现的来源：${errorText(reason)}`);
+        setError(`无法加载状态：${errorText(reason)}`);
       }
     } finally {
       if (request === loadId.current) setLoading(false);
@@ -507,7 +537,7 @@ function App() {
       if (!cancelled) {
         setState(null);
         setLoading(false);
-        setError(`无法自动发现通用来源：${errorText(reason)}`);
+        setError(`无法加载状态：${errorText(reason)}`);
       }
     });
     return () => { cancelled = true; };
@@ -559,7 +589,7 @@ function App() {
     setMcpUrl(typeof config.url === "string" ? config.url : "");
     const extras = { ...config }; delete extras.type; delete extras.command; delete extras.args; delete extras.url; delete extras.enabled;
     setMcpExtra(JSON.stringify(extras, null, 2)); setMcpRaw(JSON.stringify(config, null, 2));
-    setMcpEnabled(config.enabled !== false);
+    setMcpAgentFlags({ omp: false, claude: false, codex: false, ...(server ? Object.fromEntries(server.agents.map((agent) => [agent, true])) : {}) });
     setRawConfig(Boolean(config.type && !["stdio", "http", "sse"].includes(String(config.type))));
     setMcpOpen(true);
   }
@@ -574,10 +604,10 @@ function App() {
     const extras = parseConfigObject(mcpExtra);
     if (mcpMode === "stdio") {
       if (requireConnection && !mcpCommand.trim()) throw new Error("请输入可执行命令");
-      return { ...extras, type: "stdio", command: mcpCommand.trim(), args: mcpArgs.split("\n").filter((arg) => arg.length > 0), enabled: mcpEnabled };
+      return { ...extras, type: "stdio", command: mcpCommand.trim(), args: mcpArgs.split("\n").filter((arg) => arg.length > 0) };
     }
     if (requireConnection && !mcpUrl.trim()) throw new Error("请输入服务 URL");
-    return { ...extras, type: mcpMode, url: mcpUrl.trim(), enabled: mcpEnabled };
+    return { ...extras, type: mcpMode, url: mcpUrl.trim() };
   }
 
   function switchMcpEditor() {
@@ -594,29 +624,48 @@ function App() {
         setMcpArgs(Array.isArray(config.args) ? config.args.map(String).join("\n") : "");
         setMcpUrl(typeof config.url === "string" ? config.url : "");
         setMcpExtra(JSON.stringify(extras, null, 2));
-        setMcpEnabled(config.enabled !== false);
       }
       setError("");
       setRawConfig(!rawConfig);
     } catch (reason) { setError(`无法切换编辑模式：${errorText(reason)}`); }
   }
 
+  /** 兼容从其它工具文档复制的整块 JSON：识别 mcpServers 包装并解包。 */
+  function unwrapMcpEnvelope(config: Record<string, unknown>, fallbackName: string): { name: string; spec: Record<string, unknown> } {
+    if (!("mcpServers" in config)) return { name: fallbackName, spec: config };
+    const servers = config.mcpServers;
+    if (!servers || typeof servers !== "object" || Array.isArray(servers)) throw new Error("mcpServers 必须是 JSON 对象");
+    const entries = Object.entries(servers as Record<string, unknown>);
+    if (entries.length !== 1) throw new Error("每次只支持一个 MCP 服务；请保留 mcpServers 中的一项，或直接粘贴该服务的配置对象。");
+    const [key, spec] = entries[0];
+    if (!spec || typeof spec !== "object" || Array.isArray(spec)) throw new Error("MCP 服务配置必须是 JSON 对象");
+    return { name: key, spec: spec as Record<string, unknown> };
+  }
+
   async function saveMcp(event: FormEvent) {
     event.preventDefault();
-    const selected = selectedWorkspace;
-    if (!selected) { setError("正在自动发现通用来源，请稍候。"); return; }
-    const name = mcpName.trim();
-    if (!name) { setError("请输入 MCP 服务名称。"); return; }
+    if (!mcpName.trim()) { setError("请输入 MCP 服务名称。"); return; }
+    let name = mcpName.trim();
+    let config: Record<string, unknown>;
+    try {
+      const parsed = rawConfig ? parseConfigObject(mcpRaw) : structuredMcpConfig(true);
+      ({ name, spec: config } = unwrapMcpEnvelope(parsed, name));
+    }
+    catch (reason) { setError(`配置无效：${errorText(reason)}`); return; }
     if (mcpOriginal && mcpOriginal !== name) { setError("修改服务名称需先删除旧服务，再添加新服务。"); return; }
     if (state?.mcp.some((server) => server.name === name && server.name !== mcpOriginal)) { setError("同名 MCP 服务已存在。"); return; }
-    let config: Record<string, unknown>;
-    try { config = rawConfig ? parseConfigObject(mcpRaw) : structuredMcpConfig(true); }
-    catch (reason) { setError(`配置无效：${errorText(reason)}`); return; }
-    const result = await operation("预览 MCP 变更", () => api.planMcp(selected, name, config));
+    const agents = (Object.keys(mcpAgentFlags) as McpAgent[]).filter((agent) => mcpAgentFlags[agent]);
+    const result = await operation("预览 MCP 变更", () => api.planMcp(name, config, agents));
     if (result) {
       setMcpOpen(false);
       setPlan(result);
     }
+  }
+
+  async function toggleMcpAgent(server: McpServer, agent: McpAgent) {
+    const enabled = !server.agents.includes(agent);
+    const result = await operation(enabled ? `在 Agent 中启用 ${server.name}` : `在 Agent 中停用 ${server.name}`, () => api.planMcpToggle(server.name, agent, enabled));
+    if (result) setPlan(result);
   }
 
   async function addRepository(event: FormEvent) {
@@ -687,12 +736,12 @@ function App() {
   const inactiveRepositoryCount = repositoryRecords.length - activeRepositoryCount;
   const isBusy = Boolean(busy);
   const contentHeader = {
-    overview: ["概览", "自动发现通用来源，集中查看 MCP、Skills 与仓库状态。"],
+    overview: ["概览", "集中管理 MCP、Skills 与仓库状态。"],
     agents: ["Agents", "管理代理环境与兼容性检测。"],
     omp: ["OMP", ""],
     claude: ["Claude Code", ""],
     codex: ["Codex CLI", ""],
-    mcp: ["MCP 服务", "查看通用来源，在应用前审阅每一处配置变更。"],
+    mcp: ["MCP 服务", "统一保存服务定义，按 Agent 开关写入或移除用户级配置。"],
     skills: ["Skills", "管理已安装技能，保留本地修改的控制权。"],
     repositories: ["技能仓库", "从已发现的 Git 来源同步可用技能。"],
   }[page];
@@ -714,8 +763,8 @@ function App() {
           <div className="page-heading"><div><h1>{contentHeader[0]}{page === "omp" && state && <span className={`omp-version-pill ${state.agent.installed && state.agent.version ? "available" : "missing"}`}>{state.agent.installed && state.agent.version ? state.agent.version.replace(/^omp\//i, "") : "未检测到"}</span>}{page === "claude" && claudeCodeStatus && <span className={`omp-version-pill ${claudeCodeStatus.installed && claudeCodeStatus.version ? "available" : "missing"}`}>{claudeCodeStatus.installed && claudeCodeStatus.version ? claudeCodeStatus.version.split(/\s+/)[0] : "未检测到"}</span>}{page === "codex" && codexStatus && <span className={`omp-version-pill ${codexStatus.installed && codexStatus.version ? "available" : "missing"}`}>{codexStatus.installed && codexStatus.version ? codexStatus.version.split(/\s+/).pop() : "未检测到"}</span>}</h1>{page !== "omp" && page !== "claude" && page !== "codex" && <p>{contentHeader[1]}</p>}</div><button className="button button-muted refresh-button" aria-label={page === "omp" ? "刷新 OMP 用量" : page === "claude" ? "刷新 Claude Code 用量" : page === "codex" ? "刷新 Codex 用量" : "刷新状态"} onClick={() => { if (page === "omp") void loadUsage("sync", usageRangeRef.current); else if (page === "claude") void loadClaudeUsage("sync", claudeUsageRangeRef.current); else if (page === "codex") void loadCodexUsage("sync", codexUsageRangeRef.current); else { if (page === "agents") refreshAgentsUsage(); if (selectedWorkspace) void reload(selectedWorkspace); } }} disabled={page === "omp" ? usageLoading !== null : page === "claude" ? claudeUsageLoading !== null : page === "codex" ? codexUsageLoading !== null : page === "agents" ? agentsRefreshBusy || agentsUsageLoading !== null : loading || isBusy}><Glyph name="refresh" size={16} />{page === "omp" || page === "claude" || page === "codex" ? "刷新用量" : "刷新状态"}</button></div>
           {error && <div className="alert alert-error" role="alert"><Glyph name="warning" size={18} /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><Glyph name="close" size={16} /></button></div>}
           {notice && <div className="alert alert-success" role="status"><Glyph name="check" size={18} /><span>{notice}</span><button aria-label="关闭成功提示" onClick={() => setNotice("")}><Glyph name="close" size={16} /></button></div>}
-          {page !== "omp" && page !== "claude" && page !== "codex" && loading && <div className="loading-panel" role="status"><span className="spinner" />正在自动发现通用来源…</div>}
-          {page !== "omp" && page !== "claude" && page !== "codex" && !loading && !state && <Empty icon="warning" title="尚无法读取通用来源" description="AMC 会自动扫描用户级与兼容来源，请刷新重试。" action="重新扫描" onClick={() => { if (selectedWorkspace) void reloadAndLoad(selectedWorkspace); }} />}
+          {page !== "omp" && page !== "claude" && page !== "codex" && loading && <div className="loading-panel" role="status"><span className="spinner" />正在加载状态…</div>}
+          {page !== "omp" && page !== "claude" && page !== "codex" && !loading && !state && <Empty icon="warning" title="尚无法加载状态" description="AMC 无法读取本机数据目录或 Agent 配置，请刷新重试。" action="重新加载" onClick={() => { if (selectedWorkspace) void reloadAndLoad(selectedWorkspace); }} />}
           {page === "omp" && <AgentUsagePanel agentLabel="OMP" stats={usage} range={usageSelection.range} rangeLabel={usageSelection.label} activeChoice={usageSelection.choice} loading={usageLoading} error={usageError} onRangeChange={changeUsageRange} onRefresh={() => void loadUsage("sync", usageRangeRef.current)} />}
           {page === "claude" && <AgentUsagePanel agentLabel="Claude Code" stats={claudeUsage} range={claudeUsageSelection.range} rangeLabel={claudeUsageSelection.label} activeChoice={claudeUsageSelection.choice} loading={claudeUsageLoading} error={claudeUsageError} onRangeChange={changeClaudeUsageRange} onRefresh={() => void loadClaudeUsage("sync", claudeUsageRangeRef.current)} />}
           {page === "codex" && <AgentUsagePanel agentLabel="Codex CLI" stats={codexUsage} range={codexUsageSelection.range} rangeLabel={codexUsageSelection.label} activeChoice={codexUsageSelection.choice} loading={codexUsageLoading} error={codexUsageError} onRangeChange={changeCodexUsageRange} onRefresh={() => void loadCodexUsage("sync", codexUsageRangeRef.current)} />}
@@ -749,28 +798,36 @@ function App() {
             </>}
             {page === "mcp" && <>
               <div className="section-heading section-heading-top">
-                <div><h2>服务列表 <span className="count">{state.mcp.length}</span></h2><p>通用来源仅供查看；只编辑 AMC 通用可写来源管理的服务。</p></div>
-                <button className="button button-primary" onClick={() => openMcp()} disabled={isBusy}><Glyph name="plus" size={17} />添加服务</button>
+                <div><h2>服务列表 <span className="count">{state.mcp.length}</span></h2><p>统一保存后投影到各 Agent 的用户级配置；开关即写入或移除对应文件条目。</p></div>
+                <div className="section-actions">
+                  <button className="button button-primary" onClick={() => openMcp()} disabled={isBusy}><Glyph name="plus" size={17} />添加服务</button>
+                </div>
               </div>
               {state.mcp.length ? (
                 <div className="card-list">
-                  {state.mcp.map((server) => <article className="item-card" key={`${server.source}:${server.name}`}>
+                  {state.mcp.map((server) => <article className="item-card" key={server.name}>
                     <div className="item-icon purple"><Glyph name="plug" /></div>
                     <div className="item-content">
                       <div className="item-title">
                         <h3>{server.name}</h3>
-                        <span className={`tag ${server.enabled ? "tag-good" : "tag-muted"}`}>{server.enabled ? "已启用" : "未启用"}</span>
-                        <span className="tag tag-muted">{server.managed ? "通用可写来源" : "只读兼容来源"}</span>
+                        <span className="tag tag-muted">{String(server.config.type || "stdio")}</span>
                       </div>
-                      <p>{server.source || "未知通用来源"}</p>
                     </div>
-                    {server.managed && <div className="item-actions">
+                    <div className="item-actions">
+                      <div className="mcp-agents">
+                        {(["omp", "claude", "codex"] as McpAgent[]).map((agent) => {
+                          const enabled = server.agents.includes(agent);
+                          return <button key={agent} type="button" className={`mcp-agent-mark ${enabled ? "on" : ""}`} disabled={isBusy} aria-pressed={enabled} aria-label={`${agentMeta[agent].label} ${enabled ? "停用" : "启用"}`} title={`${agentMeta[agent].label} · ${enabled ? "已启用，点击停用" : "未启用，点击启用"}`} onClick={() => void toggleMcpAgent(server, agent)}>
+                            <AgentMark agent={agent} active={enabled} />
+                          </button>;
+                        })}
+                      </div>
                       <button className="button button-muted" onClick={() => openMcp(server)} disabled={isBusy}>编辑</button>
-                      <button className="button button-danger-ghost" onClick={() => { if (selectedWorkspace) void prepare("预览删除服务", () => api.planMcp(selectedWorkspace, server.name, null)); }} disabled={isBusy}>删除</button>
-                    </div>}
+                      <button className="button button-danger-ghost" onClick={() => void prepare("预览删除服务", () => api.planMcp(server.name, null, []))} disabled={isBusy}>删除</button>
+                    </div>
                   </article>)}
                 </div>
-              ) : <Empty icon="plug" title="还没有 MCP 服务" description="添加 stdio、HTTP 或 SSE 服务，先预览配置再写入。" action="添加服务" onClick={() => openMcp()} />}
+              ) : <Empty icon="plug" title="还没有 MCP 服务" description="添加 stdio、HTTP 或 SSE 服务，勾选要写入的 Agent，先预览再应用。AMC 只管理通过它保存的服务。" action="添加服务" onClick={() => openMcp()} />}
             </>}
             {page === "skills" && <>
               <div className="section-heading section-heading-top skills-heading">
@@ -909,7 +966,19 @@ function App() {
           <form onSubmit={(event) => void saveMcp(event)} className="modal-body mcp-form">
             {error && <div className="alert alert-error" role="alert"><Glyph name="warning" size={18} /><span>{error}</span><button type="button" aria-label="关闭错误提示" onClick={() => setError("")}><Glyph name="close" size={16} /></button></div>}
             <label>服务名称<input value={mcpName} onChange={(event) => setMcpName(event.target.value)} placeholder="例如 filesystem" required readOnly={Boolean(mcpOriginal)} /></label>
-            {!rawConfig && <label className="checkbox-row"><input type="checkbox" checked={mcpEnabled} onChange={(event) => setMcpEnabled(event.target.checked)} />启用此服务</label>}
+            {!rawConfig && <div>
+              <span className="field-label">写入到哪些 Agent</span>
+              <div className="mcp-agents">
+                {(["omp", "claude", "codex"] as McpAgent[]).map((agent) => (
+                  <label key={agent} className="checkbox-row mcp-agent-option">
+                    <input type="checkbox" checked={mcpAgentFlags[agent]} onChange={(event) => setMcpAgentFlags((flags) => ({ ...flags, [agent]: event.target.checked }))} />
+                    <AgentMark agent={agent} active={mcpAgentFlags[agent]} />
+                    {agentMeta[agent].label}
+                  </label>
+                ))}
+              </div>
+              <small>勾选后保存会写入对应 Agent 的用户级配置；之后也可在列表中点击开关切换。</small>
+            </div>}
             <label className="checkbox-row"><input type="checkbox" checked={rawConfig} onChange={switchMcpEditor} />直接编辑完整 JSON 配置</label>
             {rawConfig ? <label>配置对象<textarea className="code-editor" spellCheck={false} rows={12} value={mcpRaw} onChange={(event) => setMcpRaw(event.target.value)} /></label> : <>
               <div>

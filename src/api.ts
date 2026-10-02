@@ -2,7 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type Workspace = { path: string };
 export type Agent = { installed: boolean; version: string };
-export type McpServer = { name: string; config: unknown; source: string; enabled: boolean; managed: boolean };
+export type McpAgent = "omp" | "claude" | "codex";
+export type McpServer = { name: string; config: Record<string, unknown>; agents: McpAgent[] };
 export type Skill = { name: string; path: string; source: string; managed: boolean; shadowed: boolean; description: string };
 export type Repository = { id: number; url: string; reference: string; localPath?: string };
 export type Installation = { id: number; repositoryId: number; skillPath: string; name: string; targetPath: string; commit: string; modified: boolean; updateAvailable: boolean; active: boolean; rollbackAvailable: boolean };
@@ -63,7 +64,8 @@ export const api = {
   getClaudeCodeStatus: () => invoke<ClaudeCodeStatus>("get_claude_code_status"),
   getCodexStatus: () => invoke<CodexStatus>("get_codex_status"),
   refreshPricing: () => invoke<string>("refresh_pricing"),
-  planMcp: (workspace: Workspace, name: string, config: Record<string, unknown> | null) => invoke<Plan>("plan_mcp", { workspace, name, config }),
+  planMcp: (name: string, config: Record<string, unknown> | null, agents: McpAgent[]) => invoke<Plan>("plan_mcp", { name, config, agents }),
+  planMcpToggle: (name: string, agent: McpAgent, enabled: boolean) => invoke<Plan>("plan_mcp_toggle", { name, agent, enabled }),
   applyPlan: (id: string) => invoke<Message>("apply_plan", { id }),
   addRepository: (url: string, reference: string) => invoke<Repository>("add_repository", { url, reference }),
   removeRepository: (repositoryId: number) => invoke<Message>("remove_repository", { repositoryId }),

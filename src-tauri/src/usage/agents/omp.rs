@@ -18,7 +18,25 @@ use std::{
 
 pub(crate) struct OmpUsageAdapter {
     stats_db: PathBuf,
+    /// OMP 原生用户级 MCP 配置（agent 目录下的 mcp.json），供 MCP
+    /// 管理模块定位写入目标；与 stats.db 走同一套目录解析。
+    mcp_json: PathBuf,
+    /// 生效的配置根（含 profile），用于判断 OMP 是否已初始化。
+    config_root: PathBuf,
 }
+
+impl OmpUsageAdapter {
+    pub(crate) fn mcp_json_path(&self) -> &Path {
+        &self.mcp_json
+    }
+
+    pub(crate) fn config_root(&self) -> &Path {
+        &self.config_root
+    }
+}
+
+/// `messages` 表一行的原始列值（session_file 之后均为字符串/整数列）。
+type OmpMessageRow = (String, String, String, String, i64, i64, i64, i64, i64, i64);
 
 const OMP_EXECUTABLE: &str = if cfg!(windows) { "omp.exe" } else { "omp" };
 /// OMP 经 bun/npm 安装，需要这些相对用户目录的附加搜索路径。
@@ -308,6 +326,8 @@ impl OmpUsageAdapter {
         };
         Ok(Self {
             stats_db: data_root.as_ref().unwrap_or(&root).join("stats.db"),
+            mcp_json: agent_dir.join("mcp.json"),
+            config_root: root,
         })
     }
     fn sync_cli(&self) -> platform::Result<()> {
@@ -352,9 +372,7 @@ impl OmpUsageAdapter {
             .map_err(|e| format!("读取 OMP 用量失败: {e}"))?;
         let mut records = Vec::new();
         while let Some(row) = rows.next().map_err(|e| format!("读取 OMP 用量失败: {e}"))? {
-            let record: rusqlite::Result<
-                (String, String, String, String, i64, i64, i64, i64, i64, i64),
-            > = (|| {
+            let record: rusqlite::Result<OmpMessageRow> = (|| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -507,7 +525,11 @@ mod tests {
             .unwrap();
         }
         drop(db);
-        let adapter = OmpUsageAdapter { stats_db };
+        let adapter = OmpUsageAdapter {
+            stats_db,
+            mcp_json: root.join("agent/mcp.json"),
+            config_root: root.clone(),
+        };
         let stats = archive_and_query(
             &adapter,
             &root,
@@ -556,7 +578,11 @@ mod tests {
         )
         .unwrap();
         drop(db);
-        let adapter = OmpUsageAdapter { stats_db };
+        let adapter = OmpUsageAdapter {
+            stats_db,
+            mcp_json: root.join("agent/mcp.json"),
+            config_root: root.clone(),
+        };
         let stats = archive_and_query(&adapter, &root, "all", &prices());
         assert_eq!(stats.total_requests, 2);
         assert_eq!(stats.unpriced_requests, 1);
@@ -590,7 +616,11 @@ mod tests {
         let stats_db = root.join("stats.db");
         fixture_stats(&stats_db, "entry", 6);
         let price_file = root.join(crate::pricing::FILE_NAME);
-        let adapter = OmpUsageAdapter { stats_db };
+        let adapter = OmpUsageAdapter {
+            stats_db,
+            mcp_json: root.join("agent/mcp.json"),
+            config_root: root.clone(),
+        };
         let store = crate::usage::store::UsageStore::new(&root).unwrap();
         let scan = adapter.scan(0).unwrap();
         store.ingest("omp", &scan.records).unwrap();

@@ -1,10 +1,11 @@
 use crate::{
+    mcp::{self, Agent, McpAction, McpWrite},
     platform::{self, Result},
-    store::{InstallRecord, Installation, Repository, Store},
+    store::{InstallRecord, Installation, McpRecord, Repository, Store},
     workspace::{self, Workspace},
 };
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -12,8 +13,6 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 use uuid::Uuid;
-
-const SCHEMA: &str = "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,7 +26,7 @@ pub struct AgentInfo {
 pub struct State {
     workspace: Workspace,
     agent: AgentInfo,
-    mcp: Vec<platform::McpView>,
+    mcp: Vec<mcp::McpView>,
     skills: Vec<platform::SkillView>,
     repositories: Vec<Repository>,
     installations: Vec<Installation>,
@@ -61,29 +60,30 @@ pub struct RepositorySkill {
     description: String,
 }
 
+/// `record_target` 的返回：(安装根目录, 目标路径, 内容校验哈希, 目标快照)。
+type RecordTarget = (PathBuf, PathBuf, Option<String>, Vec<(PathBuf, Vec<u8>)>);
+
 pub struct Core {
     pub store: Store,
     plans: HashMap<String, Pending>,
 }
 
 enum Pending {
-    Mcp {
-        root: PathBuf,
-        writes: Vec<McpWrite>,
-    },
-    Skill {
-        root: PathBuf,
-        target: PathBuf,
-        old_hash: Option<String>,
-        record: Option<InstallRecord>,
-        action: SkillAction,
-    },
+    Mcp(Box<McpPending>),
+    Skill(Box<SkillPending>),
 }
 
-struct McpWrite {
-    path: PathBuf,
-    before: Option<Vec<u8>>,
-    after: Vec<u8>,
+struct McpPending {
+    writes: Vec<McpWrite>,
+    action: McpAction,
+}
+
+struct SkillPending {
+    root: PathBuf,
+    target: PathBuf,
+    old_hash: Option<String>,
+    record: Option<InstallRecord>,
+    action: SkillAction,
 }
 
 enum SkillAction {
@@ -121,7 +121,7 @@ impl Core {
         Ok(State {
             workspace: workspace::from_root(&root),
             agent: AgentInfo { installed, version },
-            mcp: workspace::scan_mcp(&root)?,
+            mcp: mcp::state(&self.store)?,
             skills: workspace::scan_skills(&root)?,
             repositories: self.store.repositories()?,
             installations,
@@ -147,95 +147,114 @@ impl Core {
 
     pub fn plan_mcp(
         &mut self,
-        workspace: Workspace,
         name: String,
         mut config: Option<Value>,
+        agents: Vec<Agent>,
     ) -> Result<Plan> {
         if !platform::valid_mcp_name(&name) {
             return Err("MCP 名称无效（最多 100 字符，仅限字母数字、_-. :）".into());
         }
-        if let Some(value) = &config {
-            validate_mcp(value)?;
-        }
-        let is_update = config.is_some();
-        let root = workspace::root(&workspace)?;
-        let primary = workspace::mcp_write_path(&root)?;
-        let legacy = if primary == root.join(".mcp.json") {
-            root.join("mcp.json")
-        } else {
-            root.join(".mcp.json")
-        };
-        platform::no_links(&primary, &root)?;
-        platform::no_links(&legacy, &root)?;
-        let primary_doc = read_mcp_document(&primary)?;
-        let legacy_doc = read_mcp_document(&legacy)?;
-        let in_primary = primary_doc
-            .get("mcpServers")
-            .and_then(|v| v.get(&name))
-            .is_some();
-        let in_legacy = legacy_doc
-            .get("mcpServers")
-            .and_then(|v| v.get(&name))
-            .is_some();
-        if config.is_none() && !in_primary {
-            return Err(if in_legacy {
-                "该 MCP 位于只读 .mcp.json 来源，不能移除".into()
-            } else {
-                "此工作区中不存在该 MCP".into()
-            });
-        }
-        let before = match fs::read(&primary) {
-            Ok(bytes) => Some(bytes),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(format!("读取 {} 失败: {e}", primary.display())),
-        };
-        let mut doc = primary_doc;
-        let map = doc.as_object_mut().ok_or("MCP JSON 根必须是对象")?;
-        if is_update && !map.contains_key("$schema") {
-            map.insert("$schema".into(), Value::String(SCHEMA.into()));
-        }
-        let servers = map
-            .entry("mcpServers")
-            .or_insert_with(|| json!({}))
-            .as_object_mut()
-            .ok_or("mcpServers 必须是对象")?;
-        if let Some(mut value) = config.take() {
-            let fallback = legacy_doc.get("mcpServers").and_then(|v| v.get(&name));
-            platform::restore_mcp_secrets(&mut value, servers.get(&name).or(fallback))?;
-            servers.insert(name.clone(), value);
-        } else {
-            servers.remove(&name);
-        }
-        let mut after = serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?;
-        after.push(b'\n');
-        let changes = vec![Change {
-            path: primary.display().to_string(),
-            before: before.as_deref().map_or_else(String::new, preview_mcp),
-            after: preview_mcp(&after),
-        }];
-        let writes = vec![McpWrite {
-            path: primary,
-            before,
-            after,
-        }];
-        Ok(self.enqueue(
-            format!(
-                "{} MCP {name}",
-                if !is_update {
-                    "移除"
-                } else if in_primary || in_legacy {
-                    "更新"
-                } else {
-                    "新增"
+        let targets = mcp::Targets::from_env()?;
+        let action = match config.as_mut() {
+            Some(spec) => {
+                if spec.get("mcpServers").is_some() {
+                    return Err(
+                        "配置应为单个 MCP 服务对象（{\"type\":...,\"command\":...}），不应包含 mcpServers 包装"
+                            .into(),
+                    );
                 }
-            ),
-            changes,
-            if is_update && !in_primary && in_legacy {
-                vec!["该 MCP 来自只读来源；更新将在工作区 mcp.json 创建覆盖项。".into()]
-            } else {
-                vec![]
+                mcp::strip_enabled(spec);
+                mcp::validate_spec(spec)?;
+                // 密钥回填必须在入队前作用于 record 本身：apply 会把
+                // record 原样存入数据库，占位符一旦入库，之后的开关切换
+                // 就会把 "[已隐藏]" 当真值投影进 Agent 文件。
+                // 回填来源只用统一库的旧 spec——它是唯一事实来源：Agent
+                // 文件可能损坏（坏 JSON 不应阻断其它 Agent 的保存）或被
+                // 手改漂移（文件值不得反向覆盖库值）。
+                let previous = self
+                    .store
+                    .mcp_server(&name)?
+                    .filter(|record| record.managed);
+                platform::restore_mcp_secrets(
+                    spec,
+                    previous.as_ref().map(|record| &record.spec),
+                )?;
+                let mut record = McpRecord::new(name.clone(), spec.clone());
+                for agent in agents {
+                    record.set_enabled(agent, true);
+                }
+                McpAction::Save { record }
+            }
+            None => McpAction::Delete { name },
+        };
+        self.enqueue_mcp(action, &targets)
+    }
+
+    pub fn plan_mcp_toggle(
+        &mut self,
+        name: String,
+        agent: Agent,
+        enabled: bool,
+    ) -> Result<Plan> {
+        let targets = mcp::Targets::from_env()?;
+        self.enqueue_mcp(
+            McpAction::Toggle {
+                name,
+                agent,
+                enabled,
             },
-            Pending::Mcp { root, writes },
+            &targets,
+        )
+    }
+
+    fn enqueue_mcp(&mut self, action: McpAction, targets: &mcp::Targets) -> Result<Plan> {
+        let (writes, warnings) = mcp::project(&self.store, targets, &action)?;
+        let summary = match &action {
+            McpAction::Save { record } => {
+                let existing = self.store.mcp_server(&record.name)?.is_some();
+                let names: Vec<&str> = mcp::AGENTS
+                    .into_iter()
+                    .filter(|agent| record.enabled_for(*agent))
+                    .map(Agent::title)
+                    .collect();
+                format!(
+                    "{} MCP {} → {}",
+                    if existing { "更新" } else { "新增" },
+                    record.name,
+                    if names.is_empty() {
+                        "未选择 Agent（仅保存）".to_owned()
+                    } else {
+                        names.join("、")
+                    }
+                )
+            }
+            McpAction::Delete { name } => format!("移除 MCP {name}"),
+            McpAction::Toggle {
+                name,
+                agent,
+                enabled,
+            } => format!(
+                "在 {} 中{} {name}",
+                agent.title(),
+                if *enabled { "启用" } else { "停用" }
+            ),
+        };
+        let changes = writes
+            .iter()
+            .map(|write| Change {
+                path: write.path.display().to_string(),
+                before: write
+                    .before
+                    .as_deref()
+                    .map_or_else(String::new, |bytes| preview_mcp(&write.path, bytes)),
+                after: preview_mcp(&write.path, &write.after),
+            })
+            .collect();
+        Ok(self.enqueue(
+            summary,
+            changes,
+            warnings,
+            Pending::Mcp(Box::new(McpPending { writes, action })),
         ))
     }
 
@@ -447,7 +466,7 @@ impl Core {
             format!("{}技能 {name}", if old.is_some() { "更新" } else { "安装" }),
             changes,
             vec!["只复制技能文件；不会运行仓库脚本。".into()],
-            Pending::Skill {
+            Pending::Skill(Box::new(SkillPending {
                 root,
                 target,
                 old_hash,
@@ -460,7 +479,7 @@ impl Core {
                     files,
                     hash,
                 },
-            },
+            })),
         ))
     }
 
@@ -475,13 +494,13 @@ impl Core {
             format!("移除技能 {}", record.name),
             changes,
             vec!["只移除 AMC 管理且未被手动修改的安装。".into()],
-            Pending::Skill {
+            Pending::Skill(Box::new(SkillPending {
                 root,
                 target,
                 old_hash,
                 record: Some(record),
                 action: SkillAction::Remove,
-            },
+            })),
         ))
     }
 
@@ -525,20 +544,20 @@ impl Core {
             format!("回滚技能 {}", record.name),
             changes,
             vec![],
-            Pending::Skill {
+            Pending::Skill(Box::new(SkillPending {
                 root,
                 target,
                 old_hash,
                 record: Some(record),
                 action: SkillAction::Rollback { backup },
-            },
+            })),
         ))
     }
 
     fn record_target(
         &self,
         record: &InstallRecord,
-    ) -> Result<(PathBuf, PathBuf, Option<String>, Vec<(PathBuf, Vec<u8>)>)> {
+    ) -> Result<RecordTarget> {
         let target = PathBuf::from(&record.target_path);
         let skills_root = target.parent().ok_or("安装路径无效")?.to_path_buf();
         let workspace_root = skills_root
@@ -559,14 +578,43 @@ impl Core {
     pub fn apply(&mut self, id: String) -> Result<Message> {
         let pending = self.plans.remove(&id).ok_or("方案已失效，请重新预览")?;
         match pending {
-            Pending::Mcp { root, writes } => apply_mcp(&self.store.root, &root, &id, &writes),
-            Pending::Skill {
-                root,
-                target,
-                old_hash,
-                record,
-                action,
-            } => {
+            Pending::Mcp(pending) => {
+                let McpPending { writes, action } = *pending;
+                apply_mcp(&self.store.root, &id, &writes)?;
+                let message = match action {
+                    McpAction::Save { record } => {
+                        let name = record.name.clone();
+                        self.store.save_mcp_server(&record)?;
+                        format!("MCP {name} 已保存并写入所选 Agent 的用户级配置")
+                    }
+                    McpAction::Delete { name } => {
+                        self.store.delete_mcp_server(&name)?;
+                        format!("MCP {name} 已从数据库与各 Agent 配置中移除")
+                    }
+                    McpAction::Toggle {
+                        name,
+                        agent,
+                        enabled,
+                    } => {
+                        let mut record = self
+                            .store
+                            .mcp_server(&name)?
+                            .ok_or("方案已失效，请重新预览")?;
+                        record.set_enabled(agent, enabled);
+                        self.store.save_mcp_server(&record)?;
+                        format!("已在 {} 中{} {name}", agent.title(), if enabled { "启用" } else { "停用" })
+                    }
+                };
+                Ok(Message { message })
+            }
+            Pending::Skill(pending) => {
+                let SkillPending {
+                    root,
+                    target,
+                    old_hash,
+                    record,
+                    action,
+                } = *pending;
                 let skills_root = target.parent().ok_or("安装路径无效")?;
                 let workspace_root = skills_root
                     .parent()
@@ -769,9 +817,10 @@ impl Core {
     }
 }
 
-fn apply_mcp(data_dir: &Path, root: &Path, id: &str, writes: &[McpWrite]) -> Result<Message> {
+fn apply_mcp(data_dir: &Path, id: &str, writes: &[McpWrite]) -> Result<()> {
     for write in writes {
-        platform::no_links(&write.path, root)?;
+        let parent = write.path.parent().ok_or("MCP 目标路径无效")?;
+        platform::no_links(&write.path, parent)?;
         let actual = match fs::read(&write.path) {
             Ok(bytes) => Some(bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -783,13 +832,14 @@ fn apply_mcp(data_dir: &Path, root: &Path, id: &str, writes: &[McpWrite]) -> Res
     }
     let backup_dir = data_dir.join("backups/mcp");
     fs::create_dir_all(&backup_dir).map_err(|e| e.to_string())?;
-    fs::create_dir_all(root).map_err(|e| e.to_string())?;
     let mut staged = Vec::new();
     for (index, write) in writes.iter().enumerate() {
-        let temp = root.join(format!(".amc-{id}-{index}.tmp"));
+        let parent = write.path.parent().ok_or("MCP 目标路径无效")?;
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        let temp = parent.join(format!(".amc-{id}-{index}.tmp"));
         let stage_result = (|| -> Result<()> {
             if let Some(old) = &write.before {
-                write_private(&backup_dir.join(format!("{id}-{index}.json")), old)?;
+                write_private(&backup_dir.join(format!("{id}-{index}.bak")), old)?;
             }
             write_private(&temp, &write.after)?;
             if let Ok(metadata) = fs::metadata(&write.path) {
@@ -809,7 +859,8 @@ fn apply_mcp(data_dir: &Path, root: &Path, id: &str, writes: &[McpWrite]) -> Res
     let mut completed = 0;
     let mut failure = None;
     for (index, write) in writes.iter().enumerate() {
-        let old_path = root.join(format!(".amc-{id}-{index}.old"));
+        let parent = write.path.parent().ok_or("MCP 目标路径无效")?;
+        let old_path = parent.join(format!(".amc-{id}-{index}.old"));
         if write.before.is_some() {
             if let Err(error) = fs::rename(&write.path, &old_path) {
                 failure = Some(format!("备份旧 MCP 配置失败: {error}"));
@@ -835,9 +886,10 @@ fn apply_mcp(data_dir: &Path, root: &Path, id: &str, writes: &[McpWrite]) -> Res
         let mut recovery_error = None;
         for index in (0..completed).rev() {
             let write = &writes[index];
+            let parent = write.path.parent().ok_or("MCP 目标路径无效")?;
             let restored = if write.before.is_some() {
                 fs::remove_file(&write.path).and_then(|_| {
-                    fs::rename(root.join(format!(".amc-{id}-{index}.old")), &write.path)
+                    fs::rename(parent.join(format!(".amc-{id}-{index}.old")), &write.path)
                 })
             } else {
                 fs::remove_file(&write.path)
@@ -859,12 +911,11 @@ fn apply_mcp(data_dir: &Path, root: &Path, id: &str, writes: &[McpWrite]) -> Res
     }
     for (index, write) in writes.iter().enumerate() {
         if write.before.is_some() {
-            let _ = fs::remove_file(root.join(format!(".amc-{id}-{index}.old")));
+            let parent = write.path.parent().ok_or("MCP 目标路径无效")?;
+            let _ = fs::remove_file(parent.join(format!(".amc-{id}-{index}.old")));
         }
     }
-    Ok(Message {
-        message: "MCP 配置已安全写入；请在 OMP 中重新加载 MCP。".into(),
-    })
+    Ok(())
 }
 
 fn checked_target(target: &Path, record: Option<&InstallRecord>) -> Result<Option<String>> {
@@ -884,71 +935,12 @@ fn checked_target(target: &Path, record: Option<&InstallRecord>) -> Result<Optio
     }
 }
 
-fn validate_mcp(config: &Value) -> Result<()> {
-    let fields = config.as_object().ok_or("MCP 配置必须是 JSON 对象")?;
-    match fields
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("stdio")
-    {
-        "stdio" => {
-            if fields
-                .get("command")
-                .and_then(Value::as_str)
-                .is_none_or(|s| s.trim().is_empty())
-            {
-                return Err("stdio MCP 需要 command".into());
-            }
-            if fields.get("args").is_some_and(|v| {
-                v.as_array()
-                    .is_none_or(|a| a.iter().any(|v| !v.is_string()))
-            }) {
-                return Err("args 必须是字符串数组".into());
-            }
-            if fields.get("env").is_some_and(|v| !string_map(v)) {
-                return Err("env 必须是字符串映射".into());
-            }
-        }
-        "http" | "sse" => {
-            let url = fields
-                .get("url")
-                .and_then(Value::as_str)
-                .ok_or("远程 MCP 需要 URL")?;
-            if !(url.starts_with("https://") || url.starts_with("http://")) {
-                return Err("MCP URL 必须使用 HTTP(S)".into());
-            }
-            if fields.get("headers").is_some_and(|v| !string_map(v)) {
-                return Err("headers 必须是字符串映射".into());
-            }
-        }
-        _ => return Err("MCP type 仅支持 stdio、http、sse".into()),
-    }
-    Ok(())
-}
-
-fn read_mcp_document(path: &Path) -> Result<Value> {
-    if !path.exists() {
-        return Ok(json!({"mcpServers": {}}));
-    }
-    let bytes = fs::read(path).map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
-    let document: Value = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("MCP JSON {} 无效: {e}", path.display()))?;
-    if !document.is_object() || document.get("mcpServers").is_some_and(|v| !v.is_object()) {
-        return Err(format!(
-            "MCP JSON {} 的 mcpServers 必须是对象",
-            path.display()
-        ));
-    }
-    Ok(document)
-}
-fn string_map(value: &Value) -> bool {
-    value
-        .as_object()
-        .is_some_and(|m| m.values().all(Value::is_string))
-}
-fn preview_mcp(data: &[u8]) -> String {
+fn preview_mcp(path: &Path, data: &[u8]) -> String {
     if data.len() > 128 * 1024 {
-        return "[MCP JSON 超出预览大小；敏感字段未显示]".into();
+        return "[MCP 配置超出预览大小；敏感字段未显示]".into();
+    }
+    if path.extension().is_some_and(|extension| extension == "toml") {
+        return mcp::codex::preview_redacted(data);
     }
     let Ok(mut doc) = serde_json::from_slice::<Value>(data) else {
         return "[MCP JSON 不可预览；敏感字段未显示]".into();

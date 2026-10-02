@@ -403,4 +403,14 @@ textarea{resize:vertical;line-height:1.55}
   .omp-summary{grid-template-columns:1fr}
   .omp-section{padding:17px}
 }
+.mcp-agents{display:flex;flex-wrap:wrap;align-items:center;gap:2px;margin-right:6px}
+.mcp-agent-mark{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border:0;border-radius:7px;background:transparent;cursor:pointer;padding:0;transition:background .15s}
+.mcp-agent-mark:hover:not(:disabled){background:#f0f2f5}
+.mcp-agent-mark:disabled{cursor:default}
+.mcp-agent-mark svg{opacity:.4;filter:grayscale(1);transition:opacity .15s,filter .15s}
+.mcp-agent-mark.on svg{opacity:1;filter:none}
+.mcp-agent-mark.on:hover:not(:disabled){background:color-mix(in srgb,currentColor 8%,transparent)}
+.mcp-agent-option{font-size:12.5px;color:#535f74;gap:6px;padding:4px 8px;border:1px solid #e3e7ef;border-radius:8px}
+label.mcp-agent-option{cursor:pointer}
+label.mcp-agent-option:has(input:checked){border-color:var(--accent);color:var(--accent)}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important}}

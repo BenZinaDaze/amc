@@ -19,7 +19,7 @@ xattr -cr /Applications/AMC.app
 - **Agents**：检测本机 OMP、Claude Code CLI 与 Codex CLI；Agents 页汇总所有 Agent 的请求数、Token 总量与已计价费用，并按模型列出明细。OMP 用量读取本地 stats.db，Claude Code 用量解析 `~/.claude/projects` 下的会话转录（支持 `CLAUDE_CONFIG_DIR`），同一请求经 resume/重试产生的重复行只计一次；Codex 用量解析 `~/.codex/sessions` 下的 rollout 转录（支持 `CODEX_HOME`），按 `token_count` 事件的每轮增量累计，并跟随会话内 `/model` 切换分别计价。
 - **订阅与配额**：概览页卡片展示 GLM Coding Plan 的窗口配额与本周用量（模型用量按点数重置周期统计，接口无周期数据时回退滚动 24 小时），以及 Sub2API 实例的订阅计划与用量（粘贴实例地址 + API Key，读取其 `GET /v1/usage`：订阅模式展示日/周/月窗口、余额模式展示钱包余额、限额 Key 展示总额度与 5h/1d/7d 速率窗口，另附总/今日请求数与 Token、按重置周期对齐（日精度，`start_date` 仅支持日期）的模型分项），凭据仅在本地使用。
 - **Skills**：添加远程 Git 仓库或本地来源，发现并选择安装技能；支持刷新、更新、回滚和卸载。
-- **MCP**：查看已发现的服务及配置来源，预览并管理可编辑的 MCP 服务。
+- **MCP**：统一管理 MCP 服务并同步到各 Agent。服务定义集中保存在 AMC 本地数据库（唯一事实来源），每个服务可勾选写入 OMP（`~/.omp/agent/mcp.json`）、Claude Code（`~/.claude.json`，支持 `CLAUDE_CONFIG_DIR`）或 Codex（`~/.codex/config.toml`，支持 `CODEX_HOME`）的用户级配置；列表中点击 Agent 开关即生成变更预览，应用前可审阅文件差异，写入采用原子替换并自动备份。Agent 未安装时只记录开关、不创建文件。AMC 只管理通过它保存的服务，不读取或合并 Agent 现有配置。
 
 ## 界面预览
 

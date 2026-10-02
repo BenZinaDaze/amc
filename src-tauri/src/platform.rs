@@ -302,6 +302,24 @@ pub fn cli_status(executable: &str, home_extra_dirs: &[&str]) -> CliStatus {
 
 pub const HIDDEN_MCP_VALUE: &str = "[已隐藏]";
 
+pub fn is_sensitive_mcp_key(lower_name: &str) -> bool {
+    matches!(
+        lower_name,
+        "authorization"
+            | "token"
+            | "accesstoken"
+            | "refreshtoken"
+            | "clientsecret"
+            | "credentialid"
+            | "apikey"
+            | "api_key"
+            | "bearer_token"
+            | "experimental_bearer_token"
+            | "password"
+            | "secret"
+    )
+}
+
 pub fn redact_mcp_in_place(value: &mut Value) {
     match value {
         Value::Object(fields) => {
@@ -315,18 +333,7 @@ pub fn redact_mcp_in_place(value: &mut Value) {
                     } else {
                         *child = Value::String(HIDDEN_MCP_VALUE.into());
                     }
-                } else if matches!(
-                    name.as_str(),
-                    "authorization"
-                        | "token"
-                        | "accesstoken"
-                        | "refreshtoken"
-                        | "clientsecret"
-                        | "credentialid"
-                        | "apikey"
-                        | "password"
-                        | "secret"
-                ) {
+                } else if is_sensitive_mcp_key(&name) {
                     *child = Value::String(HIDDEN_MCP_VALUE.into());
                 } else {
                     redact_mcp_in_place(child);
@@ -386,15 +393,7 @@ pub fn restore_mcp_secrets(config: &mut Value, original: Option<&Value>) -> Resu
     restore(config, original, masked.as_ref())
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct McpView {
-    pub name: String,
-    pub config: Value,
-    pub source: String,
-    pub enabled: bool,
-    pub managed: bool,
-}
+
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

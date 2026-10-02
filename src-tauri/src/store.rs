@@ -1,9 +1,11 @@
 use crate::{
+    mcp::Agent,
     platform::{self, Result},
     workspace,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
+use serde_json::Value;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -31,6 +33,51 @@ pub struct Installation {
     pub update_available: bool,
     pub active: bool,
     pub rollback_available: bool,
+}
+
+/// 统一 MCP 服务器记录：`spec` 是中立的 JSON 配置，三个布尔是各 Agent
+/// 的启用开关（唯一事实来源在 DB，Agent 配置文件只是投影）。
+/// `managed` 是 ownership 标记：只有经 AMC 显式保存的记录为 true；
+/// 历史遗留（如旧版自动导入）无法证明来源，按未管理处理——不列出、
+/// 不可切换、不可删除，也不接管。
+#[derive(Clone, Serialize, PartialEq)]
+pub struct McpRecord {
+    pub name: String,
+    pub spec: Value,
+    pub omp: bool,
+    pub claude: bool,
+    pub codex: bool,
+    pub managed: bool,
+}
+
+impl McpRecord {
+    /// AMC 显式保存入口创建的记录：天然拥有 ownership。
+    pub fn new(name: String, spec: Value) -> Self {
+        Self {
+            name,
+            spec,
+            omp: false,
+            claude: false,
+            codex: false,
+            managed: true,
+        }
+    }
+
+    pub fn enabled_for(&self, agent: Agent) -> bool {
+        match agent {
+            Agent::Omp => self.omp,
+            Agent::Claude => self.claude,
+            Agent::Codex => self.codex,
+        }
+    }
+
+    pub fn set_enabled(&mut self, agent: Agent, enabled: bool) {
+        match agent {
+            Agent::Omp => self.omp = enabled,
+            Agent::Claude => self.claude = enabled,
+            Agent::Codex => self.codex = enabled,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -71,9 +118,33 @@ impl Store {
                 rollback_path TEXT, rollback_commit TEXT, rollback_hash TEXT,
                 active INTEGER NOT NULL DEFAULT 1
             );
+            CREATE TABLE IF NOT EXISTS mcp_servers (
+                name TEXT PRIMARY KEY,
+                spec TEXT NOT NULL,
+                omp INTEGER NOT NULL DEFAULT 0,
+                claude INTEGER NOT NULL DEFAULT 0,
+                codex INTEGER NOT NULL DEFAULT 0,
+                managed INTEGER NOT NULL DEFAULT 0
+            );
             DROP TABLE IF EXISTS local_origins;",
         )
         .map_err(|e| format!("初始化 AMC 数据库失败: {e}"))?;
+        // 旧库迁移：历史遗留行（含旧版自动导入）默认 managed=0，
+        // 视为非 AMC 管理——不列出、不可改删，也不动用户 Agent 文件。
+        let has_managed: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('mcp_servers') WHERE name='managed'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("检查 mcp_servers 表结构失败: {e}"))?;
+        if has_managed == 0 {
+            db.execute(
+                "ALTER TABLE mcp_servers ADD COLUMN managed INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|e| format!("迁移 mcp_servers 表失败: {e}"))?;
+        }
         Ok(Self { db, root })
     }
 
@@ -93,6 +164,66 @@ impl Store {
             .map_err(|e| e.to_string())?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| e.to_string())
+    }
+
+    pub fn mcp_servers(&self) -> Result<Vec<McpRecord>> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT name,spec,omp,claude,codex,managed FROM mcp_servers WHERE managed=1 ORDER BY name")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], Self::row_mcp).map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())
+    }
+
+    fn row_mcp(row: &rusqlite::Row<'_>) -> rusqlite::Result<McpRecord> {
+        let spec: String = row.get(1)?;
+        Ok(McpRecord {
+            name: row.get(0)?,
+            spec: serde_json::from_str(&spec)
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?,
+            omp: row.get::<_, i64>(2)? != 0,
+            claude: row.get::<_, i64>(3)? != 0,
+            codex: row.get::<_, i64>(4)? != 0,
+            managed: row.get::<_, i64>(5)? != 0,
+        })
+    }
+
+    pub fn mcp_server(&self, name: &str) -> Result<Option<McpRecord>> {
+        self.db
+            .query_row(
+                "SELECT name,spec,omp,claude,codex,managed FROM mcp_servers WHERE name=?1",
+                [name],
+                Self::row_mcp,
+            )
+            .optional()
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn save_mcp_server(&self, record: &McpRecord) -> Result<()> {
+        let spec = serde_json::to_string(&record.spec).map_err(|e| e.to_string())?;
+        self.db
+            .execute(
+                "INSERT OR REPLACE INTO mcp_servers(name,spec,omp,claude,codex,managed) VALUES (?1,?2,?3,?4,?5,?6)",
+                params![record.name, spec, record.omp, record.claude, record.codex, record.managed],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 只允许删除 AMC 管理的记录；未管理行对删除不可见。
+    pub fn delete_mcp_server(&self, name: &str) -> Result<bool> {
+        let removed = self
+            .db
+            .execute("DELETE FROM mcp_servers WHERE name=?1 AND managed=1", [name])
+            .map_err(|e| e.to_string())?;
+        Ok(removed > 0)
     }
 
     pub fn repository(&self, id: i64) -> Result<Repository> {

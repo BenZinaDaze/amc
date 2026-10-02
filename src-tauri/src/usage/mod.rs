@@ -345,6 +345,21 @@ fn require_archive(
     }
 }
 
+/// OMP 生效的用户级 MCP 配置位置（含 profile 与 PI_CONFIG_DIR /
+/// PI_CODING_AGENT_DIR 解析），供 MCP 管理模块复用同一套目录规则。
+pub struct OmpMcpLocation {
+    pub mcp_json: PathBuf,
+    pub config_root: PathBuf,
+}
+
+pub fn omp_mcp_location() -> platform::Result<OmpMcpLocation> {
+    let adapter = agents::omp::OmpUsageAdapter::from_environment()?;
+    Ok(OmpMcpLocation {
+        mcp_json: adapter.mcp_json_path().to_path_buf(),
+        config_root: adapter.config_root().to_path_buf(),
+    })
+}
+
 /// Syncs one agent: refresh its source (OMP CLI), ingest everything new,
 /// then aggregate the archive over the range.
 pub fn sync_agent_usage(
@@ -611,6 +626,8 @@ mod tests {
     // path against a Codex home that is removed between the two reads.
     #[test]
     fn usage_survives_the_agent_deleting_its_source_files() {
+        // 本测试临时改写全局 CODEX_HOME，必须与其它依赖环境变量的测试互斥。
+        let _env_guard = crate::test_support::env_lock();
         let home = env::temp_dir().join(format!("amc-survive-src-{}", uuid::Uuid::new_v4()));
         let data_dir = env::temp_dir().join(format!("amc-survive-data-{}", uuid::Uuid::new_v4()));
         let day = home.join("sessions").join("2026").join("07").join("13");

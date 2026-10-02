@@ -13,6 +13,9 @@ use std::{
     time::Duration,
 };
 
+/// `usage_records` 查询一行的原始列值。
+type UsageRow = (String, String, String, i64, i64, i64, i64, i64, i64);
+
 const FILE_NAME: &str = "usage.sqlite3";
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 
@@ -129,8 +132,7 @@ impl UsageStore {
             .next()
             .map_err(|e| format!("读取 AMC 用量失败: {e}"))?
         {
-            let record: rusqlite::Result<(String, String, String, i64, i64, i64, i64, i64, i64)> =
-                (|| {
+            let record: rusqlite::Result<UsageRow> = (|| {
                     Ok((
                         row.get(0)?,
                         row.get(1)?,
