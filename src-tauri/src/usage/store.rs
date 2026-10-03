@@ -4,7 +4,7 @@
 //! Aggregation always reads this store, never the live sources; costs are
 //! recomputed from the current pricing catalog at query time, so catalog
 //! updates reprice archived usage.
-use super::{resolve_provider, RawUsage, Totals, UsageRange, UsageRecord};
+use super::{RawUsage, Totals, UsageRange, UsageRecord};
 use crate::{platform, pricing::Pricing};
 use rusqlite::params;
 use std::{
@@ -14,7 +14,7 @@ use std::{
 };
 
 /// `usage_records` 查询一行的原始列值。
-type UsageRow = (String, String, String, i64, i64, i64, i64, i64, i64);
+type UsageRow = (String, i64, i64, i64, i64, i64, i64);
 
 const FILE_NAME: &str = "usage.sqlite3";
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
@@ -114,11 +114,11 @@ impl UsageStore {
     ) -> platform::Result<RawUsage> {
         let db = self.open()?;
         let mut totals = Totals::default();
-        let mut models: BTreeMap<(String, String), Totals> = BTreeMap::new();
+        let mut models: BTreeMap<String, Totals> = BTreeMap::new();
         let mut trend: BTreeMap<i64, (i64, i64)> = BTreeMap::new();
         let mut stmt = db
             .prepare(
-                "SELECT source, provider, model, timestamp, input_tokens, output_tokens, \
+                "SELECT model, timestamp, input_tokens, output_tokens, \
                  cache_read_tokens, cache_write_tokens, total_tokens \
                  FROM usage_records \
                  WHERE (?1 IS NULL OR source = ?1) AND timestamp >= ?2 \
@@ -141,19 +141,12 @@ impl UsageStore {
                         row.get(4)?,
                         row.get(5)?,
                         row.get(6)?,
-                        row.get(7)?,
-                        row.get(8)?,
                     ))
                 })();
-            let (row_source, stored_provider, model, timestamp, input, output, read, write, tokens) =
+            let (model, timestamp, input, output, read, write, tokens) =
                 record.map_err(|e| format!("AMC 用量记录无效: {e}"))?;
-            let provider = if stored_provider.is_empty() {
-                resolve_provider(&row_source, &model, prices)
-            } else {
-                stored_provider
-            };
-            let cost = prices.cost(&provider, &model, input, read, write, output);
-            let model_totals = models.entry((provider, model)).or_default();
+            let cost = prices.cost(&model, input, read, write, output);
+            let model_totals = models.entry(model).or_default();
             for item in [&mut totals, model_totals] {
                 item.requests += 1;
                 item.total_tokens += tokens;

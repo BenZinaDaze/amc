@@ -22,7 +22,7 @@ export type UsageStats = {
   cacheRate: number;
   totalCost: number | null;
   unpricedRequests: number;
-  byModel: { provider: string; model: string; requests: number; totalTokens: number; cacheRate: number; cost: number | null; unpricedRequests: number }[];
+  byModel: { model: string; requests: number; totalTokens: number; cacheRate: number; cost: number | null; unpricedRequests: number }[];
   trend: { bucket: number; requests: number; totalTokens: number }[];
   syncedAt: number;
 };

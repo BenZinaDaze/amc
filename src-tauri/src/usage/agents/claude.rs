@@ -123,8 +123,7 @@ impl ClaudeCodeUsageAdapter {
                 }
                 records.push(UsageRecord {
                     // The provider stays empty: transcripts only name the
-                    // model, and routed models (GLM behind Claude Code) are
-                    // attributed from the catalog at query time.
+                    // model, and pricing keys on the model alone.
                     provider: String::new(),
                     external_id: if id.is_empty() {
                         // Transcripts without a message id fall back to the
@@ -250,7 +249,7 @@ mod tests {
                 "claude-haiku-4-5-20251001",
                 r#"{"input_tokens":10,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}"#,
             ),
-            // Routed non-Anthropic model resolves to its catalog provider.
+            // Routed non-Anthropic model prices from its catalog entry.
             line(
                 stamp(3000),
                 "msg_7",
@@ -314,17 +313,17 @@ mod tests {
         let haiku = (110. * 1. + 70. * 5.) / 1_000_000.;
         let glm = (5000. * 0.15 + 1000. * 0.5 + 2000. * 0.03) / 1_000_000.;
         assert!((stats.total_cost.unwrap() - sonnet - haiku - glm).abs() < 1e-12);
-        let models: Vec<(String, String)> = stats
+        let models: Vec<String> = stats
             .by_model
             .iter()
-            .map(|m| (m.provider.clone(), m.model.clone()))
+            .map(|m| m.model.clone())
             .collect();
         assert_eq!(
             models,
             vec![
-                ("anthropic".into(), "claude-haiku-4-5-20251001".into()),
-                ("anthropic".into(), "claude-sonnet-4-5-20250929".into()),
-                ("zhipu-coding-plan".into(), "glm-5.3-flash".into()),
+                "claude-haiku-4-5-20251001".to_owned(),
+                "claude-sonnet-4-5-20250929".to_owned(),
+                "glm-5.3-flash".to_owned(),
             ]
         );
         assert_eq!(stats.trend.len(), 2);

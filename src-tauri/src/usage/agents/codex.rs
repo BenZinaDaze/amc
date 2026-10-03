@@ -284,8 +284,7 @@ impl CodexUsageAdapter {
                         let input = (turn.input - turn.cached - turn.write).max(0);
                         records.push(UsageRecord {
                             // The provider stays empty: rollouts only name
-                            // the model; the catalog attributes it (and
-                            // prices it) at query time.
+                            // the model, and pricing keys on the model alone.
                             provider: String::new(),
                             external_id: event_key.unwrap_or_else(|| {
                                 // Old rollouts without turn contexts were
@@ -424,7 +423,8 @@ mod tests {
             token_count(stamp(86_400_000), &totals(38_000, 25_500, 0, 1_850)),
             // Zero-token notices are not turns (and repeat the total).
             token_count(stamp(4100), &usage((0, 0, 0, 0), (38_000, 25_500, 0, 1_850))),
-            // Turns before any model context resolve to the CLI vendor.
+            // Model context persists: this later turn keeps the switched
+            // model's pricing.
             token_count(stamp(5000), &usage((20, 0, 0, 4), (38_020, 25_500, 0, 1_854))),
             // Conversation and tool traffic carries no usage and is skipped
             // by the line prefilter.
@@ -441,8 +441,8 @@ mod tests {
             .join("\n"),
         )
         .unwrap();
-        // A rollout without any model context falls back to the CLI
-        // vendor's provider and stays unpriced.
+        // A rollout without any model context records model "unknown" and
+        // stays unpriced.
         fs::write(
             day.join("rollout-c.jsonl"),
             token_count(stamp(6000), &usage((30, 0, 0, 6), (30, 0, 0, 6))),
@@ -468,46 +468,45 @@ mod tests {
         );
         let terra = |input: i64, cached: i64, output: i64| {
             prices
-                .cost("openai", "gpt-5.6-terra", input, cached, 0, output)
+                .cost("gpt-5.6-terra", input, cached, 0, output)
                 .unwrap()
         };
-        let glm_provider = prices.primary_provider("glm-5.3").unwrap().to_owned();
         let glm = |input: i64, cached: i64, output: i64| {
             prices
-                .cost(&glm_provider, "glm-5.3", input, cached, 0, output)
+                .cost("glm-5.3", input, cached, 0, output)
                 .unwrap()
         };
-        let codex = prices.cost("openai", "gpt-5-codex", 30, 0, 0, 6).unwrap();
+        let codex = prices.cost("gpt-5-codex", 30, 0, 0, 6).unwrap();
         // The unknown-model turn is unpriced; the blended total sums only
         // the priced turns.
         assert_eq!(stats.unpriced_requests, 1);
         let terra_cost = terra(2_000, 8_000, 500) + terra(8_000, 12_000, 1_000);
         let glm_cost = glm(1_000, 1_000, 100) + glm(20, 0, 4);
         assert!((stats.total_cost.unwrap() - (terra_cost + glm_cost + codex)).abs() < 1e-12);
-        let by_model: Vec<(String, String, i64, Option<f64>)> = stats
+        let by_model: Vec<(String, i64, Option<f64>)> = stats
             .by_model
             .iter()
-            .map(|m| (m.provider.clone(), m.model.clone(), m.requests, m.cost))
+            .map(|m| (m.model.clone(), m.requests, m.cost))
             .collect();
         let model = |name: &str| {
             by_model
                 .iter()
-                .find(|entry| entry.1 == name)
+                .find(|entry| entry.0 == name)
                 .cloned()
                 .unwrap()
         };
         let terra_row = model("gpt-5.6-terra");
-        assert_eq!((terra_row.0.as_str(), terra_row.2), ("openai", 2));
-        assert!((terra_row.3.unwrap() - terra_cost).abs() < 1e-12);
+        assert_eq!(terra_row.1, 2);
+        assert!((terra_row.2.unwrap() - terra_cost).abs() < 1e-12);
         let glm_row = model("glm-5.3");
-        assert_eq!((glm_row.0, glm_row.2), (glm_provider, 2));
-        assert!((glm_row.3.unwrap() - glm_cost).abs() < 1e-12);
+        assert_eq!(glm_row.1, 2);
+        assert!((glm_row.2.unwrap() - glm_cost).abs() < 1e-12);
         let codex_row = model("gpt-5-codex");
-        assert_eq!((codex_row.0.as_str(), codex_row.2), ("openai", 1));
-        assert!((codex_row.3.unwrap() - codex).abs() < 1e-12);
+        assert_eq!(codex_row.1, 1);
+        assert!((codex_row.2.unwrap() - codex).abs() < 1e-12);
         let unknown_row = model("unknown");
-        assert_eq!((unknown_row.0.as_str(), unknown_row.2), ("openai", 1));
-        assert!(unknown_row.3.is_none());
+        assert_eq!(unknown_row.1, 1);
+        assert!(unknown_row.2.is_none());
     }
 
     #[test]

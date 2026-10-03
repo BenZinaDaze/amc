@@ -93,7 +93,6 @@ struct PricingFile {
 
 #[derive(Deserialize)]
 struct ModelEntry {
-    providers: Vec<String>,
     input: Option<f64>,
     output: Option<f64>,
     cache_read: Option<f64>,
@@ -128,7 +127,6 @@ impl Rate {
 }
 
 struct PricedModel {
-    providers: Vec<String>,
     input: Rate,
     output: Rate,
     cache_read: Rate,
@@ -159,31 +157,13 @@ impl Pricing {
         Ok(Self { models })
     }
 
-    /// First provider listed for a model. Sources that record no provider of
-    /// their own (e.g. Claude Code transcripts only name the model, which may
-    /// be routed to non-Anthropic backends) use it to stay priceable.
-    pub fn primary_provider(&self, model: &str) -> Option<&str> {
-        self.models
-            .get(model)
-            .map(|entry| entry.providers[0].as_str())
-    }
-
-    pub fn cost(
-        &self,
-        provider: &str,
-        model: &str,
-        input: i64,
-        read: i64,
-        write: i64,
-        output: i64,
-    ) -> Option<f64> {
+    /// Cost of one record in USD, keyed by model name alone. `None` when the
+    /// model is not in the catalog or the token counts are negative.
+    pub fn cost(&self, model: &str, input: i64, read: i64, write: i64, output: i64) -> Option<f64> {
         if [input, read, write, output].iter().any(|&n| n < 0) {
             return None;
         }
         let entry = self.models.get(model)?;
-        if !entry.providers.iter().any(|listed| listed == provider) {
-            return None;
-        }
         // OMP stores mutually exclusive uncached input, cache reads and cache
         // writes; context thresholds apply to their combined prompt.
         let prompt = i128::from(input) + i128::from(read) + i128::from(write);
@@ -196,9 +176,6 @@ impl Pricing {
 }
 
 fn priced_model(name: &str, entry: ModelEntry) -> Result<PricedModel> {
-    if entry.providers.is_empty() || entry.providers.iter().any(String::is_empty) {
-        return Err(format!("计价配置条目 {name} 的 providers 不能为空"));
-    }
     let mut input_overrides = BTreeMap::new();
     let mut output_overrides = BTreeMap::new();
     let mut read_overrides = BTreeMap::new();
@@ -213,7 +190,6 @@ fn priced_model(name: &str, entry: ModelEntry) -> Result<PricedModel> {
         insert_override(&mut write_overrides, name, tier, tier.cache_write)?;
     }
     Ok(PricedModel {
-        providers: entry.providers,
         input: Rate {
             base: base_rate(name, "input", entry.input)?,
             overrides: descending(input_overrides),
@@ -279,15 +255,14 @@ mod tests {
     }
 
     #[test]
-    fn bundled_catalog_prices_providers_cache_and_threshold_tiers() {
+    fn bundled_catalog_prices_cache_and_threshold_tiers() {
         let prices = catalog();
         let short = prices
-            .cost("openai", "gpt-6-sol", 100_000, 100_000, 50_000, 100_000)
+            .cost("gpt-6-sol", 100_000, 100_000, 50_000, 100_000)
             .unwrap();
         assert!((short - 1.345).abs() < 1e-10);
         let long = prices
             .cost(
-                "openai",
                 "gpt-6-sol",
                 1_000_000,
                 1_000_000,
@@ -296,38 +271,31 @@ mod tests {
             )
             .unwrap();
         assert!((long - 24.4).abs() < 1e-10);
-        // openai-free shares OpenAI list prices; the threshold is exclusive.
+        // The threshold is exclusive.
         let threshold = prices
-            .cost("openai-free", "gpt-6-luna", 271_999, 1, 0, 1_000_000)
+            .cost("gpt-6-luna", 271_999, 1, 0, 1_000_000)
             .unwrap();
         assert!((threshold - (271_999. * 0.1 + 0.01 + 500_000.) / 1_000_000.).abs() < 1e-9);
         let above = prices
-            .cost("openai-free", "gpt-6-luna", 272_000, 1, 0, 1_000_000)
+            .cost("gpt-6-luna", 272_000, 1, 0, 1_000_000)
             .unwrap();
         assert!((above - (272_000. * 0.2 + 0.02 + 750_000.) / 1_000_000.).abs() < 1e-9);
         // Overrides apply per rate once the combined prompt passes 200k.
         let anthropic = prices
-            .cost("anthropic", "claude-sonnet-4-5", 200_000, 1, 1, 100)
+            .cost("claude-sonnet-4-5", 200_000, 1, 1, 100)
             .unwrap();
         assert!((anthropic - (200_000. * 6e-6 + 6e-7 + 7.5e-6 + 100. * 2.25e-5)).abs() < 1e-9);
-        for provider in [
-            "google",
-            "google-gemini",
-            "gemini",
-            "vertex_ai-language-models",
-        ] {
-            assert!(
-                (prices
-                    .cost(provider, "gemini-2.5-pro", 1_000, 0, 0, 1_000)
-                    .unwrap()
-                    - 0.01125)
-                    .abs()
-                    < 1e-9
-            );
-        }
         assert!(
             (prices
-                .cost("zhipu-coding-plan", "glm-5.3", 1_000_000, 0, 0, 1_000_000)
+                .cost("gemini-2.5-pro", 1_000, 0, 0, 1_000)
+                .unwrap()
+                - 0.01125)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (prices
+                .cost("glm-5.3", 1_000_000, 0, 0, 1_000_000)
                 .unwrap()
                 - 5.8)
                 .abs()
@@ -335,12 +303,12 @@ mod tests {
         );
         // gpt-6.1-sol switches to its long-context tier past 272k prompt tokens.
         let sol61 = prices
-            .cost("openai", "gpt-6.1-sol", 272_000, 1, 1, 1_000_000)
+            .cost("gpt-6.1-sol", 272_000, 1, 1, 1_000_000)
             .unwrap();
         assert!((sol61 - (272_000. * 4e-6 + 0.2e-6 + 5e-6 + 15.)).abs() < 1e-9);
         assert!(
             (prices
-                .cost("openai", "gpt-6.1-sol", 1_000, 0, 0, 1_000)
+                .cost("gpt-6.1-sol", 1_000, 0, 0, 1_000)
                 .unwrap()
                 - 0.012)
                 .abs()
@@ -349,46 +317,56 @@ mod tests {
         // Jev prices input at $42 per billion and output is free, not unpriced.
         assert!(
             (prices
-                .cost("typesafe", "jev-latest", 1_000_000_000, 0, 0, 0)
+                .cost("jev-latest", 1_000_000_000, 0, 0, 0)
                 .unwrap()
                 - 42.)
                 .abs()
                 < 1e-9
         );
         assert_eq!(
-            prices.cost("typesafe", "jev-latest", 0, 0, 0, 1_000_000),
+            prices.cost("jev-latest", 0, 0, 0, 1_000_000),
             Some(0.)
         );
-        assert_eq!(prices.cost("typesafe", "gpt-6-sol", 100, 0, 0, 0), None);
-        assert_eq!(prices.cost("openai", "unknown-model", 100, 0, 0, 0), None);
-        assert_eq!(prices.cost("openai", "gpt-6-sol", -1, 0, 0, 0), None);
+        assert_eq!(prices.cost("unknown-model", 100, 0, 0, 0), None);
+        assert_eq!(prices.cost("gpt-6-sol", -1, 0, 0, 0), None);
+    }
+
+    /// Installed app-data caches still carry the retired `providers` field;
+    /// serde must ignore it so a refresh failure never strands old caches.
+    #[test]
+    fn legacy_provider_fields_are_ignored() {
+        let prices = Pricing::parse(
+            r#"{"models":{"m":{"providers":["p"],"input":1,"output":2}}}"#,
+        )
+        .unwrap();
+        assert_eq!(prices.cost("m", 1_000_000, 0, 0, 0), Some(1.));
     }
 
     #[test]
     fn tier_overrides_apply_per_rate_with_base_fallback() {
         let prices = Pricing::parse(
-            r#"{"models":{"m":{"providers":["p"],"input":1,"output":2,
+            r#"{"models":{"m":{"input":1,"output":2,
                "tiers":[{"above_tokens":100,"input":3}]}}}"#,
         )
         .unwrap();
         // At the threshold the base still applies; past it only listed rates
         // change and unlisted buckets fall back to their base.
-        let at = prices.cost("p", "m", 50, 50, 0, 10).unwrap();
+        let at = prices.cost("m", 50, 50, 0, 10).unwrap();
         assert!((at - (50. * 1e-6 + 10. * 2e-6)).abs() < 1e-12);
-        let past = prices.cost("p", "m", 101, 0, 0, 0).unwrap();
+        let past = prices.cost("m", 101, 0, 0, 0).unwrap();
         assert!((past - 101. * 3e-6).abs() < 1e-12);
     }
 
     #[test]
     fn highest_exceeded_tier_wins_and_later_duplicates_replace() {
         let prices = Pricing::parse(
-            r#"{"models":{"m":{"providers":["p"],"input":1,"output":1,
+            r#"{"models":{"m":{"input":1,"output":1,
                "tiers":[{"above_tokens":100,"input":3},{"above_tokens":200,"input":5},
                         {"above_tokens":200,"input":7}]}}}"#,
         )
         .unwrap();
-        assert_eq!(prices.cost("p", "m", 150, 0, 0, 0).unwrap(), 150. * 3e-6);
-        assert_eq!(prices.cost("p", "m", 201, 0, 0, 0).unwrap(), 201. * 7e-6);
+        assert_eq!(prices.cost("m", 150, 0, 0, 0).unwrap(), 150. * 3e-6);
+        assert_eq!(prices.cost("m", 201, 0, 0, 0).unwrap(), 201. * 7e-6);
     }
 
     #[test]
@@ -396,12 +374,10 @@ mod tests {
         for text in [
             "{}",
             r#"{"models":{}}"#,
-            r#"{"models":{"m":{"providers":[],"input":1,"output":1}}}"#,
-            r#"{"models":{"m":{"providers":[""],"input":1,"output":1}}}"#,
-            r#"{"models":{"m":{"providers":["p"],"output":1}}}"#,
-            r#"{"models":{"m":{"providers":["p"],"input":-1,"output":1}}}"#,
-            r#"{"models":{"m":{"providers":["p"],"input":1,"output":1,"tiers":[{"above_tokens":0,"input":2}]}}}"#,
-            r#"{"models":{"m":{"providers":["p"],"input":1,"output":1,"tiers":[{"above_tokens":100,"input":-2}]}}}"#,
+            r#"{"models":{"m":{"output":1}}}"#,
+            r#"{"models":{"m":{"input":-1,"output":1}}}"#,
+            r#"{"models":{"m":{"input":1,"output":1,"tiers":[{"above_tokens":0,"input":2}]}}}"#,
+            r#"{"models":{"m":{"input":1,"output":1,"tiers":[{"above_tokens":100,"input":-2}]}}}"#,
         ] {
             assert!(Pricing::parse(text).is_err(), "{text}");
         }
@@ -413,14 +389,14 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         assert!(store(&dir, "not json").is_err());
         assert!(!dir.join(FILE_NAME).exists());
-        let text = r#"{"version":1,"models":{"m":{"providers":["p"],"input":1,"output":2}}}"#;
+        let text = r#"{"version":2,"models":{"m":{"input":1,"output":2}}}"#;
         assert_eq!(store(&dir, text).unwrap(), "已更新模型定价配置（1 个模型）");
         let loaded = Pricing::load(&dir.join(FILE_NAME)).unwrap();
-        assert_eq!(loaded.cost("p", "m", 1, 0, 0, 1).unwrap(), 3e-6);
+        assert_eq!(loaded.cost("m", 1, 0, 0, 1).unwrap(), 3e-6);
         // A failed refresh keeps the previous cache and leaves no staging file.
         assert!(store(&dir, r#"{"models":{}}"#).is_err());
         let kept = Pricing::load(&dir.join(FILE_NAME)).unwrap();
-        assert_eq!(kept.cost("p", "m", 1, 0, 0, 1).unwrap(), 3e-6);
+        assert_eq!(kept.cost("m", 1, 0, 0, 1).unwrap(), 3e-6);
         assert_eq!(staging_files(&dir), 0);
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -442,7 +418,7 @@ mod tests {
                 let dir = &dir;
                 scope.spawn(move || {
                     let text = format!(
-                        r#"{{"models":{{"m{index}":{{"providers":["p"],"input":1,"output":2}}}}}}"#
+                        r#"{{"models":{{"m{index}":{{"input":1,"output":2}}}}}}"#
                     );
                     store(dir, &text).unwrap();
                 });

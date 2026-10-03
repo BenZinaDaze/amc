@@ -21,9 +21,9 @@ use std::{
 
 /// One raw usage record as emitted by a source scan. `input_tokens` counts
 /// uncached prompt tokens; cache reads and writes are separate buckets.
-/// `provider` carries the source-owned value (OMP records one); empty means
-/// the provider is resolved from the pricing catalog when queried, so a
-/// later catalog entry can still price and attribute the record.
+/// `provider` carries the source-owned value (OMP records one; Claude Code
+/// and Codex name only a model) and is stored as provenance — pricing keys
+/// on the model alone.
 pub(super) struct UsageRecord {
     pub external_id: String,
     pub provider: String,
@@ -82,7 +82,6 @@ pub struct UsageStats {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelUsage {
-    provider: String,
     model: String,
     requests: i64,
     total_tokens: i64,
@@ -124,7 +123,7 @@ impl Totals {
 /// Aggregatable usage without derived fields; [`RawUsage::finish`] renders it.
 struct RawUsage {
     totals: Totals,
-    models: BTreeMap<(String, String), Totals>,
+    models: BTreeMap<String, Totals>,
     trend: BTreeMap<i64, (i64, i64)>,
     synced_at: i64,
 }
@@ -144,8 +143,7 @@ impl RawUsage {
             by_model: self
                 .models
                 .into_iter()
-                .map(|((provider, model), item)| ModelUsage {
-                    provider,
+                .map(|(model, item)| ModelUsage {
                     model,
                     requests: item.requests,
                     total_tokens: item.total_tokens,
@@ -166,22 +164,6 @@ impl RawUsage {
             synced_at: self.synced_at,
         }
     }
-}
-
-/// Resolves the provider for records whose source names only a model (the
-/// Claude Code and Codex transcripts). Resolving at query time keeps later
-/// catalog entries able to price and re-attribute archived records; the
-/// fallback is the CLI vendor, as before.
-fn resolve_provider(source: &str, model: &str, prices: &Pricing) -> String {
-    let fallback = match source {
-        "claude-code" => "anthropic",
-        "codex" => "openai",
-        _ => source,
-    };
-    prices
-        .primary_provider(model)
-        .unwrap_or(fallback)
-        .to_owned()
 }
 
 #[derive(Clone, Copy)]
@@ -577,7 +559,7 @@ mod tests {
                 )],
             )
             .unwrap();
-        // Codex names no provider; the catalog resolves it at query time.
+        // Codex names no provider; it is stored as empty provenance.
         store
             .ingest(
                 "codex",
@@ -602,9 +584,8 @@ mod tests {
         assert_eq!(all.total_requests, 2);
         assert_eq!(all.total_tokens, 46);
         assert_eq!(all.by_model.len(), 2);
-        assert_eq!(all.by_model[0].provider, "openai");
-        assert_eq!(all.by_model[0].model, "gpt-6-sol");
-        assert_eq!(all.by_model[1].provider, "zhipu-coding-plan");
+        assert_eq!(all.by_model[0].model, "glm-5.3");
+        assert_eq!(all.by_model[1].model, "gpt-6-sol");
         assert_eq!(all.trend.len(), 1);
         assert_eq!(all.trend[0].requests, 2);
         // A single-agent view filters the archive by source.
@@ -618,6 +599,60 @@ mod tests {
             .finish();
         assert_eq!(omp.total_requests, 1);
         assert_eq!(omp.total_tokens, 6);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // The requested merge: the same model recorded under different provider
+    // labels (including an arbitrary relay's) must collapse into one priced
+    // by_model row — pricing keys on the model alone.
+    #[test]
+    fn same_model_from_different_providers_merges_into_one_priced_row() {
+        let root = env::temp_dir().join(format!("amc-archive-relay-{}", uuid::Uuid::new_v4()));
+        let store = store::UsageStore::new(&root).unwrap();
+        let timestamp = 1_700_000_000_000;
+        let prices = prices();
+        let expected = 2. * prices.cost("gpt-6-sol", 1, 3, 0, 2).unwrap();
+        store
+            .ingest(
+                "omp",
+                &[archived_record(
+                    "omp-1",
+                    "openai",
+                    "gpt-6-sol",
+                    timestamp,
+                    6,
+                )],
+            )
+            .unwrap();
+        // A relay's own provider label must neither split the row nor
+        // block pricing.
+        store
+            .ingest(
+                "omp",
+                &[archived_record(
+                    "omp-2",
+                    "bo-sub2",
+                    "gpt-6-sol",
+                    timestamp,
+                    6,
+                )],
+            )
+            .unwrap();
+        let all = store
+            .query(
+                None,
+                UsageRange::parse("all", timestamp + 1).unwrap(),
+                &prices,
+            )
+            .unwrap()
+            .finish();
+        assert_eq!(all.total_requests, 2);
+        assert_eq!(all.unpriced_requests, 0);
+        assert_eq!(all.by_model.len(), 1);
+        assert_eq!(all.by_model[0].model, "gpt-6-sol");
+        assert_eq!(all.by_model[0].requests, 2);
+        assert_eq!(all.by_model[0].total_tokens, 12);
+        assert!((all.by_model[0].cost.unwrap() - expected).abs() < 1e-12);
         fs::remove_dir_all(root).unwrap();
     }
 

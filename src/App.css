@@ -293,7 +293,6 @@ textarea{resize:vertical;line-height:1.55}
 .omp-table thead th{background:#f8f9fc;color:#8490a1;font-size:11px;font-weight:700;white-space:nowrap}
 .omp-table th:first-child{text-align:left}
 .omp-table tbody th{font-weight:400;min-width:180px;overflow-wrap:anywhere}
-.omp-table tbody th span{display:block;font-size:11px;color:#8c97a6;margin-bottom:3px}
 .omp-table tbody th strong{color:#333e54}
 .omp-table tbody tr:last-child th,.omp-table tbody tr:last-child td{border-bottom:0}
 

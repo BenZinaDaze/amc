@@ -567,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_providers_show_only_priced_subtotal() {
+    fn mixed_models_show_only_priced_subtotal() {
         let root = env::temp_dir().join(format!("amc-omp-pricing-{}", uuid::Uuid::new_v4()));
         let stats_db = root.join("stats.db");
         fixture_stats(&stats_db, "fixture-entry", 6);
@@ -591,7 +591,7 @@ mod tests {
             stats
                 .by_model
                 .iter()
-                .find(|m| m.provider == "fixture")
+                .find(|m| m.model == "model")
                 .unwrap()
                 .cost,
             None
@@ -600,7 +600,7 @@ mod tests {
             stats
                 .by_model
                 .iter()
-                .find(|m| m.provider == "openai")
+                .find(|m| m.model == "gpt-6-sol")
                 .unwrap()
                 .cost,
             Some(4.0)
@@ -629,14 +629,14 @@ mod tests {
             crate::usage::now_millis().unwrap(),
         )
         .unwrap();
-        fs::write(&price_file, r#"{"models":{"model":{"providers":["fixture"],"input":10000,"output":20000,"cache_read":30000}}}"#).unwrap();
+        fs::write(&price_file, r#"{"models":{"model":{"input":10000,"output":20000,"cache_read":30000}}}"#).unwrap();
         let first = store
             .query(Some("omp"), range, &Pricing::load(&price_file).unwrap())
             .unwrap()
             .finish();
         assert!((first.total_cost.unwrap() - 0.14).abs() < 1e-12);
         assert_eq!(first.unpriced_requests, 0);
-        fs::write(&price_file, r#"{"models":{"model":{"providers":["fixture"],"input":20000,"output":30000,"cache_read":40000}}}"#).unwrap();
+        fs::write(&price_file, r#"{"models":{"model":{"input":20000,"output":30000,"cache_read":40000}}}"#).unwrap();
         let second = store
             .query(Some("omp"), range, &Pricing::load(&price_file).unwrap())
             .unwrap()
