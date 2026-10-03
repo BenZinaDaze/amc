@@ -305,6 +305,18 @@ function App() {
     }
   }, [loadSubscriptions]);
 
+  // 屏蔽 WebView 默认右键菜单：与应用无关（刷新/检查等）。输入框、
+  // 多行文本与可编辑区域保留系统菜单，粘贴仍可用。
+  useEffect(() => {
+    const suppress = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, [contenteditable]")) return;
+      event.preventDefault();
+    };
+    document.addEventListener("contextmenu", suppress);
+    return () => document.removeEventListener("contextmenu", suppress);
+  }, []);
+
   // Any press, key or scroll outside the card menu dismisses it; menu items
   // stop the mousedown propagation so they still fire.
   useEffect(() => {
@@ -1083,8 +1095,9 @@ function App() {
 }
 
 const usageNumber = new Intl.NumberFormat("zh-CN");
-const usageTokenNumber = { format: (tokens: number) => tokens >= 1_000_000
-  ? `${(tokens / 1_000_000).toFixed(2)}M`
+const usageTokenNumber = { format: (tokens: number) => tokens >= 1_000_000_000
+  ? `${(tokens / 1_000_000_000).toFixed(2)}B`
+  : tokens >= 1_000_000 ? `${(tokens / 1_000_000).toFixed(2)}M`
   : tokens >= 1_000 ? `${(tokens / 1_000).toFixed(2)}K` : usageNumber.format(tokens) };
 const usagePercent = new Intl.NumberFormat("zh-CN", { style: "percent", maximumFractionDigits: 1 });
 const usageCost = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 4 });
