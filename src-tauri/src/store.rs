@@ -116,48 +116,9 @@ impl Store {
                 claude INTEGER NOT NULL DEFAULT 0,
                 codex INTEGER NOT NULL DEFAULT 0,
                 managed INTEGER NOT NULL DEFAULT 0
-            );
-            DROP TABLE IF EXISTS local_origins;",
-            // installations 旧表由 skills::migrate_legacy 读取后才删除，
-            // 不能在 schema 阶段无条件 drop。
+            );",
         )
         .map_err(|e| format!("初始化 AMC 数据库失败: {e}"))?;
-        // 旧库迁移：历史遗留行（含旧版自动导入）默认 managed=0，
-        // 视为非 AMC 管理——不列出、不可改删，也不动用户 Agent 文件。
-        let has_managed: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('mcp_servers') WHERE name='managed'",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(|e| format!("检查 mcp_servers 表结构失败: {e}"))?;
-        if has_managed == 0 {
-            db.execute(
-                "ALTER TABLE mcp_servers ADD COLUMN managed INTEGER NOT NULL DEFAULT 0",
-                [],
-            )
-            .map_err(|e| format!("迁移 mcp_servers 表失败: {e}"))?;
-        }
-        // 旧库迁移：skills.agents（OMP+Codex 共用目录的单一开关）拆分为
-        // omp/codex 两个独立开关——目录仍是共享投影，分离靠各自的配置
-        // 文件（OMP config.yml ignoredSkills / Codex config.toml
-        // [[skills.config]]）。
-        let has_agents: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('skills') WHERE name='agents'",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(|e| format!("检查 skills 表结构失败: {e}"))?;
-        if has_agents > 0 {
-            db.execute_batch(
-                "ALTER TABLE skills ADD COLUMN omp INTEGER NOT NULL DEFAULT 0;
-                 ALTER TABLE skills ADD COLUMN codex INTEGER NOT NULL DEFAULT 0;
-                 UPDATE skills SET omp=agents, codex=agents;
-                 ALTER TABLE skills DROP COLUMN agents;",
-            )
-            .map_err(|e| format!("迁移 skills 表失败: {e}"))?;
-        }
         Ok(Self { db, root })
     }
 
@@ -351,46 +312,6 @@ impl Store {
             .ok_or_else(|| "仓库不存在".into())
     }
 
-    /// 读取旧版 installations 表的活跃安装（迁移专用；表不存在时为空）。
-    pub fn legacy_records(&self) -> Result<Vec<LegacyInstall>> {
-        let exists: i64 = self
-            .db
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='installations'",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        if exists == 0 {
-            return Ok(Vec::new());
-        }
-        let mut stmt = self
-            .db
-            .prepare("SELECT repository_id,skill_path,name,target_path,git_commit,content_hash FROM installations WHERE active=1 ORDER BY id")
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok(LegacyInstall {
-                    repository_id: r.get(0)?,
-                    skill_path: r.get(1)?,
-                    name: r.get(2)?,
-                    target_path: r.get(3)?,
-                    commit: r.get(4)?,
-                    hash: r.get(5)?,
-                })
-            })
-            .map_err(|e| e.to_string())?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())
-    }
-
-    /// 迁移完成后删除旧表。
-    pub fn drop_installations(&self) -> Result<()> {
-        self.db
-            .execute("DROP TABLE IF EXISTS installations", [])
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
     pub fn repo_dir(&self, id: i64) -> PathBuf {
         self.root.join("repositories").join(id.to_string())
     }
@@ -522,16 +443,6 @@ impl Store {
         platform::no_links(&directory.join(".git"), &self.root)?;
         git_commit(&directory)
     }
-}
-
-/// 旧版工作区安装记录（迁移专用快照）。
-pub struct LegacyInstall {
-    pub repository_id: i64,
-    pub skill_path: String,
-    pub name: String,
-    pub target_path: String,
-    pub commit: String,
-    pub hash: String,
 }
 
 fn validated_url(url: &str) -> Result<String> {

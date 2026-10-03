@@ -47,52 +47,14 @@ pub(super) struct StoredSubscriptions {
     next_id: u64,
     #[serde(default)]
     pub(super) entries: Vec<StoredSubscription>,
-    /// Legacy single-plan shape, migrated by [`read_stored`] and dropped on
-    /// the next save.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    glm: Option<LegacyCredential>,
-    #[serde(default)]
-    plans: Vec<String>,
-}
-
-/// Credential fields of pre-multi-entry files.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyCredential {
-    platform: String,
-    key: String,
-}
-
-/// Older builds stored one optional credential plus a plan-id list; fold that
-/// into a single entry so existing keys keep working.
-fn migrate_legacy(mut stored: StoredSubscriptions) -> StoredSubscriptions {
-    if stored.entries.is_empty()
-        && stored.plans.iter().any(|id| id == "glm")
-        && stored
-            .glm
-            .as_ref()
-            .is_some_and(|glm| !glm.key.trim().is_empty())
-    {
-        if let Some(legacy) = stored.glm.take() {
-            stored.entries.push(StoredSubscription {
-                id: "1".to_owned(),
-                kind: "glm".to_owned(),
-                name: "GLM Coding Plan".to_owned(),
-                platform: legacy.platform,
-                base_url: None,
-                key: legacy.key,
-            });
-        }
-    }
-    stored
 }
 
 pub(super) fn read_stored(data_dir: &Path) -> StoredSubscriptions {
-    let mut stored = fs::read_to_string(data_dir.join(SUBSCRIPTIONS_FILE))
+    let mut stored: StoredSubscriptions = fs::read_to_string(data_dir.join(SUBSCRIPTIONS_FILE))
         .ok()
         .and_then(|contents| serde_json::from_str(&contents).ok())
-        .map_or_else(Default::default, migrate_legacy);
-    // Counter-less files (legacy or hand-written) would otherwise fall back to
+        .unwrap_or_default();
+    // Counter-less files (hand-written) would otherwise fall back to
     // surviving-entry ids; lift the counter above every stored id before any
     // deletion can empty the list and a re-add reuse an id.
     let highest = stored
@@ -108,10 +70,7 @@ pub(super) fn read_stored(data_dir: &Path) -> StoredSubscriptions {
 fn write_stored_entries(data_dir: &Path, stored: StoredSubscriptions) -> Result<()> {
     fs::create_dir_all(data_dir).map_err(|e| format!("创建数据目录失败: {e}"))?;
     let path = data_dir.join(SUBSCRIPTIONS_FILE);
-    let mut clean = stored;
-    clean.glm = None;
-    clean.plans = Vec::new();
-    let bytes = serde_json::to_vec_pretty(&clean).map_err(|e| format!("序列化失败: {e}"))?;
+    let bytes = serde_json::to_vec_pretty(&stored).map_err(|e| format!("序列化失败: {e}"))?;
     write_private(&path, &bytes)
 }
 
@@ -232,7 +191,7 @@ fn next_entry_id(stored: &mut StoredSubscriptions) -> String {
 mod tests {
     use super::*;
     use crate::subscription::fetch_all;
-    use serde_json::{json, Value};
+    use serde_json::json;
     use std::path::PathBuf;
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -355,24 +314,8 @@ mod tests {
 
     #[test]
     fn delete_before_add_never_reuses_id() {
-        // Legacy migration yields entry "1" with no counter; deleting it must
-        // not let the next add claim "1" again.
-        let dir = temp_dir("legacy-reuse");
-        let legacy = json!({
-            "glm": { "platform": "zai", "key": "12345678abcdef" },
-            "plans": ["glm"]
-        });
-        fs::write(
-            dir.join(SUBSCRIPTIONS_FILE),
-            serde_json::to_vec(&legacy).unwrap(),
-        )
-        .unwrap();
-        remove_plan(&dir, "1").unwrap();
-        add_plan(&dir, "glm", "新的", "zai", "12345678abcdef", None).unwrap();
-        let stored = read_stored(&dir);
-        assert_eq!(stored.entries[0].id, "2");
-
-        // Same for new-shape files written without the counter.
+        // A counter-less file (hand-written) must not let the next add claim
+        // an id that a stored entry already used.
         let dir = temp_dir("counterless");
         let file = json!({ "entries": [
             { "id": "5", "kind": "glm", "name": "手写", "platform": "zai", "key": "12345678abcdef" }
@@ -386,41 +329,5 @@ mod tests {
         add_plan(&dir, "glm", "新的", "zai", "12345678abcdef", None).unwrap();
         let stored = read_stored(&dir);
         assert_eq!(stored.entries[0].id, "6");
-    }
-
-    #[test]
-    fn legacy_file_migrates_to_one_entry() {
-        let dir = temp_dir("legacy");
-        let legacy = json!({
-            "glm": { "platform": "zai", "key": "12345678abcdef" },
-            "plans": ["glm"]
-        });
-        fs::write(
-            dir.join(SUBSCRIPTIONS_FILE),
-            serde_json::to_vec(&legacy).unwrap(),
-        )
-        .unwrap();
-        let statuses = fetch_all(&dir);
-        assert_eq!(statuses.len(), 1);
-        assert_eq!(statuses[0].id, "1");
-        assert_eq!(statuses[0].title, "GLM Coding Plan");
-        assert_eq!(statuses[0].platform, "zai");
-
-        // The next save writes the new shape only.
-        add_plan(&dir, "glm", "二号", "zai", "fedcba9876543210", None).unwrap();
-        let raw: Value =
-            serde_json::from_slice(&fs::read(dir.join(SUBSCRIPTIONS_FILE)).unwrap()).unwrap();
-        assert!(raw.get("glm").is_none());
-        assert_eq!(raw["entries"].as_array().unwrap().len(), 2);
-
-        // A legacy key whose plan was never added stays hidden, as before.
-        let dir = temp_dir("legacy-hidden");
-        let legacy = json!({ "glm": { "platform": "zai", "key": "12345678abcdef" } });
-        fs::write(
-            dir.join(SUBSCRIPTIONS_FILE),
-            serde_json::to_vec(&legacy).unwrap(),
-        )
-        .unwrap();
-        assert!(fetch_all(&dir).is_empty());
     }
 }

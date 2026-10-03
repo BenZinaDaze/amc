@@ -94,9 +94,6 @@ type ValidatedSource = (String, Vec<(PathBuf, Vec<u8>)>, String, String);
 impl Core {
     pub fn new(root: PathBuf) -> Result<Self> {
         let store = Store::new(root)?;
-        // 一次性迁移：旧版工作区安装（installations 表）→ 分发模型，
-        // 完成后旧表即被删除。
-        skills::migrate_legacy(&store)?;
         Ok(Self {
             store,
             plans: HashMap::new(),
