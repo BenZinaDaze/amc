@@ -1576,6 +1576,41 @@ function UsageRangePicker({ range, label, activeChoice, onApply }: {
   </div>;
 }
 
+type ModelSortKey = "requests" | "totalTokens" | "cacheRate" | "cost";
+
+// 模型明细表（总览与单 Agent 页共用）：点击表头按列排序，点一下降序、
+// 再点一下升序；未计价费用（null）不参与比较，恒排在最后。
+function ModelBreakdownTable({ byModel, showCacheRate, costLabel, emptyFallback }: {
+  byModel: UsageStats["byModel"];
+  showCacheRate: boolean;
+  costLabel: string;
+  emptyFallback: ReactNode;
+}) {
+  const [sort, setSort] = useState<{ key: ModelSortKey; dir: "desc" | "asc" } | null>(null);
+  const sorted = sort
+    ? [...byModel].sort((left, right) => {
+        const a = left[sort.key];
+        const b = right[sort.key];
+        if (a === null && b === null) return 0;
+        if (a === null) return 1;
+        if (b === null) return -1;
+        return (a - b) * (sort.dir === "desc" ? -1 : 1);
+      })
+    : byModel;
+  const columns: { key: ModelSortKey; label: string }[] = [
+    { key: "requests", label: "请求数" },
+    { key: "totalTokens", label: "总 Token" },
+    ...(showCacheRate ? [{ key: "cacheRate" as ModelSortKey, label: "缓存命中率" }] : []),
+    { key: "cost", label: costLabel },
+  ];
+  if (!byModel.length) return emptyFallback;
+  return <div className="omp-table-wrap"><table className="omp-table"><thead><tr><th scope="col">模型</th>{columns.map((column) => {
+    const active = sort?.key === column.key;
+    const dir = active ? sort?.dir ?? null : null;
+    return <th key={column.key} scope="col" aria-sort={dir ? (dir === "desc" ? "descending" : "ascending") : undefined}><button type="button" className="omp-sort-btn" onClick={() => setSort((current) => current?.key === column.key ? { key: column.key, dir: current.dir === "desc" ? "asc" : "desc" } : { key: column.key, dir: "desc" })}>{column.label}{dir && <span className="omp-sort-arrow" aria-hidden="true">{dir === "desc" ? "↓" : "↑"}</span>}</button></th>;
+  })}</tr></thead><tbody>{sorted.map((model) => <tr key={model.model}><th scope="row"><strong>{model.model || "未知模型"}</strong></th><td>{usageNumber.format(model.requests)}</td><td>{usageTokenNumber.format(model.totalTokens)}</td>{showCacheRate && <td>{usagePercent.format(model.cacheRate)}</td>}<td>{formatUsageCost(model.cost)}{model.unpricedRequests > 0 && <small className="omp-unpriced">（{usageNumber.format(model.unpricedRequests)} 次未计价）</small>}</td></tr>)}</tbody></table></div>;
+}
+
 function AgentsUsagePanel({ stats, range, rangeLabel, activeChoice, loading, error, pricingNote, onRangeChange, onRefresh }: {
   stats: UsageStats | null;
   range: UsageRange;
@@ -1606,7 +1641,7 @@ function AgentsUsagePanel({ stats, range, rangeLabel, activeChoice, loading, err
           <div className="omp-summary-card"><span>{stats.unpricedRequests > 0 ? "已计价费用小计" : "估算费用"}</span><strong>{formatUsageCost(stats.totalCost)}</strong><small>USD{stats.unpricedRequests > 0 ? ` · ${usageNumber.format(stats.unpricedRequests)} 次未计价` : ""}</small></div>
         </div>
         <div className="section-heading model-breakdown-heading"><div><h2>模型明细 <span className="count">{stats.byModel.length}</span></h2><p>各模型的请求数、Token 总量与已计价费用小计；未计价请求不并入费用。</p></div></div>
-        {stats.byModel.length ? <div className="omp-table-wrap"><table className="omp-table"><thead><tr><th scope="col">模型</th><th scope="col">请求数</th><th scope="col">总 Token</th><th scope="col">已计价费用 (USD)</th></tr></thead><tbody>{stats.byModel.map((model) => <tr key={model.model}><th scope="row"><strong>{model.model || "未知模型"}</strong></th><td>{usageNumber.format(model.requests)}</td><td>{usageTokenNumber.format(model.totalTokens)}</td><td>{formatUsageCost(model.cost)}{model.unpricedRequests > 0 && <small className="omp-unpriced">（{usageNumber.format(model.unpricedRequests)} 次未计价）</small>}</td></tr>)}</tbody></table></div> : null}
+        {stats.byModel.length ? <ModelBreakdownTable byModel={stats.byModel} showCacheRate={false} costLabel="已计价费用 (USD)" emptyFallback={null} /> : null}
       </>)}
   </section>;
 }
@@ -1644,7 +1679,7 @@ function AgentUsagePanel({ agentLabel, stats, range, rangeLabel, activeChoice, l
         </section>
         <section className="omp-section">
           <div className="section-heading"><div><h2>模型明细 <span className="count">{stats.byModel.length}</span></h2><p>非实际账单；未计价请求不并入费用。</p></div></div>
-          {stats.byModel.length ? <div className="omp-table-wrap"><table className="omp-table"><thead><tr><th scope="col">模型</th><th scope="col">请求数</th><th scope="col">总 Token</th><th scope="col">缓存命中率</th><th scope="col">估算费用 (USD)</th></tr></thead><tbody>{stats.byModel.map((model) => <tr key={model.model}><th scope="row"><strong>{model.model || "未知模型"}</strong></th><td>{usageNumber.format(model.requests)}</td><td>{usageTokenNumber.format(model.totalTokens)}</td><td>{usagePercent.format(model.cacheRate)}</td><td>{formatUsageCost(model.cost)}{model.unpricedRequests > 0 && <small className="omp-unpriced">（{usageNumber.format(model.unpricedRequests)} 次未计价）</small>}</td></tr>)}</tbody></table></div> : <p className="omp-no-breakdown">此时间范围内没有可归属的模型明细。</p>}
+          {stats.byModel.length ? <ModelBreakdownTable byModel={stats.byModel} showCacheRate={true} costLabel="估算费用 (USD)" emptyFallback={<p className="omp-no-breakdown">此时间范围内没有可归属的模型明细。</p>} /> : null}
         </section>
       </>)}
   </div>;

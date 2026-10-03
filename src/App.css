@@ -294,6 +294,9 @@ textarea{resize:vertical;line-height:1.55}
 .omp-table th:first-child{text-align:left}
 .omp-table tbody th{font-weight:400;min-width:180px;overflow-wrap:anywhere}
 .omp-table tbody th strong{color:#333e54}
+.omp-table thead th .omp-sort-btn{display:inline-flex;align-items:center;gap:3px;background:none;border:0;padding:0;font:inherit;color:inherit;cursor:pointer;user-select:none}
+.omp-table thead th .omp-sort-btn:hover,.omp-table thead th[aria-sort] .omp-sort-btn{color:#333e54}
+.omp-sort-arrow{font-size:10px;line-height:1}
 .omp-table tbody tr:last-child th,.omp-table tbody tr:last-child td{border-bottom:0}
 
 /* ---- Subscriptions ---- */
