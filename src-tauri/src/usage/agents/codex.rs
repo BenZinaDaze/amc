@@ -283,9 +283,6 @@ impl CodexUsageAdapter {
                         };
                         let input = (turn.input - turn.cached - turn.write).max(0);
                         records.push(UsageRecord {
-                            // The provider stays empty: rollouts only name
-                            // the model, and pricing keys on the model alone.
-                            provider: String::new(),
                             external_id: event_key.unwrap_or_else(|| {
                                 // Old rollouts without turn contexts were
                                 // never deduplicated, so their identity

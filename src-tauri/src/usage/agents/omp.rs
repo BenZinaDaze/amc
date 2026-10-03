@@ -36,7 +36,7 @@ impl OmpUsageAdapter {
 }
 
 /// `messages` 表一行的原始列值（session_file 之后均为字符串/整数列）。
-type OmpMessageRow = (String, String, String, String, i64, i64, i64, i64, i64, i64);
+type OmpMessageRow = (String, String, String, i64, i64, i64, i64, i64, i64);
 
 const OMP_EXECUTABLE: &str = if cfg!(windows) { "omp.exe" } else { "omp" };
 /// OMP 经 bun/npm 安装，需要这些相对用户目录的附加搜索路径。
@@ -362,7 +362,7 @@ impl OmpUsageAdapter {
             })?;
         let mut query = db
             .prepare(
-                "SELECT session_file, entry_id, provider, model, timestamp, input_tokens, \
+                "SELECT session_file, entry_id, model, timestamp, input_tokens, \
                  output_tokens, cache_read_tokens, cache_write_tokens, total_tokens \
                  FROM messages WHERE timestamp >= ?1",
             )
@@ -383,13 +383,11 @@ impl OmpUsageAdapter {
                     row.get(6)?,
                     row.get(7)?,
                     row.get(8)?,
-                    row.get(9)?,
                 ))
             })();
             let (
                 session_file,
                 entry_id,
-                provider,
                 model,
                 timestamp,
                 input,
@@ -403,7 +401,6 @@ impl OmpUsageAdapter {
             // scans archive each request exactly once.
             records.push(UsageRecord {
                 external_id: format!("{session_file}\u{1}{entry_id}"),
-                provider,
                 model,
                 timestamp,
                 input_tokens: input,

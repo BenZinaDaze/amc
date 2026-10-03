@@ -44,7 +44,6 @@ impl UsageStore {
             "CREATE TABLE IF NOT EXISTS usage_records (
                 source TEXT NOT NULL,
                 external_id TEXT NOT NULL,
-                provider TEXT NOT NULL,
                 model TEXT NOT NULL,
                 timestamp INTEGER NOT NULL,
                 input_tokens INTEGER NOT NULL,
@@ -77,7 +76,9 @@ impl UsageStore {
             let mut stmt = transaction
                 .prepare(
                     "INSERT OR IGNORE INTO usage_records \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                     (source, external_id, model, timestamp, input_tokens, output_tokens, \
+                     cache_read_tokens, cache_write_tokens, total_tokens) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 )
                 .map_err(|e| format!("准备 AMC 用量写入失败: {e}"))?;
             for record in records {
@@ -85,7 +86,6 @@ impl UsageStore {
                     .execute(params![
                         source,
                         record.external_id,
-                        record.provider,
                         record.model,
                         record.timestamp,
                         record.input_tokens,
@@ -206,7 +206,6 @@ mod tests {
     fn record(external_id: &str, timestamp: i64, tokens: i64) -> UsageRecord {
         UsageRecord {
             external_id: external_id.to_owned(),
-            provider: String::new(),
             model: "model".to_owned(),
             timestamp,
             input_tokens: 1,

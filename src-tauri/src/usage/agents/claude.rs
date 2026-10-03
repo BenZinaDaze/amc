@@ -122,9 +122,6 @@ impl ClaudeCodeUsageAdapter {
                     continue;
                 }
                 records.push(UsageRecord {
-                    // The provider stays empty: transcripts only name the
-                    // model, and pricing keys on the model alone.
-                    provider: String::new(),
                     external_id: if id.is_empty() {
                         // Transcripts without a message id fall back to the
                         // response's content as its identity.

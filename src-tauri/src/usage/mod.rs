@@ -21,12 +21,8 @@ use std::{
 
 /// One raw usage record as emitted by a source scan. `input_tokens` counts
 /// uncached prompt tokens; cache reads and writes are separate buckets.
-/// `provider` carries the source-owned value (OMP records one; Claude Code
-/// and Codex name only a model) and is stored as provenance — pricing keys
-/// on the model alone.
 pub(super) struct UsageRecord {
     pub external_id: String,
-    pub provider: String,
     pub model: String,
     pub timestamp: i64,
     pub input_tokens: i64,
@@ -524,14 +520,12 @@ mod tests {
 
     fn archived_record(
         external_id: &str,
-        provider: &str,
         model: &str,
         timestamp: i64,
         total_tokens: i64,
     ) -> UsageRecord {
         UsageRecord {
             external_id: external_id.to_owned(),
-            provider: provider.to_owned(),
             model: model.to_owned(),
             timestamp,
             input_tokens: 1,
@@ -552,20 +546,17 @@ mod tests {
                 "omp",
                 &[archived_record(
                     "omp-1",
-                    "zhipu-coding-plan",
                     "glm-5.3",
                     timestamp,
                     6,
                 )],
             )
             .unwrap();
-        // Codex names no provider; it is stored as empty provenance.
         store
             .ingest(
                 "codex",
                 &[archived_record(
                     "codex-1",
-                    "",
                     "gpt-6-sol",
                     timestamp,
                     40,
@@ -602,11 +593,10 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    // The requested merge: the same model recorded under different provider
-    // labels (including an arbitrary relay's) must collapse into one priced
-    // by_model row — pricing keys on the model alone.
+    // Pricing keys on the model alone: the same model archived from two
+    // different sources must collapse into one priced by_model row.
     #[test]
-    fn same_model_from_different_providers_merges_into_one_priced_row() {
+    fn same_model_from_different_sources_merges_into_one_priced_row() {
         let root = env::temp_dir().join(format!("amc-archive-relay-{}", uuid::Uuid::new_v4()));
         let store = store::UsageStore::new(&root).unwrap();
         let timestamp = 1_700_000_000_000;
@@ -617,21 +607,17 @@ mod tests {
                 "omp",
                 &[archived_record(
                     "omp-1",
-                    "openai",
                     "gpt-6-sol",
                     timestamp,
                     6,
                 )],
             )
             .unwrap();
-        // A relay's own provider label must neither split the row nor
-        // block pricing.
         store
             .ingest(
-                "omp",
+                "claude-code",
                 &[archived_record(
-                    "omp-2",
-                    "bo-sub2",
+                    "cc-1",
                     "gpt-6-sol",
                     timestamp,
                     6,
