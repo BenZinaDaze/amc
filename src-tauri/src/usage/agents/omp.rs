@@ -360,11 +360,16 @@ impl OmpUsageAdapter {
                     self.stats_db.display()
                 )
             })?;
+        // Failed requests carry no usage — OMP records `error`/`aborted`
+        // rows with zero tokens — so they stay out of request counts; a
+        // failure row that did record tokens was partially streamed and
+        // billed, and keeps counting.
         let mut query = db
             .prepare(
                 "SELECT session_file, entry_id, model, timestamp, input_tokens, \
                  output_tokens, cache_read_tokens, cache_write_tokens, total_tokens \
-                 FROM messages WHERE timestamp >= ?1",
+                 FROM messages WHERE timestamp >= ?1 \
+                 AND (stop_reason NOT IN ('error', 'aborted') OR total_tokens > 0)",
             )
             .map_err(|e| format!("OMP 用量表无效: {e}"))?;
         let mut rows = query
@@ -503,7 +508,8 @@ mod tests {
                 provider TEXT NOT NULL, model TEXT NOT NULL,
                 timestamp INTEGER NOT NULL, input_tokens INTEGER NOT NULL,
                 output_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL,
-                cache_write_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL
+                cache_write_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL,
+                stop_reason TEXT NOT NULL DEFAULT 'stop'
             )",
         )
         .unwrap();
@@ -516,7 +522,7 @@ mod tests {
             ("after", end, "excluded", 200),
         ] {
             db.execute(
-                "INSERT INTO messages VALUES ('session', ?1, 'openai', ?2, ?3, 1, 2, 3, 0, ?4)",
+                "INSERT INTO messages VALUES ('session', ?1, 'openai', ?2, ?3, 1, 2, 3, 0, ?4, 'stop')",
                 params![entry, model, timestamp, tokens],
             )
             .unwrap();
@@ -570,7 +576,7 @@ mod tests {
         fixture_stats(&stats_db, "fixture-entry", 6);
         let db = Connection::open(&stats_db).unwrap();
         db.execute(
-            "INSERT INTO messages VALUES ('session', 'openai-entry', 'openai', 'gpt-6-sol', 1700000000000, 1000000, 0, 0, 0, 1000000)",
+            "INSERT INTO messages VALUES ('session', 'openai-entry', 'openai', 'gpt-6-sol', 1700000000000, 1000000, 0, 0, 0, 1000000, 'stop')",
             [],
         )
         .unwrap();
@@ -601,6 +607,63 @@ mod tests {
                 .unwrap()
                 .cost,
             Some(4.0)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_requests_without_usage_are_excluded_from_stats() {
+        let root = env::temp_dir().join(format!("amc-omp-failed-{}", uuid::Uuid::new_v4()));
+        let stats_db = root.join("stats.db");
+        fixture_stats(&stats_db, "success", 6);
+        let db = Connection::open(&stats_db).unwrap();
+        // Failed rows carry no usage at all (error, user abort); a failure
+        // that streamed partial output keeps its billed tokens, with the
+        // buckets summing to the row's total.
+        for (entry, stop_reason, model, input, output, read, write, total) in [
+            ("error-empty", "error", "model", 0, 0, 0, 0, 0),
+            ("aborted-empty", "aborted", "model", 0, 0, 0, 0, 0),
+            ("error-partial", "error", "gpt-6-sol", 2, 4, 3, 0, 9),
+        ] {
+            db.execute(
+                "INSERT INTO messages (session_file, entry_id, provider, model, \
+                 timestamp, input_tokens, output_tokens, cache_read_tokens, \
+                 cache_write_tokens, total_tokens, stop_reason) \
+                 VALUES ('session', ?1, 'fixture', ?2, 1700000000000, \
+                 ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![entry, model, input, output, read, write, total, stop_reason],
+            )
+            .unwrap();
+        }
+        drop(db);
+        let adapter = OmpUsageAdapter {
+            stats_db,
+            mcp_json: root.join("agent/mcp.json"),
+            config_root: root.clone(),
+        };
+        // The scan itself drops usage-less failures; the partial billed
+        // failure survives alongside the success.
+        assert_eq!(adapter.scan(0).unwrap().records.len(), 2);
+        let stats = archive_and_query(&adapter, &root, "all", &prices());
+        assert_eq!(stats.total_requests, 2);
+        assert_eq!(stats.total_tokens, 15);
+        assert_eq!(stats.input_tokens, 3);
+        assert_eq!(stats.output_tokens, 6);
+        assert_eq!(stats.cache_read_tokens, 6);
+        assert_eq!(stats.unpriced_requests, 1);
+        // Dropping empty failures changes request counts only; the priced
+        // partial row's cost is untouched.
+        let expected = (2. * 2. + 0.2 * 3. + 10. * 4.) / 1_000_000.;
+        assert_eq!(stats.total_cost, Some(expected));
+        assert_eq!(stats.by_model.len(), 2);
+        assert_eq!(
+            stats
+                .by_model
+                .iter()
+                .find(|m| m.model == "gpt-6-sol")
+                .unwrap()
+                .cost,
+            Some(expected)
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -729,12 +792,13 @@ mod tests {
                 provider TEXT NOT NULL, model TEXT NOT NULL,
                 timestamp INTEGER NOT NULL, input_tokens INTEGER NOT NULL,
                 output_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL,
-                cache_write_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL
+                cache_write_tokens INTEGER NOT NULL, total_tokens INTEGER NOT NULL,
+                stop_reason TEXT NOT NULL DEFAULT 'stop'
             )",
         )
         .unwrap();
         db.execute(
-            "INSERT INTO messages VALUES ('session', ?1, 'fixture', 'model', 1700000000000, 1, 2, 3, 0, ?2)",
+            "INSERT INTO messages VALUES ('session', ?1, 'fixture', 'model', 1700000000000, 1, 2, 3, 0, ?2, 'stop')",
             params![entry_id, tokens],
         )
         .unwrap();

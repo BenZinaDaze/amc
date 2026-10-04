@@ -54,9 +54,41 @@ impl UsageStore {
                 PRIMARY KEY (source, external_id)
             );
             CREATE INDEX IF NOT EXISTS usage_records_timestamp
-                ON usage_records (timestamp);",
+                ON usage_records (timestamp);
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
         )
         .map_err(|e| format!("初始化 AMC 用量数据库失败: {e}"))?;
+        // v1: usage-less records stop counting. Failed requests carry no
+        // usage — OMP records `error`/`aborted` rows with all-zero tokens —
+        // and no adapter emits them anymore, so rows archived by earlier
+        // versions are purged once.
+        let version: i64 = db
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        if version < 1 {
+            db.execute(
+                "DELETE FROM usage_records \
+                 WHERE input_tokens = 0 AND output_tokens = 0 \
+                   AND cache_read_tokens = 0 AND cache_write_tokens = 0 \
+                   AND total_tokens = 0",
+                [],
+            )
+            .map_err(|e| format!("清理 AMC 无用量记录失败: {e}"))?;
+            db.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1')",
+                [],
+            )
+            .map_err(|e| format!("记录 AMC 用量数据库版本失败: {e}"))?;
+        }
         Ok(db)
     }
 
@@ -82,6 +114,16 @@ impl UsageStore {
                 )
                 .map_err(|e| format!("准备 AMC 用量写入失败: {e}"))?;
             for record in records {
+                // Usage-less records (failed requests) never enter the
+                // archive; adapters already drop them, this holds the
+                // invariant at the write path.
+                if record.input_tokens <= 0
+                    && record.output_tokens <= 0
+                    && record.cache_read_tokens <= 0
+                    && record.cache_write_tokens <= 0
+                {
+                    continue;
+                }
                 inserted += stmt
                     .execute(params![
                         source,
@@ -271,6 +313,63 @@ mod tests {
             .finish();
         assert_eq!(stats.total_requests, 2);
         assert_eq!(stats.synced_at, 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn usage_less_records_never_archive_and_legacy_ones_purge_once() {
+        let root = std::env::temp_dir().join(format!("amc-store-purge-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        // An archive written by an earlier version: it holds a zero-token
+        // failed request next to real usage.
+        {
+            let db = rusqlite::Connection::open(root.join(FILE_NAME)).unwrap();
+            db.execute_batch(
+                "CREATE TABLE usage_records (
+                    source TEXT NOT NULL, external_id TEXT NOT NULL,
+                    model TEXT NOT NULL, timestamp INTEGER NOT NULL,
+                    input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+                    cache_read_tokens INTEGER NOT NULL, cache_write_tokens INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL, PRIMARY KEY (source, external_id)
+                );",
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO usage_records VALUES
+                    ('omp', 'legacy-failed', 'model', 1700000000000, 0, 0, 0, 0, 0)",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO usage_records VALUES
+                    ('omp', 'legacy-kept', 'model', 1700000000000, 1, 2, 3, 0, 6)",
+                [],
+            )
+            .unwrap();
+        }
+        let store = UsageStore::new(&root).unwrap();
+        // The write guard refuses a usage-less record alongside a real one;
+        // the open inside also runs the v1 purge of the legacy row.
+        let mut failed = record("failed", 1_700_000_001_000, 0);
+        failed.input_tokens = 0;
+        failed.output_tokens = 0;
+        failed.cache_read_tokens = 0;
+        assert_eq!(
+            store
+                .ingest("omp", &[failed, record("fresh", 1_700_000_002_000, 6)])
+                .unwrap(),
+            1
+        );
+        let stats = store
+            .query(
+                None,
+                UsageRange::parse("all", 1_700_000_003_000).unwrap(),
+                &crate::usage::prices(),
+            )
+            .unwrap()
+            .finish();
+        assert_eq!(stats.total_requests, 2);
+        assert_eq!(stats.total_tokens, 12);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
