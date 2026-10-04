@@ -797,6 +797,7 @@ function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
+        <div aria-hidden="true" className="titlebar-drag" data-tauri-drag-region />
         <div className="brand"><span className="brand-mark"><img src="/amc.svg" alt="" /></span><div><strong>AMC</strong><small>Agent Management Center</small></div></div>
         <div className="sidebar-caption">通用来源</div>
         <nav aria-label="主导航" className="navigation">

@@ -32,7 +32,8 @@ svg{flex-shrink:0}
 
 /* ---- Shell ---- */
 .app-shell{height:100vh;display:flex}
-.sidebar{width:248px;min-width:248px;background:#151d31;color:#a4b0c7;height:100%;display:flex;flex-direction:column;padding:31px 16px 20px}
+.sidebar{width:248px;min-width:248px;background:#151d31;color:#a4b0c7;height:100%;display:flex;flex-direction:column;padding:0 16px 20px}
+.titlebar-drag{height:40px;margin:0 -16px;flex-shrink:0}
 .brand{display:flex;gap:12px;align-items:center;padding:0 12px 48px;color:#fff}
 .brand-mark{width:37px;height:37px}
 .brand-mark img{width:100%;height:100%;display:block;filter:drop-shadow(0 6px 14px #6056f347)}
