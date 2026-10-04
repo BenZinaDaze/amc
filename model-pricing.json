@@ -428,6 +428,16 @@
       "input": 1.5,
       "output": 7.5
     },
+    "gemini-3.7-flash": {
+      "cache_read": 0.075,
+      "input": 0.75,
+      "output": 3.75
+    },
+    "gemini-3.8-flash": {
+      "cache_read": 0.075,
+      "input": 0.75,
+      "output": 3.75
+    },
     "gemini-exp-1206": {
       "cache_read": 0.03,
       "input": 0.3,
