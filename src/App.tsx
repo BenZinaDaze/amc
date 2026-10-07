@@ -284,11 +284,12 @@ function App() {
 
   const loadSubscriptions = useCallback(async (force: boolean) => {
     if (!force && Date.now() - subscriptionsFetchedAt.current < 60_000) return;
-    // listen() 是异步 IPC：首个请求必须等监听器注册完成，否则最早的事件
-    // 可能落在注册前被丢掉，首屏退化回整屏等待。
-    await subscriptionsListening.current;
     const request = ++subscriptionsLoadId.current;
     subscriptionsFetchedAt.current = Date.now();
+    // listen() 是异步 IPC：首个请求必须等监听器注册完成，否则最早的事件
+    // 可能落在注册前被丢掉。时间戳先于 await 同步落位，StrictMode 的二次
+    // 调用仍被 60 秒守卫挡住，不会重复发起供应商查询。
+    await subscriptionsListening.current;
     setSubscriptionsLoading(true);
     setSubscriptionsError("");
     try {
