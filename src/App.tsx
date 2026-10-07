@@ -4,10 +4,10 @@ import ompIcon from "./assets/omp.svg";
 import zaiIcon from "./assets/zai.svg";
 import sub2apiIcon from "./assets/sub2api.svg";
 import antigravityIcon from "./assets/antigravity.svg";
+import deepseekIcon from "./assets/deepseek.svg";
 import { version } from "../package.json";
 import { api, type ClaudeCodeStatus, type CodexStatus, type McpAgent, type McpServer, type Plan, type Repository, type RepositorySkill, type Skill, type SkillTarget, type State, type SubscriptionKind, type SubscriptionStatus, type UsageRange, type UsageStats, type Workspace } from "./api";
 import "./App.css";
-
 type Page = "overview" | "agents" | "omp" | "claude" | "codex" | "mcp" | "skills" | "repositories";
 type McpMode = "stdio" | "http" | "sse";
 type SkillTab = "installed" | "discover";
@@ -1130,8 +1130,16 @@ function formatQuotaCount(kind: string, value: number): string {
   return kind === "tokens" ? usageTokenNumber.format(value) : usageNumber.format(value);
 }
 
-// `unit: "usd"` 的额度行存的是美分整数，展示为美元。
+// `unit: "usd"`/`"cny"` 的额度行存的是分,展示为美元/人民币。
 const usageUsd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+const usageCny = new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY" });
+
+function formatQuotaAmount(unit: string | null, kind: string, value: number): string {
+  if (unit === "usd") return usageUsd.format(value / 100);
+  if (unit === "cny") return usageCny.format(value / 100);
+  return formatQuotaCount(kind, value);
+}
+
 
 function metricIcon(id: string): string {
   if (id === "tokens" || id === "model") return "spark";
@@ -1250,7 +1258,7 @@ function PlanFormModal({ form, onClose, onSaved }: {
 function SubscriptionCard({ status, onMenu }: { status: SubscriptionStatus; onMenu: (status: SubscriptionStatus, x: number, y: number) => void }) {
   return <article className="subscription-card" onContextMenu={(event) => { event.preventDefault(); onMenu(status, event.clientX, event.clientY); }}>
     <div className="subscription-head">
-      <span className="subscription-icon"><img src={status.provider === "antigravity" ? antigravityIcon : status.provider === "sub2api" ? sub2apiIcon : zaiIcon} alt="" /></span>
+      <span className="subscription-icon"><img src={status.provider === "antigravity" ? antigravityIcon : status.provider === "sub2api" ? sub2apiIcon : status.provider === "deepseek" ? deepseekIcon : zaiIcon} alt="" /></span>
       <div className="subscription-title">
         <h3>{status.title}{status.plan && <span className="tag tag-muted">{status.plan}</span>}</h3>
       </div>
@@ -1260,10 +1268,22 @@ function SubscriptionCard({ status, onMenu }: { status: SubscriptionStatus; onMe
       : <>
         <div className="quota-list">
           {status.quotas.map((quota) => {
+            // 预付费余额不是用量：纯金额行，无百分比无计量条。
+            if (quota.kind === "balance") {
+              return <div key={quota.label} className="quota-row balance-row">
+                <div className="quota-top">
+                  <strong>{quota.label}</strong>
+                  <span className="balance-value">{quota.used !== null ? formatQuotaAmount(quota.unit, quota.kind, quota.used) : "—"}</span>
+                </div>
+                {quota.details.length > 0 && <small className="quota-details">{quota.details.map((detail) => `${detail.name} ${usageNumber.format(detail.usage)}`).join(" · ")}</small>}
+              </div>;
+            }
             const tone = quota.usedPercent >= 90 ? "danger" : quota.usedPercent >= 70 ? "warn" : "ok";
             const counts = quota.used !== null && quota.total !== null
-              ? `${quota.unit === "usd" ? usageUsd.format(quota.used / 100) : formatQuotaCount(quota.kind, quota.used)} / ${quota.unit === "usd" ? usageUsd.format(quota.total / 100) : formatQuotaCount(quota.kind, quota.total)}`
-              : null;
+              ? `${formatQuotaAmount(quota.unit, quota.kind, quota.used)} / ${formatQuotaAmount(quota.unit, quota.kind, quota.total)}`
+              : quota.used !== null
+                ? formatQuotaAmount(quota.unit, quota.kind, quota.used)
+                : null;
             return <div key={quota.label} className="quota-row">
               <div className="quota-top">
                 <strong>{quota.label}</strong>

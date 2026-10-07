@@ -15,10 +15,10 @@ use serde::Serialize;
 use std::path::Path;
 
 mod antigravity;
+mod deepseek;
 mod glm;
 mod store;
 mod sub2api;
-
 pub use store::{add_plan, remove_plan, update_plan};
 
 // ---------------------------------------------------------------- normalized
@@ -45,7 +45,7 @@ pub struct SubscriptionStatus {
     pub metrics: Vec<MetricUsage>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaUsage {
     /// `tokens` | `credits` | `mcp`; drives formatting and icons in the UI.
@@ -64,7 +64,7 @@ pub struct QuotaUsage {
     pub unit: Option<String>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaDetail {
     pub name: String,
@@ -84,7 +84,7 @@ pub struct MetricUsage {
 pub struct Message {
     pub message: String,
 }
-
+#[derive(Debug)]
 pub struct ProviderReport {
     pub plan: Option<String>,
     pub quotas: Vec<QuotaUsage>,
@@ -149,6 +149,16 @@ const KINDS: &[SubscriptionKind] = &[
         url_label: None,
         url_placeholder: None,
     },
+    SubscriptionKind {
+        id: "deepseek",
+        title: "DeepSeek",
+        key_label: "DeepSeek API Key",
+        key_placeholder: "粘贴 DeepSeek API Key（sk-…）",
+        auth: "key",
+        platforms: &[],
+        url_label: None,
+        url_placeholder: None,
+    },
 ];
 
 /// Catalog for the add-plan form; one row per vendor.
@@ -207,6 +217,7 @@ fn fetch_entry(entry: &store::StoredSubscription) -> Result<ProviderReport> {
         "glm" => glm::fetch_entry(entry),
         "sub2api" => sub2api::fetch_entry(entry),
         "antigravity" => antigravity::fetch_entry(entry),
+        "deepseek" => deepseek::fetch_entry(entry),
         other => Err(format!("未知的订阅套餐: {other}")),
     }
 }

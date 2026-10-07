@@ -324,6 +324,7 @@ textarea{resize:vertical;line-height:1.55}
 .quota-bar span.warn{background:linear-gradient(90deg,#e6a53f,#d18e21)}
 .quota-bar span.danger{background:linear-gradient(90deg,#dd6b7a,#c9505f)}
 .quota-details{display:block;margin-top:6px;color:#8792a5;font-size:11px;overflow-wrap:anywhere}
+.balance-row .balance-value{font-size:14px;font-weight:600;color:#293449;font-variant-numeric:tabular-nums}
 .metric-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
 .metric-chip{display:inline-flex;align-items:center;gap:7px;padding:6px 11px;border:1px solid #e8ebf1;border-radius:8px;background:#f8f9fc;color:#69758a;font-size:12px}
 .metric-chip svg{color:var(--accent-icon)}

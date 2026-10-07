@@ -37,7 +37,7 @@ export type QuotaUsage = {
   resetsAt: number | null;
   windowMinutes: number | null;
   details: QuotaDetail[];
-  unit: "usd" | null;
+  unit: "usd" | "cny" | null;
 };
 export type MetricUsage = { id: string; label: string; value: number };
 export type SubscriptionStatus = {

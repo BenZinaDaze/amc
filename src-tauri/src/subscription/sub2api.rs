@@ -233,11 +233,11 @@ fn unrestricted_quotas(value: &Value) -> Vec<QuotaUsage> {
             unit: Some("usd".to_owned()),
         });
     }
-    // 余额模式：没有限额窗口，把余额展示成一行为不给百分比的额度条。
+    // 余额模式：预付费余额不是用量，渲染成纯金额行（kind=balance 无计量条）。
     if quotas.is_empty() {
         if let Some(balance) = value.get("balance").and_then(money) {
             quotas.push(QuotaUsage {
-                kind: "credits".to_owned(),
+                kind: "balance".to_owned(),
                 label: "钱包余额".to_owned(),
                 used_percent: 0.0,
                 total: None,
