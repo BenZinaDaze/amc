@@ -423,6 +423,7 @@ mod tests {
             name: "自建".to_owned(),
             platform: String::new(),
             base_url: Some(base_url),
+            account: None,
             key: key.to_owned(),
         }
     }

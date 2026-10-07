@@ -52,7 +52,7 @@ export type SubscriptionStatus = {
   quotas: QuotaUsage[];
   metrics: MetricUsage[];
 };
-export type SubscriptionKind = { id: string; title: string; keyLabel: string; keyPlaceholder: string; platforms: [string, string][]; urlLabel: string | null; urlPlaceholder: string | null };
+export type SubscriptionKind = { id: string; title: string; keyLabel: string; keyPlaceholder: string; auth: "key" | "oauth"; platforms: [string, string][]; urlLabel: string | null; urlPlaceholder: string | null };
 export type ClaudeCodeStatus = { installed: boolean; version: string };
 export type CodexStatus = { installed: boolean; version: string };
 export const api = {
@@ -80,5 +80,6 @@ export const api = {
   listSubscriptionKinds: () => invoke<SubscriptionKind[]>("list_subscription_kinds"),
   addSubscriptionPlan: (kind: string, name: string, platform: string, key: string, baseUrl: string) => invoke<Message>("add_subscription_plan", { kind, name, platform, key, baseUrl: baseUrl || null }),
   updateSubscriptionPlan: (id: string, name: string, platform: string, key: string, baseUrl: string) => invoke<Message>("update_subscription_plan", { id, name, platform, key: key || null, baseUrl: baseUrl || null }),
+  antigravityLogin: (name: string) => invoke<Message>("antigravity_login_and_add", { name }),
   removeSubscriptionPlan: (id: string) => invoke<Message>("remove_subscription_plan", { id }),
 };

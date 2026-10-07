@@ -29,11 +29,20 @@ pub(super) struct StoredSubscription {
     /// Instance URL for kinds that need one (e.g. `sub2api`).
     #[serde(default)]
     pub base_url: Option<String>,
+    /// OAuth 登录账号（邮箱），仅 `antigravity` 这类登录型供应商使用；
+    /// key 字段存的是长期 refresh token。
+    #[serde(default)]
+    pub account: Option<String>,
+    /// The credential: API key (key 型) 或长期 refresh token（登录型）。
     pub key: String,
 }
 
 impl StoredSubscription {
+    /// 登录型条目直接展示账号；key 型条目展示 key 尾部。
     pub(super) fn hint(&self) -> String {
+        if let Some(account) = self.account.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+            return account.to_owned();
+        }
         let tail: String = self.key.chars().rev().take(4).collect();
         format!("…{}", tail.chars().rev().collect::<String>())
     }
@@ -74,7 +83,7 @@ fn write_stored_entries(data_dir: &Path, stored: StoredSubscriptions) -> Result<
     write_private(&path, &bytes)
 }
 
-fn validate_name(name: &str) -> Result<String> {
+pub(super) fn validate_name(name: &str) -> Result<String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("套餐名称不能为空".to_owned());
@@ -85,10 +94,12 @@ fn validate_name(name: &str) -> Result<String> {
     Ok(name.to_owned())
 }
 
+/// key 型供应商的最小凭据校验；登录型供应商（`antigravity`）的 refresh
+/// token 同样满足长度与无空白约束。
 fn validate_key(key: &str) -> Result<String> {
     let key = key.trim();
     if key.len() < 8 || key.chars().any(char::is_whitespace) {
-        return Err("GLM Key 格式无效".to_owned());
+        return Err("凭据格式无效".to_owned());
     }
     Ok(key.to_owned())
 }
@@ -113,6 +124,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 
 // ---------------------------------------------------------------- entry CRUD
 
+#[allow(clippy::too_many_arguments)]
 pub fn add_plan(
     data_dir: &Path,
     kind: &str,
@@ -120,6 +132,7 @@ pub fn add_plan(
     platform: &str,
     key: &str,
     base_url: Option<&str>,
+    account: Option<&str>,
 ) -> Result<()> {
     if !known_kind(kind) {
         return Err(format!("未知的订阅套餐: {kind}"));
@@ -130,12 +143,17 @@ pub fn add_plan(
     let key = validate_key(key)?;
     let mut stored = read_stored(data_dir);
     let id = next_entry_id(&mut stored);
+    let account = account
+        .map(str::trim)
+        .filter(|account| !account.is_empty())
+        .map(str::to_owned);
     stored.entries.push(StoredSubscription {
         id,
         kind: kind.to_owned(),
         name,
         platform,
         base_url,
+        account,
         key,
     });
     write_stored_entries(data_dir, stored)
@@ -204,18 +222,19 @@ mod tests {
     #[test]
     fn entry_crud_and_validation() {
         let dir = temp_dir("crud");
-        assert!(add_plan(&dir, "glm", "  ", "zai", "12345678", None).is_err());
-        assert!(add_plan(&dir, "nope", "名", "zai", "12345678", None).is_err());
-        assert!(add_plan(&dir, "glm", "名", "unknown", "12345678", None).is_err());
-        assert!(add_plan(&dir, "glm", "名", "zai", "short", None).is_err());
-        assert!(add_plan(&dir, "sub2api", "名", "", "sk-abcdef123456", None).is_err());
+        assert!(add_plan(&dir, "glm", "  ", "zai", "12345678", None, None).is_err());
+        assert!(add_plan(&dir, "nope", "名", "zai", "12345678", None, None).is_err());
+        assert!(add_plan(&dir, "glm", "名", "unknown", "12345678", None, None).is_err());
+        assert!(add_plan(&dir, "glm", "名", "zai", "short", None, None).is_err());
+        assert!(add_plan(&dir, "sub2api", "名", "", "sk-abcdef123456", None, None).is_err());
         assert!(add_plan(
             &dir,
             "sub2api",
             "名",
             "",
             "sk-abcdef123456",
-            Some("ftp://x")
+            Some("ftp://x"),
+            None
         )
         .is_err());
         assert!(add_plan(
@@ -224,14 +243,15 @@ mod tests {
             "名",
             "zai",
             "sk-abcdef123456",
-            Some("https://x.y")
+            Some("https://x.y"),
+            None
         )
         .is_err());
         assert!(fetch_all(&dir).is_empty());
 
         // The same vendor can be added twice with different keys.
-        add_plan(&dir, "glm", "  主号  ", "zai", "  12345678abcdef  ", None).unwrap();
-        add_plan(&dir, "glm", "备用", "bigmodel", "fedcba9876543210", None).unwrap();
+        add_plan(&dir, "glm", "  主号  ", "zai", "  12345678abcdef  ", None, None).unwrap();
+        add_plan(&dir, "glm", "备用", "bigmodel", "fedcba9876543210", None, None).unwrap();
         add_plan(
             &dir,
             "sub2api",
@@ -239,6 +259,7 @@ mod tests {
             "",
             "sk-abcdef123456",
             Some("  https://sub.example.com/  "),
+            None,
         )
         .unwrap();
         let entries = read_stored(&dir).entries;
@@ -293,10 +314,10 @@ mod tests {
     #[test]
     fn entry_ids_are_never_reused() {
         let dir = temp_dir("ids");
-        add_plan(&dir, "glm", "甲", "zai", "12345678abcdef", None).unwrap();
-        add_plan(&dir, "glm", "乙", "zai", "12345678abcdef", None).unwrap();
+        add_plan(&dir, "glm", "甲", "zai", "12345678abcdef", None, None).unwrap();
+        add_plan(&dir, "glm", "乙", "zai", "12345678abcdef", None, None).unwrap();
         remove_plan(&dir, "2").unwrap();
-        add_plan(&dir, "glm", "丙", "zai", "12345678abcdef", None).unwrap();
+        add_plan(&dir, "glm", "丙", "zai", "12345678abcdef", None, None).unwrap();
         let stored = read_stored(&dir);
         let ids: Vec<&str> = stored.entries.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["1", "3"]);
@@ -306,7 +327,7 @@ mod tests {
         assert_eq!(read_stored(&dir).entries.len(), 2);
 
         remove_plan(&dir, "1").unwrap();
-        add_plan(&dir, "glm", "丁", "zai", "12345678abcdef", None).unwrap();
+        add_plan(&dir, "glm", "丁", "zai", "12345678abcdef", None, None).unwrap();
         let stored = read_stored(&dir);
         let ids: Vec<&str> = stored.entries.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["3", "4"]);
@@ -326,7 +347,7 @@ mod tests {
         )
         .unwrap();
         remove_plan(&dir, "5").unwrap();
-        add_plan(&dir, "glm", "新的", "zai", "12345678abcdef", None).unwrap();
+        add_plan(&dir, "glm", "新的", "zai", "12345678abcdef", None, None).unwrap();
         let stored = read_stored(&dir);
         assert_eq!(stored.entries[0].id, "6");
     }

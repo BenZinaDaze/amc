@@ -255,6 +255,7 @@ async fn add_subscription_plan(
             &platform,
             &key,
             base_url.as_deref(),
+            None,
         )?;
         Ok(subscription::Message {
             message: format!("已添加订阅套餐 {name}"),
@@ -307,6 +308,22 @@ async fn remove_subscription_plan(
     .map_err(|e| format!("后台操作失败: {e}"))?
 }
 
+#[tauri::command]
+async fn antigravity_login_and_add(
+    app: tauri::AppHandle,
+    name: String,
+) -> platform::Result<subscription::Message> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        subscription::antigravity_login_and_add(&data_dir, &name)?;
+        Ok(subscription::Message {
+            message: format!("已添加订阅套餐 {name}"),
+        })
+    })
+    .await
+    .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -343,7 +360,8 @@ pub fn run() {
             list_subscription_kinds,
             add_subscription_plan,
             update_subscription_plan,
-            remove_subscription_plan
+            remove_subscription_plan,
+            antigravity_login_and_add
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

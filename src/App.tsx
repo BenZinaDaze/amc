@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import ompIcon from "./assets/omp.svg";
 import zaiIcon from "./assets/zai.svg";
 import sub2apiIcon from "./assets/sub2api.svg";
+import antigravityIcon from "./assets/antigravity.svg";
 import { version } from "../package.json";
 import { api, type ClaudeCodeStatus, type CodexStatus, type McpAgent, type McpServer, type Plan, type Repository, type RepositorySkill, type Skill, type SkillTarget, type State, type SubscriptionKind, type SubscriptionStatus, type UsageRange, type UsageStats, type Workspace } from "./api";
 import "./App.css";
@@ -1156,7 +1157,7 @@ function PlanFormModal({ form, onClose, onSaved }: {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const selected = kinds.find((entry) => entry.id === kind);
-
+  const isOAuth = selected?.auth === "oauth";
   // Catalog from the backend drives the kind picker and the credential
   // fields; the name follows the picked kind until the user edits it.
   useEffect(() => {
@@ -1173,12 +1174,19 @@ function PlanFormModal({ form, onClose, onSaved }: {
   }, [editing]);
   const needsUrl = !!selected?.urlLabel;
   const submit = async () => {
-    if (saving || !name.trim() || (!editing && !key.trim()) || (needsUrl && !baseUrl.trim())) return;
+    if (saving || !name.trim() || (!isOAuth && !editing && !key.trim()) || (needsUrl && !baseUrl.trim())) return;
     setSaving(true);
     setError("");
     try {
-      if (editing) await api.updateSubscriptionPlan(editing.id, name.trim(), platform, key.trim(), baseUrl.trim());
-      else await api.addSubscriptionPlan(kind, name.trim(), platform, key.trim(), baseUrl.trim());
+      if (isOAuth) {
+        // 登录型套餐：添加走浏览器 OAuth（凭据只在后端落地），编辑只改名。
+        if (editing) await api.updateSubscriptionPlan(editing.id, name.trim(), "", "", "");
+        else await api.antigravityLogin(name.trim());
+      } else if (editing) {
+        await api.updateSubscriptionPlan(editing.id, name.trim(), platform, key.trim(), baseUrl.trim());
+      } else {
+        await api.addSubscriptionPlan(kind, name.trim(), platform, key.trim(), baseUrl.trim());
+      }
       onSaved();
     } catch (reason) {
       setError(errorText(reason));
@@ -1222,14 +1230,17 @@ function PlanFormModal({ form, onClose, onSaved }: {
           {needsUrl && <label>{selected?.urlLabel}
             <input value={baseUrl} placeholder={selected?.urlPlaceholder ?? "https://…"} onChange={(event) => setBaseUrl(event.target.value)} />
           </label>}
-          <label>{selected?.keyLabel ?? "凭据 Key"}
+          {!isOAuth && <label>{selected?.keyLabel ?? "凭据 Key"}
             <input type="password" value={key} autoComplete="off" placeholder={editing ? `留空则保留现有 Key（${editing.keyHint ?? "已保存"}）` : selected?.keyPlaceholder ?? "粘贴凭据 Key"} onChange={(event) => setKey(event.target.value)} />
-          </label>
+          </label>}
+          {isOAuth && !editing && <div className="subscription-oauth">
+            <small className="form-hint">点击后打开浏览器完成 Google 授权；需要 Google AI Pro / Ultra 订阅的账号，凭据只保存在本机。</small>
+          </div>}
         </div>
         {error && <small className="subscription-form-error" role="alert">{error}</small>}
         <div className="modal-actions">
           <button className="button button-muted" type="button" onClick={onClose}>取消</button>
-          <button className="button button-primary" type="submit" disabled={saving || !name.trim() || (!editing && !key.trim()) || (needsUrl && !baseUrl.trim())}>{saving ? "保存中…" : editing ? "保存" : "添加"}</button>
+          <button className="button button-primary" type="submit" disabled={saving || !name.trim() || (!isOAuth && !editing && !key.trim()) || (needsUrl && !baseUrl.trim())}>{saving ? (isOAuth && !editing ? "等待浏览器授权…" : "保存中…") : isOAuth && !editing ? "通过 Google 登录" : editing ? "保存" : "添加"}</button>
         </div>
       </form>
     </div>
@@ -1239,7 +1250,7 @@ function PlanFormModal({ form, onClose, onSaved }: {
 function SubscriptionCard({ status, onMenu }: { status: SubscriptionStatus; onMenu: (status: SubscriptionStatus, x: number, y: number) => void }) {
   return <article className="subscription-card" onContextMenu={(event) => { event.preventDefault(); onMenu(status, event.clientX, event.clientY); }}>
     <div className="subscription-head">
-      <span className="subscription-icon"><img src={status.provider === "sub2api" ? sub2apiIcon : zaiIcon} alt="" /></span>
+      <span className="subscription-icon"><img src={status.provider === "antigravity" ? antigravityIcon : status.provider === "sub2api" ? sub2apiIcon : zaiIcon} alt="" /></span>
       <div className="subscription-title">
         <h3>{status.title}{status.plan && <span className="tag tag-muted">{status.plan}</span>}</h3>
       </div>

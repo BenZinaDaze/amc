@@ -14,6 +14,7 @@ use crate::platform::Result;
 use serde::Serialize;
 use std::path::Path;
 
+mod antigravity;
 mod glm;
 mod store;
 mod sub2api;
@@ -102,6 +103,8 @@ pub struct SubscriptionKind {
     pub key_label: &'static str,
     /// Placeholder inside the credential input.
     pub key_placeholder: &'static str,
+    /// `key`：表单粘贴凭据；`oauth`：走供应商登录流程，凭据不出后端。
+    pub auth: &'static str,
     /// `(value, label)` endpoint choices; the first is the default.
     pub platforms: &'static [(&'static str, &'static str)],
     /// Label above the instance-URL input; `None` hides it.
@@ -118,6 +121,7 @@ const KINDS: &[SubscriptionKind] = &[
         title: "GLM Coding Plan",
         key_label: "GLM API Key",
         key_placeholder: "粘贴 GLM API Key",
+        auth: "key",
         platforms: &[
             ("zai", "Z.ai（国际版）"),
             ("bigmodel", "智谱 BigModel（中国）"),
@@ -130,9 +134,20 @@ const KINDS: &[SubscriptionKind] = &[
         title: "Sub2API",
         key_label: "Sub2API Key",
         key_placeholder: "粘贴 Sub2API API Key（sk-…）",
+        auth: "key",
         platforms: &[],
         url_label: Some("实例地址"),
         url_placeholder: Some("例如 https://sub2api.example.com"),
+    },
+    SubscriptionKind {
+        id: "antigravity",
+        title: "Google Antigravity",
+        key_label: "",
+        key_placeholder: "",
+        auth: "oauth",
+        platforms: &[],
+        url_label: None,
+        url_placeholder: None,
     },
 ];
 
@@ -191,6 +206,7 @@ fn fetch_entry(entry: &store::StoredSubscription) -> Result<ProviderReport> {
     match entry.kind.as_str() {
         "glm" => glm::fetch_entry(entry),
         "sub2api" => sub2api::fetch_entry(entry),
+        "antigravity" => antigravity::fetch_entry(entry),
         other => Err(format!("未知的订阅套餐: {other}")),
     }
 }
@@ -243,4 +259,20 @@ pub fn fetch_all(data_dir: &Path) -> Vec<SubscriptionStatus> {
             })
             .collect()
     })
+}
+
+/// 登录型供应商的添加入口：跑完 OAuth 流程后直接落库，refresh token
+/// 只进存储、不出后端。名称先校验，避免浏览器打开后才发现名称非法。
+pub fn antigravity_login_and_add(data_dir: &Path, name: &str) -> Result<()> {
+    let name = store::validate_name(name)?;
+    let login = antigravity::login()?;
+    store::add_plan(
+        data_dir,
+        "antigravity",
+        &name,
+        "",
+        &login.refresh_token,
+        None,
+        login.account.as_deref(),
+    )
 }
