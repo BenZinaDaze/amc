@@ -1,10 +1,13 @@
 #!/bin/sh
 # Blocks tag pushes when the release notes file is missing, empty, or does
 # not explicitly acknowledge every feat commit added since the previous
-# tag.
+# tag. A verified tag also kicks off a background cargo clean: the
+# release is CI's job from here, so the local build tree is dropped
+# right away — a failed CI run simply pays a full local rebuild.
 # Enable once per clone: git config core.hooksPath githooks
 zero=0000000000000000000000000000000000000000
 status=0
+releasing=0
 
 # git sends one "<local-ref> <local-oid> <remote-ref> <remote-oid>" line
 # per ref. The REMOTE ref is what will be created — the release tag and
@@ -15,6 +18,7 @@ status=0
 while read -r _local_ref local_oid remote_ref _remote_oid; do
   case "$remote_ref" in refs/tags/v*) ;; *) continue ;; esac
   [ "$local_oid" = "$zero" ] && continue
+  releasing=1
   tag=${remote_ref#refs/tags/}
   notes="docs/releases/$tag.md"
   if [ ! -s "$notes" ] || ! grep -q '[^[:space:]]' "$notes"; then
@@ -57,4 +61,17 @@ while read -r _local_ref local_oid remote_ref _remote_oid; do
     status=1
   fi
 done
+
+# The gate passed for a release tag: the release is now CI's job and the
+# local build tree (often 20+ GB after test builds) has served its
+# purpose. Pushing reads only .git objects, never target/, so deleting it
+# here cannot break the push. Detached: the push must not wait on the
+# removal of ~80k build files.
+if [ "$status" -eq 0 ] && [ "$releasing" -eq 1 ]; then
+  root=$(git rev-parse --show-toplevel)
+  if command -v cargo >/dev/null 2>&1 && [ -d "$root/src-tauri/target" ]; then
+    echo "release tag verified: cargo clean running in background (src-tauri/target)"
+    ( cd "$root/src-tauri" && nohup cargo clean >/dev/null 2>&1 & )
+  fi
+fi
 exit $status
