@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { listen } from "@tauri-apps/api/event";
 import ompIcon from "./assets/omp.svg";
 import zaiIcon from "./assets/zai.svg";
 import sub2apiIcon from "./assets/sub2api.svg";
@@ -287,13 +288,43 @@ function App() {
     setSubscriptionsLoading(true);
     setSubscriptionsError("");
     try {
-      const next = await api.fetchSubscriptions();
+      const next = await api.fetchSubscriptions(request);
       if (request === subscriptionsLoadId.current) setSubscriptions(next);
     } catch (reason) {
       if (request === subscriptionsLoadId.current) setSubscriptionsError(`读取订阅配额失败：${errorText(reason)}`);
     } finally {
       if (request === subscriptionsLoadId.current) setSubscriptionsLoading(false);
     }
+  }, []);
+
+  // 订阅卡片逐张流入：后端先发占位卡片（subscription-load），之后每查完一张
+  // 发一次 subscription-status，前端按 nonce 丢弃过期请求的残留事件。刷新时
+  // 旧数据原地保留、逐张更新；命令返回值兜底为权威列表。
+  useEffect(() => {
+    const unlistenLoad = listen<{ nonce: number; statuses: SubscriptionStatus[] }>("subscription-load", (event) => {
+      if (event.payload.nonce !== subscriptionsLoadId.current) return;
+      setSubscriptions((prev) => {
+        // 以存储顺序为基准对齐成员；已有数据的卡片保留旧值等待更新。
+        if (!prev) return event.payload.statuses;
+        return event.payload.statuses.map((placeholder) => prev.find((entry) => entry.id === placeholder.id) ?? placeholder);
+      });
+    });
+    const unlistenStatus = listen<{ nonce: number; status: SubscriptionStatus }>("subscription-status", (event) => {
+      if (event.payload.nonce !== subscriptionsLoadId.current) return;
+      const incoming = event.payload.status;
+      setSubscriptions((prev) => {
+        if (!prev) return [incoming];
+        const index = prev.findIndex((entry) => entry.id === incoming.id);
+        if (index < 0) return [...prev, incoming];
+        const next = [...prev];
+        next[index] = incoming;
+        return next;
+      });
+    });
+    return () => {
+      void unlistenLoad.then((unlisten) => unlisten());
+      void unlistenStatus.then((unlisten) => unlisten());
+    };
   }, []);
 
   const removeSubscription = useCallback(async (id: string) => {
@@ -1263,9 +1294,11 @@ function SubscriptionCard({ status, onMenu }: { status: SubscriptionStatus; onMe
         <h3>{status.title}{status.plan && <span className="tag tag-muted">{status.plan}</span>}</h3>
       </div>
     </div>
-    {status.error
-      ? <div className="subscription-error" role="alert"><Glyph name="warning" size={16} /><span>{status.error}</span></div>
-      : <>
+    {status.pending
+      ? <div className="subscription-pending" role="status"><span className="spinner" />正在查询配额…</div>
+      : status.error
+        ? <div className="subscription-error" role="alert"><Glyph name="warning" size={16} /><span>{status.error}</span></div>
+        : <>
         <div className="quota-list">
           {status.quotas.map((quota) => {
             // 预付费余额不是用量：纯金额行，无百分比无计量条。

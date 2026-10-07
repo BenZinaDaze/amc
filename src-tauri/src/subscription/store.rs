@@ -208,9 +208,10 @@ fn next_entry_id(stored: &mut StoredSubscriptions) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::subscription::fetch_all;
+    use crate::subscription::{fetch_all, fetch_all_streaming, FetchEvent};
     use serde_json::json;
     use std::path::PathBuf;
+    use parking_lot::Mutex;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("amc-stored-{name}"));
@@ -309,6 +310,63 @@ mod tests {
         assert_eq!(statuses[0].key_hint.as_deref(), Some("…3210"));
         assert_eq!(statuses[1].provider, "sub2api");
         assert_eq!(statuses[1].base_url.as_deref(), Some("http://127.0.0.1:9"));
+    }
+
+    #[test]
+    fn streaming_paints_placeholders_then_one_ready_per_entry() {
+        let dir = temp_dir("streaming");
+        // Empty store: a single Begin with no cards.
+        let events = Mutex::new(Vec::new());
+        let statuses = fetch_all_streaming(&dir, |event| events.lock().push(event));
+        assert!(statuses.is_empty());
+        assert!(matches!(
+            &events.into_inner()[0],
+            FetchEvent::Begin(list) if list.is_empty()
+        ));
+
+        // Connection-refused URLs keep the queries offline and fast.
+        add_plan(
+            &dir,
+            "sub2api",
+            "甲",
+            "",
+            "sk-abcdef123456",
+            Some("http://127.0.0.1:9"),
+            None,
+        )
+        .unwrap();
+        add_plan(
+            &dir,
+            "sub2api",
+            "乙",
+            "",
+            "sk-abcdef123456",
+            Some("http://127.0.0.1:9"),
+            None,
+        )
+        .unwrap();
+        let events = Mutex::new(Vec::new());
+        let statuses = fetch_all_streaming(&dir, |event| events.lock().push(event));
+        // The returned list keeps stored order regardless of completion order.
+        let ids: Vec<&str> = statuses.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["1", "2"]);
+        assert!(statuses.iter().all(|s| !s.pending && s.error.is_some()));
+
+        let events = events.into_inner();
+        let FetchEvent::Begin(placeholders) = &events[0] else {
+            panic!("first event must be Begin");
+        };
+        assert_eq!(placeholders.len(), 2);
+        assert!(placeholders.iter().all(|s| s.pending && s.quotas.is_empty()));
+        let ready: Vec<&str> = events[1..]
+            .iter()
+            .map(|event| match event {
+                FetchEvent::Ready(status) => status.id.as_str(),
+                FetchEvent::Begin(_) => panic!("Begin must be the first event"),
+            })
+            .collect();
+        assert_eq!(ready.len(), 2);
+        assert!(ready.contains(&"1") && ready.contains(&"2"));
     }
 
     #[test]

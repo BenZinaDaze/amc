@@ -11,7 +11,8 @@ mod usage;
 mod workspace;
 
 use std::sync::{Arc, Mutex};
-use tauri::{Manager, State};
+use serde::Serialize;
+use tauri::{Emitter, Manager, State};
 
 type Shared = Arc<Mutex<operations::Core>>;
 
@@ -222,14 +223,50 @@ async fn refresh_pricing(app: tauri::AppHandle) -> platform::Result<String> {
         .map_err(|e| format!("后台操作失败: {e}"))?
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SubscriptionLoadEvent<'a> {
+    nonce: u64,
+    statuses: &'a [subscription::SubscriptionStatus],
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SubscriptionStatusEvent<'a> {
+    nonce: u64,
+    status: &'a subscription::SubscriptionStatus,
+}
+
 #[tauri::command]
 async fn fetch_subscriptions(
     app: tauri::AppHandle,
+    nonce: u64,
 ) -> platform::Result<Vec<subscription::SubscriptionStatus>> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || Ok(subscription::fetch_all(&data_dir)))
-        .await
-        .map_err(|e| format!("后台操作失败: {e}"))?
+    // Cards stream in one by one (`subscription-load` placeholders, then one
+    // `subscription-status` per finished query) so the UI never waits for the
+    // slowest vendor; `nonce` lets the frontend drop stale requests' events.
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(subscription::fetch_all_streaming(&data_dir, |event| match &event {
+            subscription::FetchEvent::Begin(statuses) => {
+                let _ = app.emit(
+                    "subscription-load",
+                    SubscriptionLoadEvent {
+                        nonce,
+                        statuses: statuses.as_slice(),
+                    },
+                );
+            }
+            subscription::FetchEvent::Ready(status) => {
+                let _ = app.emit(
+                    "subscription-status",
+                    SubscriptionStatusEvent { nonce, status },
+                );
+            }
+        }))
+    })
+    .await
+    .map_err(|e| format!("后台操作失败: {e}"))?
 }
 
 #[tauri::command]

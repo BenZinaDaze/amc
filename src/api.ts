@@ -51,6 +51,7 @@ export type SubscriptionStatus = {
   plan: string | null;
   quotas: QuotaUsage[];
   metrics: MetricUsage[];
+  pending: boolean;
 };
 export type SubscriptionKind = { id: string; title: string; keyLabel: string; keyPlaceholder: string; auth: "key" | "oauth"; platforms: [string, string][]; urlLabel: string | null; urlPlaceholder: string | null };
 export type ClaudeCodeStatus = { installed: boolean; version: string };
@@ -76,7 +77,7 @@ export const api = {
   planSkill: (repositoryId: number, skillPath: string) => invoke<Plan>("plan_skill", { repositoryId, skillPath }),
   planSkillToggle: (name: string, target: SkillTarget, enabled: boolean) => invoke<Plan>("plan_skill_toggle", { name, target, enabled }),
   planSkillRemove: (name: string) => invoke<Plan>("plan_skill_remove", { name }),
-  fetchSubscriptions: () => invoke<SubscriptionStatus[]>("fetch_subscriptions"),
+  fetchSubscriptions: (nonce: number) => invoke<SubscriptionStatus[]>("fetch_subscriptions", { nonce }),
   listSubscriptionKinds: () => invoke<SubscriptionKind[]>("list_subscription_kinds"),
   addSubscriptionPlan: (kind: string, name: string, platform: string, key: string, baseUrl: string) => invoke<Message>("add_subscription_plan", { kind, name, platform, key, baseUrl: baseUrl || null }),
   updateSubscriptionPlan: (id: string, name: string, platform: string, key: string, baseUrl: string) => invoke<Message>("update_subscription_plan", { id, name, platform, key: key || null, baseUrl: baseUrl || null }),

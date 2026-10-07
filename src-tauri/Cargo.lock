@@ -50,6 +50,7 @@ version = "0.4.3"
 dependencies = [
  "chrono",
  "filetime",
+ "parking_lot",
  "rusqlite",
  "serde",
  "serde_json",

@@ -23,7 +23,7 @@ pub use store::{add_plan, remove_plan, update_plan};
 
 // ---------------------------------------------------------------- normalized
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 /// One card per entry, queried in parallel so several keys stay responsive.
 pub struct SubscriptionStatus {
@@ -43,6 +43,8 @@ pub struct SubscriptionStatus {
     pub plan: Option<String>,
     pub quotas: Vec<QuotaUsage>,
     pub metrics: Vec<MetricUsage>,
+    /// True until this entry's query finished; pending cards render as skeletons.
+    pub pending: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -222,7 +224,7 @@ fn fetch_entry(entry: &store::StoredSubscription) -> Result<ProviderReport> {
     }
 }
 
-fn subscription_status(entry: &store::StoredSubscription) -> SubscriptionStatus {
+fn placeholder_status(entry: &store::StoredSubscription) -> SubscriptionStatus {
     SubscriptionStatus {
         id: entry.id.clone(),
         provider: entry.kind.clone(),
@@ -234,28 +236,51 @@ fn subscription_status(entry: &store::StoredSubscription) -> SubscriptionStatus 
         plan: None,
         quotas: Vec::new(),
         metrics: Vec::new(),
+        pending: true,
     }
 }
 
+/// Progressive [`fetch_all`]: `Begin` carries one placeholder per stored entry
+/// (stored order) before any query starts, then one `Ready` per finished query
+/// in completion order, so callers can paint cards as data arrives.
+#[derive(Debug, Clone)]
+pub enum FetchEvent {
+    Begin(Vec<SubscriptionStatus>),
+    Ready(SubscriptionStatus),
+}
+
 /// One card per entry, queried in parallel so several keys stay responsive.
-pub fn fetch_all(data_dir: &Path) -> Vec<SubscriptionStatus> {
+pub fn fetch_all_streaming<F>(data_dir: &Path, on_event: F) -> Vec<SubscriptionStatus>
+where
+    F: Fn(FetchEvent) + Sync,
+{
     let stored = store::read_stored(data_dir);
+    on_event(FetchEvent::Begin(
+        stored.entries.iter().map(placeholder_status).collect(),
+    ));
+    let on_event = &on_event;
     std::thread::scope(|scope| {
         let handles: Vec<_> = stored
             .entries
             .iter()
             .map(|entry| {
-                scope.spawn(move || match fetch_entry(entry) {
-                    Ok(report) => SubscriptionStatus {
-                        plan: report.plan,
-                        quotas: report.quotas,
-                        metrics: report.metrics,
-                        ..subscription_status(entry)
-                    },
-                    Err(error) => SubscriptionStatus {
-                        error: Some(error),
-                        ..subscription_status(entry)
-                    },
+                scope.spawn(move || {
+                    let status = match fetch_entry(entry) {
+                        Ok(report) => SubscriptionStatus {
+                            plan: report.plan,
+                            quotas: report.quotas,
+                            metrics: report.metrics,
+                            pending: false,
+                            ..placeholder_status(entry)
+                        },
+                        Err(error) => SubscriptionStatus {
+                            error: Some(error),
+                            pending: false,
+                            ..placeholder_status(entry)
+                        },
+                    };
+                    on_event(FetchEvent::Ready(status.clone()));
+                    status
                 })
             })
             .collect();
@@ -265,11 +290,18 @@ pub fn fetch_all(data_dir: &Path) -> Vec<SubscriptionStatus> {
             .map(|(handle, entry)| {
                 handle.join().unwrap_or_else(|_| SubscriptionStatus {
                     error: Some("查询订阅失败".to_owned()),
-                    ..subscription_status(entry)
+                    pending: false,
+                    ..placeholder_status(entry)
                 })
             })
             .collect()
     })
+}
+
+/// Aggregate variant for tests; production streams via [`fetch_all_streaming`].
+#[cfg(test)]
+pub fn fetch_all(data_dir: &Path) -> Vec<SubscriptionStatus> {
+    fetch_all_streaming(data_dir, |_| {})
 }
 
 /// 登录型供应商的添加入口：跑完 OAuth 流程后直接落库，refresh token

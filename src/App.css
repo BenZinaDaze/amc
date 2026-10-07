@@ -310,6 +310,8 @@ textarea{resize:vertical;line-height:1.55}
 .subscription-title{min-width:0;flex:1}
 .subscription-title h3{display:flex;align-items:center;gap:9px;margin:0;font-size:15px}
 .subscription-error{display:flex;align-items:flex-start;gap:9px;margin-top:14px;padding:11px 13px;border:1px solid #f2d3d7;border-radius:9px;background:#fdf4f5;color:#b44050;font-size:12px;line-height:1.55}
+.subscription-pending{display:flex;align-items:center;gap:10px;margin-top:17px;color:#8792a5;font-size:12px}
+.subscription-pending .spinner{width:14px;height:14px;flex-shrink:0}
 .subscription-error svg{flex-shrink:0;margin-top:1px;color:#c65262}
 .quota-list{display:grid;gap:15px;margin-top:17px}
 .quota-row{min-width:0}
