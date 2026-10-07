@@ -280,9 +280,13 @@ function App() {
   const pendingUsageSync = useRef<Promise<UsageStats> | null>(null);
   const [planForm, setPlanForm] = useState<{ mode: "add" } | { mode: "edit"; status: SubscriptionStatus } | null>(null);
   const [cardMenu, setCardMenu] = useState<{ x: number; y: number; status: SubscriptionStatus; confirming: boolean } | null>(null);
+  const subscriptionsListening = useRef<Promise<void> | null>(null);
 
   const loadSubscriptions = useCallback(async (force: boolean) => {
     if (!force && Date.now() - subscriptionsFetchedAt.current < 60_000) return;
+    // listen() 是异步 IPC：首个请求必须等监听器注册完成，否则最早的事件
+    // 可能落在注册前被丢掉，首屏退化回整屏等待。
+    await subscriptionsListening.current;
     const request = ++subscriptionsLoadId.current;
     subscriptionsFetchedAt.current = Date.now();
     setSubscriptionsLoading(true);
@@ -321,6 +325,7 @@ function App() {
         return next;
       });
     });
+    subscriptionsListening.current = Promise.all([unlistenLoad, unlistenStatus]).then(() => {}, () => {});
     return () => {
       void unlistenLoad.then((unlisten) => unlisten());
       void unlistenStatus.then((unlisten) => unlisten());
