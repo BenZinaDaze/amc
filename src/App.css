@@ -287,10 +287,8 @@ textarea{resize:vertical;line-height:1.55}
 .omp-chart svg{display:block;min-width:560px;width:100%;height:auto;overflow:visible}
 .omp-chart-grid{stroke:#e9ecf3;stroke-width:1}
 .omp-chart-label{fill:#8792a5;font-size:11px}
-.omp-chart-area{fill:var(--accent-soft)}
-.omp-chart-line{fill:none;stroke:var(--accent);stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
-.omp-chart-point{fill:#fff;stroke:var(--accent);stroke-width:2}
-.omp-chart-point.active{fill:var(--accent)}
+.omp-chart-bar{fill:var(--accent);opacity:.5;transition:opacity .12s}
+.omp-chart-bar.active{opacity:1}
 .omp-chart-hit{fill:transparent;cursor:crosshair}
 .omp-chart-hit:focus-visible{stroke:var(--accent);stroke-width:1;outline:none}
 .omp-chart-tooltip{pointer-events:none}
