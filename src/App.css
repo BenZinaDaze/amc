@@ -158,7 +158,10 @@ textarea{resize:vertical;line-height:1.55}
 .segmented button{border:0;background:transparent;color:#7d8698;border-radius:8px;padding:7px 17px;font-size:12px;font-weight:700}
 .segmented button.active{background:#fff;color:var(--accent-deep);box-shadow:0 2px 6px #222a4617}
 .checkbox-row{display:flex;flex-direction:row;align-items:center;gap:8px}
-.checkbox-row input{accent-color:var(--accent)}
+.checkbox-row input{appearance:none;-webkit-appearance:none;flex-shrink:0;width:15px;height:15px;margin:0;border:1.5px solid #c6cdd9;border-radius:4px;background:#fff;display:grid;place-items:center;cursor:pointer;transition:border-color .15s,background-color .15s}
+.checkbox-row input:hover{border-color:#aab3c4}
+.checkbox-row input:checked{border-color:var(--accent);background:var(--accent)}
+.checkbox-row input:checked::after{content:'';width:9px;height:9px;background:#fff;clip-path:polygon(12% 46%,0 64%,42% 100%,100% 18%,84% 4%,40% 68%)}
 .field-label{display:block;font-size:12px;color:#566073;font-weight:700;margin-bottom:8px}
 .code-editor,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
 
@@ -339,19 +342,19 @@ textarea{resize:vertical;line-height:1.55}
 .metric-chip svg{color:var(--accent-icon)}
 .metric-chip strong{color:#293449;font-variant-numeric:tabular-nums}
 .subscription-form{display:grid;gap:14px;margin-top:14px}
-.subscription-form select,.subscription-form input{font:inherit;font-size:12px;height:38px}
-.subscription-form select{
-  -webkit-appearance:none;
-  appearance:none;
-  display:block;width:100%;box-sizing:border-box;
-  border:1px solid #e2e6ee;border-radius:8px;background:#fff;color:#313a4e;
-  padding:10px 30px 10px 11px;outline:0;
-  transition:border-color .15s,box-shadow .15s;
-  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%237d8698' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat:no-repeat;background-position:right 11px center;
-}
-.subscription-form select:hover{border-color:#d4dae6}
-.subscription-form select:focus,.subscription-form input:focus{border-color:var(--accent-focus);box-shadow:0 0 0 3px #8478eb1c}
+.subscription-form input{font:inherit;font-size:12px;height:38px}
+.select-field{display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;height:38px;padding:10px 11px;border:1px solid #e2e6ee;border-radius:8px;background:#fff;color:#313a4e;font:inherit;font-size:12px;text-align:left;transition:border-color .15s,box-shadow .15s}
+.select-field:hover{border-color:#d4dae6}
+.select-field:focus-visible,.select-field.open{outline:0;border-color:var(--accent-focus);box-shadow:0 0 0 3px #8478eb1c}
+.select-field-value{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.select-field-chevron{display:grid;place-items:center;flex-shrink:0;color:#7d8698}
+.select-field-chevron svg{transform:rotate(90deg);transition:transform .15s}
+.select-field.open .select-field-chevron svg{transform:rotate(-90deg)}
+.select-menu{position:fixed;z-index:20;display:grid;padding:5px;background:#fff;border:1px solid #e8ebf1;border-radius:10px;box-shadow:0 12px 32px #26314b24}
+.select-option{display:flex;align-items:center;justify-content:space-between;gap:12px;border-radius:7px;padding:8px 11px;color:#293449;font-size:12px;font-weight:500;cursor:pointer;white-space:nowrap}
+.select-option.active{background:#f1f3f8}
+.select-option.selected{color:var(--accent-deep);font-weight:700}
+.select-option svg{color:var(--accent-deep)}
 .subscription-form-error{display:block;margin-top:10px;color:#b44050;font-size:12px}
 .form-hint{display:block;color:#8792a5;font-size:12px;line-height:1.6}
 .card-menu{position:fixed;z-index:20;display:grid;min-width:136px;padding:5px;background:#fff;border:1px solid #e8ebf1;border-radius:10px;box-shadow:0 12px 32px #26314b24}
