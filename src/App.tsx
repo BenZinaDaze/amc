@@ -216,6 +216,7 @@ const navigation: { id: Page; title: string; icon: string; group?: boolean; chil
 
 function App() {
   const [page, setPage] = useState<Page>("overview");
+  const [agentsNavOpen, setAgentsNavOpen] = useState(true);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [state, setState] = useState<State | null>(null);
   const [loading, setLoading] = useState(true);
@@ -839,8 +840,9 @@ function App() {
         <div className="brand"><span className="brand-mark"><img src="/amc.svg" alt="" /></span><div><strong>AMC</strong><small>Agent Management Center</small></div></div>
         <div className="sidebar-caption">通用来源</div>
         <nav aria-label="主导航" className="navigation">
-          {navigation.map((item) => <div key={item.id} className={`nav-section${item.group ? " group" : ""}${item.child ? " nav-child" : ""}`}>
-            <button className={`nav-item ${page === item.id ? "selected" : ""}`} onClick={() => setPage(item.id)} aria-current={page === item.id ? "page" : undefined}>{item.icon === "omp" ? <img className="omp-nav-icon" src={ompIcon} alt="" /> : <Glyph name={item.icon} size={19} />}<span>{item.title}</span>{item.id === "agents" && <Glyph name="arrow" size={15} />}</button>
+          {navigation.map((item) => <div key={item.id} className={`nav-section${item.group ? " group" : ""}${item.child ? " nav-child" : ""}${item.child && !agentsNavOpen ? " collapsed" : ""}`}>
+            <button className={`nav-item ${page === item.id ? "selected" : ""}`} onClick={() => setPage(item.id)} aria-current={page === item.id ? "page" : undefined}>{item.icon === "omp" ? <img className="omp-nav-icon" src={ompIcon} alt="" /> : <Glyph name={item.icon} size={19} />}<span>{item.title}</span></button>
+            {item.id === "agents" && <button type="button" className="nav-group-toggle" aria-expanded={agentsNavOpen} aria-label={agentsNavOpen ? "折叠 Agents 分组" : "展开 Agents 分组"} title={agentsNavOpen ? "折叠 Agents 分组" : "展开 Agents 分组"} onClick={() => setAgentsNavOpen((open) => !open)}><Glyph name="arrow" size={15} /></button>}
           </div>)}
         </nav>
         <div className="sidebar-bottom"><div className="sidebar-orbit"><Glyph name="shield" size={15} /><span>写入前预览确认</span></div><div className="sidebar-version"><span>版本</span><strong>{version}</strong></div></div>

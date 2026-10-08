@@ -45,6 +45,13 @@ svg{flex-shrink:0}
 .nav-section:first-child{margin-top:0}
 .nav-child{margin-left:17px;position:relative}
 .nav-child:before{content:'';position:absolute;left:-1px;top:-6px;bottom:-6px;width:1px;background:#354158}
+.nav-section{position:relative}
+.nav-child.collapsed{display:none}
+.nav-group-toggle{position:absolute;top:50%;right:5px;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;background:none;border:0;border-radius:7px;color:#68768f;cursor:pointer;transition:.15s}
+.nav-group-toggle:hover{background:#232e46;color:#fff}
+.nav-group-toggle:focus-visible{outline:2px solid #958cff;outline-offset:1px}
+.nav-group-toggle svg{transition:transform .15s}
+.nav-group-toggle[aria-expanded="true"] svg{transform:rotate(90deg)}
 .nav-item{width:100%;display:flex;align-items:center;gap:12px;padding:11px 13px;color:#aab5c9;background:none;border:0;border-radius:9px;font-size:13px;font-weight:600;text-align:left;transition:.15s}
 .nav-item:hover{background:#232e46;color:#fff}
 .nav-item.selected{background:#2b3562;color:#fff;box-shadow:inset 3px 0 #958cff}
@@ -380,7 +387,8 @@ textarea{resize:vertical;line-height:1.55}
   .nav-child{margin:0}
   .nav-child:before{display:none}
   .nav-item{padding:8px;gap:4px;white-space:nowrap}
-  .nav-item>svg:last-child:not(:first-child){display:none}
+  .nav-group-toggle{display:none}
+  .nav-child.collapsed{display:block}
   .nav-item span{font-size:11px}
   .content{padding-top:26px}
   .section-actions{flex-wrap:wrap;justify-content:flex-start}
