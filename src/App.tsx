@@ -109,6 +109,12 @@ function App() {
     return () => document.removeEventListener("contextmenu", suppress);
   }, []);
 
+  // 切换页面时收起上一页遗留的提示条：错误/成功提示只对触发它的页面语境有意义。
+  useEffect(() => {
+    setError("");
+    setNotice("");
+  }, [page]);
+
   useEffect(() => {
     if (!plan) return;
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape" && !busy) setPlan(null); };
