@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import ompIcon from "./assets/omp.svg";
 import { version } from "../package.json";
-import { api, type ClaudeCodeStatus, type CodexStatus, type Plan, type State, type Workspace } from "./api";
+import { api, type AppUpdate, type ClaudeCodeStatus, type CodexStatus, type Plan, type State, type Workspace } from "./api";
 import "./App.css";
 import { Glyph } from "./components/Glyph";
 import { Empty } from "./components/Empty";
@@ -15,7 +15,7 @@ import { OverviewPage } from "./pages/OverviewPage";
 import { RepositoriesPage } from "./pages/RepositoriesPage";
 import { SkillsPage } from "./pages/SkillsPage";
 import type { Page, PageProps } from "./pages/PageProps";
-import { errorText } from "./utils";
+import { errorText, isNewerVersion } from "./utils";
 
 const navigation: { id: Page; title: string; icon: string; group?: boolean; child?: boolean }[] = [
   { id: "overview", title: "概览", icon: "grid" },
@@ -42,6 +42,7 @@ function App() {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [claudeCodeStatus, setClaudeCodeStatus] = useState<ClaudeCodeStatus | null>(null);
   const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
+  const [appUpdate, setAppUpdate] = useState<AppUpdate | null>(null);
   const loadId = useRef(0);
 
   const subs = useSubscriptions();
@@ -115,6 +116,18 @@ function App() {
     setNotice("");
   }, [page]);
 
+  // 启动后延迟查询一次应用更新：不打扰首屏加载，失败静默（版本提示是纯增益）。
+  useEffect(() => {
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      api.checkAppUpdate()
+        .then((info) => { if (!cancelled && isNewerVersion(info.latest, version)) setAppUpdate(info); })
+        .catch(() => {});
+    }, 2000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, []);
+
+
   useEffect(() => {
     if (!plan) return;
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape" && !busy) setPlan(null); };
@@ -182,7 +195,7 @@ function App() {
             {item.id === "agents" && <button type="button" className="nav-group-toggle" aria-expanded={agentsNavOpen} aria-label={agentsNavOpen ? "折叠 Agents 分组" : "展开 Agents 分组"} title={agentsNavOpen ? "折叠 Agents 分组" : "展开 Agents 分组"} onClick={() => setAgentsNavOpen((open) => !open)}><Glyph name="arrow" size={15} /></button>}
           </div>)}
         </nav>
-        <div className="sidebar-bottom"><div className="sidebar-orbit"><Glyph name="shield" size={15} /><span>写入前预览确认</span></div><div className="sidebar-version"><span>版本</span><strong>{version}</strong></div></div>
+        <div className="sidebar-bottom"><div className="sidebar-orbit"><Glyph name="shield" size={15} /><span>写入前预览确认</span></div><div className="sidebar-version"><span>版本</span><strong>{version}</strong>{appUpdate && <button type="button" className="sidebar-update" onClick={() => openExternal(appUpdate.url)} title={`查看新版本 ${appUpdate.latest} 的发布说明`}><Glyph name="arrow" size={11} />有新版 {appUpdate.latest}</button>}</div></div>
       </aside>
       <main className="main-area">
         <div className="content">

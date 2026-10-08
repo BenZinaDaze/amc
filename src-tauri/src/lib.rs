@@ -8,6 +8,7 @@ mod store;
 mod test_support;
 mod subscription;
 mod usage;
+mod update;
 mod workspace;
 
 use std::sync::{Arc, Mutex};
@@ -361,6 +362,13 @@ async fn antigravity_login_and_add(
     .map_err(|e| format!("后台操作失败: {e}"))?
 }
 
+#[tauri::command]
+async fn check_app_update() -> platform::Result<update::AppUpdate> {
+    tauri::async_runtime::spawn_blocking(update::check)
+        .await
+        .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -398,7 +406,8 @@ pub fn run() {
             add_subscription_plan,
             update_subscription_plan,
             remove_subscription_plan,
-            antigravity_login_and_add
+            antigravity_login_and_add,
+            check_app_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -35,3 +35,15 @@ export function shiftDate(date: Date, days: number): Date {
   shifted.setDate(shifted.getDate() + days);
   return shifted;
 }
+
+/// 点分数字版本比较：latest 严格大于 current 才提示更新
+/// （0.5.0 > 0.4.4；相等或更旧不提示）。
+export function isNewerVersion(latest: string, current: string): boolean {
+  const a = latest.replace(/^v/, "").split(".").map(Number);
+  const b = current.replace(/^v/, "").split(".").map(Number);
+  for (let index = 0; index < Math.max(a.length, b.length); index++) {
+    const delta = (a[index] ?? 0) - (b[index] ?? 0);
+    if (delta) return delta > 0;
+  }
+  return false;
+}

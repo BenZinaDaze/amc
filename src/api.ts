@@ -56,6 +56,7 @@ export type SubscriptionStatus = {
 export type SubscriptionKind = { id: string; title: string; keyLabel: string; keyPlaceholder: string; auth: "key" | "oauth"; platforms: [string, string][]; urlLabel: string | null; urlPlaceholder: string | null };
 export type ClaudeCodeStatus = { installed: boolean; version: string };
 export type CodexStatus = { installed: boolean; version: string };
+export type AppUpdate = { latest: string; url: string };
 export const api = {
   getDefaultWorkspace: () => invoke<Workspace>("get_default_workspace"),
   getState: (workspace: Workspace) => invoke<State>("get_state", { workspace }),
@@ -83,4 +84,5 @@ export const api = {
   updateSubscriptionPlan: (id: string, name: string, platform: string, key: string, baseUrl: string) => invoke<Message>("update_subscription_plan", { id, name, platform, key: key || null, baseUrl: baseUrl || null }),
   antigravityLogin: (name: string) => invoke<Message>("antigravity_login_and_add", { name }),
   removeSubscriptionPlan: (id: string) => invoke<Message>("remove_subscription_plan", { id }),
+  checkAppUpdate: () => invoke<AppUpdate>("check_app_update"),
 };

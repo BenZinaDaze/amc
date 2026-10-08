@@ -54,6 +54,9 @@ svg{flex-shrink:0}
 .nav-group-toggle[aria-expanded="true"] svg{transform:rotate(90deg)}
 .nav-item{width:100%;display:flex;align-items:center;gap:12px;padding:11px 13px;color:#aab5c9;background:none;border:0;border-radius:9px;font-size:13px;font-weight:600;text-align:left;transition:.15s}
 .nav-item:hover{background:#232e46;color:#fff}
+.sidebar-update{display:inline-flex;align-items:center;gap:3px;margin-left:7px;padding:2px 8px;border:0;border-radius:99px;background:var(--accent);color:#fff;font-size:10px;font-weight:700;line-height:1.5;transition:background .15s}
+.sidebar-update:hover{background:var(--accent-strong)}
+.sidebar-update svg{transform:rotate(-45deg)}
 .nav-item.selected{background:#2b3562;color:#fff;box-shadow:inset 3px 0 #958cff}
 .nav-item>span{flex:1}
 .sidebar-bottom{display:flex;flex-direction:column;align-items:flex-start;gap:12px;border-top:1px solid #303a50;margin:auto 8px 0;padding:16px 0 2px}
