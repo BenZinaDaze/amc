@@ -175,7 +175,7 @@ function App() {
       <aside className="sidebar">
         <div aria-hidden="true" className="titlebar-drag" data-tauri-drag-region />
         <div className="brand"><span className="brand-mark"><img src="/amc.svg" alt="" /></span><div><strong>AMC</strong><small>Agent Management Center</small></div></div>
-        <div className="sidebar-caption">通用来源</div>
+        {/*<div className="sidebar-caption">通用来源</div>*/}
         <nav aria-label="主导航" className="navigation">
           {navigation.map((item) => <div key={item.id} className={`nav-section${item.group ? " group" : ""}${item.child ? " nav-child" : ""}${item.child && !agentsNavOpen ? " collapsed" : ""}`}>
             <button className={`nav-item ${page === item.id ? "selected" : ""}`} onClick={() => setPage(item.id)} aria-current={page === item.id ? "page" : undefined}>{item.icon === "omp" ? <img className="omp-nav-icon" src={ompIcon} alt="" /> : <Glyph name={item.icon} size={19} />}<span>{item.title}</span></button>
