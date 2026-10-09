@@ -83,6 +83,7 @@ export const api = {
   addSubscriptionPlan: (kind: string, name: string, platform: string, key: string, baseUrl: string) => invoke<Message>("add_subscription_plan", { kind, name, platform, key, baseUrl: baseUrl || null }),
   updateSubscriptionPlan: (id: string, name: string, platform: string, key: string, baseUrl: string) => invoke<Message>("update_subscription_plan", { id, name, platform, key: key || null, baseUrl: baseUrl || null }),
   antigravityLogin: (name: string) => invoke<Message>("antigravity_login_and_add", { name }),
+  cursorLogin: (name: string) => invoke<Message>("cursor_login_and_add", { name }),
   removeSubscriptionPlan: (id: string) => invoke<Message>("remove_subscription_plan", { id }),
   checkAppUpdate: () => invoke<AppUpdate>("check_app_update"),
 };

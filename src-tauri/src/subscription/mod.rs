@@ -15,6 +15,7 @@ use serde::Serialize;
 use std::path::Path;
 
 mod antigravity;
+mod cursor;
 mod deepseek;
 mod glm;
 mod store;
@@ -152,6 +153,16 @@ const KINDS: &[SubscriptionKind] = &[
         url_placeholder: None,
     },
     SubscriptionKind {
+        id: "cursor",
+        title: "Cursor",
+        key_label: "",
+        key_placeholder: "",
+        auth: "oauth",
+        platforms: &[],
+        url_label: None,
+        url_placeholder: None,
+    },
+    SubscriptionKind {
         id: "deepseek",
         title: "DeepSeek",
         key_label: "DeepSeek API Key",
@@ -219,6 +230,7 @@ fn fetch_entry(entry: &store::StoredSubscription) -> Result<ProviderReport> {
         "glm" => glm::fetch_entry(entry),
         "sub2api" => sub2api::fetch_entry(entry),
         "antigravity" => antigravity::fetch_entry(entry),
+        "cursor" => cursor::fetch_entry(entry),
         "deepseek" => deepseek::fetch_entry(entry),
         other => Err(format!("未知的订阅套餐: {other}")),
     }
@@ -315,6 +327,22 @@ pub fn antigravity_login_and_add(data_dir: &Path, name: &str) -> Result<()> {
         &name,
         "",
         &login.refresh_token,
+        None,
+        login.account.as_deref(),
+    )
+}
+
+/// Cursor 的添加入口：跑完浏览器登录流程后落库，access token 只进存储、
+/// 不出后端。名称先校验，避免浏览器打开后才发现名称非法。
+pub fn cursor_login_and_add(data_dir: &Path, name: &str) -> Result<()> {
+    let name = store::validate_name(name)?;
+    let login = cursor::login()?;
+    store::add_plan(
+        data_dir,
+        "cursor",
+        &name,
+        "",
+        &login.access_token,
         None,
         login.account.as_deref(),
     )

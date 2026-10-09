@@ -363,6 +363,22 @@ async fn antigravity_login_and_add(
 }
 
 #[tauri::command]
+async fn cursor_login_and_add(
+    app: tauri::AppHandle,
+    name: String,
+) -> platform::Result<subscription::Message> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        subscription::cursor_login_and_add(&data_dir, &name)?;
+        Ok(subscription::Message {
+            message: format!("已添加订阅套餐 {name}"),
+        })
+    })
+    .await
+    .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
+#[tauri::command]
 async fn check_app_update() -> platform::Result<update::AppUpdate> {
     tauri::async_runtime::spawn_blocking(update::check)
         .await
@@ -407,6 +423,7 @@ pub fn run() {
             update_subscription_plan,
             remove_subscription_plan,
             antigravity_login_and_add,
+            cursor_login_and_add,
             check_app_update
         ])
         .run(tauri::generate_context!())

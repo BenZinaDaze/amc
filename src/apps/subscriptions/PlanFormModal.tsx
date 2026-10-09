@@ -22,6 +22,18 @@ export function PlanFormModal({ form, onClose, onSaved }: {
   const [error, setError] = useState("");
   const selected = kinds.find((entry) => entry.id === kind);
   const isOAuth = selected?.auth === "oauth";
+  // 登录型供应商的授权文案：Google OAuth 与 Cursor 浏览器登录流程不同源。
+  const oauthCopy = kind === "cursor"
+    ? {
+        hint: "点击后打开浏览器完成 Cursor 登录；登录 token 约两个月有效，过期后删除该套餐重新登录即可，凭据只保存在本机。",
+        action: "通过 Cursor 登录",
+        waiting: "等待浏览器登录…",
+      }
+    : {
+        hint: "点击后打开浏览器完成 Google 授权；需要 Google AI Pro / Ultra 订阅的账号，凭据只保存在本机。",
+        action: "通过 Google 登录",
+        waiting: "等待浏览器授权…",
+      };
   // Catalog from the backend drives the kind picker and the credential
   // fields; the name follows the picked kind until the user edits it.
   useEffect(() => {
@@ -43,8 +55,9 @@ export function PlanFormModal({ form, onClose, onSaved }: {
     setError("");
     try {
       if (isOAuth) {
-        // 登录型套餐：添加走浏览器 OAuth（凭据只在后端落地），编辑只改名。
+        // 登录型套餐：添加走浏览器授权（凭据只在后端落地），编辑只改名。
         if (editing) await api.updateSubscriptionPlan(editing.id, name.trim(), "", "", "");
+        else if (kind === "cursor") await api.cursorLogin(name.trim());
         else await api.antigravityLogin(name.trim());
       } else if (editing) {
         await api.updateSubscriptionPlan(editing.id, name.trim(), platform, key.trim(), baseUrl.trim());
@@ -94,13 +107,13 @@ export function PlanFormModal({ form, onClose, onSaved }: {
             <input type="password" value={key} autoComplete="off" placeholder={editing ? `留空则保留现有 Key（${editing.keyHint ?? "已保存"}）` : selected?.keyPlaceholder ?? "粘贴凭据 Key"} onChange={(event) => setKey(event.target.value)} />
           </label>}
           {isOAuth && !editing && <div className="subscription-oauth">
-            <small className="form-hint">点击后打开浏览器完成 Google 授权；需要 Google AI Pro / Ultra 订阅的账号，凭据只保存在本机。</small>
+            <small className="form-hint">{oauthCopy.hint}</small>
           </div>}
         </div>
         {error && <small className="subscription-form-error" role="alert">{error}</small>}
         <div className="modal-actions">
           <button className="button button-muted" type="button" onClick={onClose}>取消</button>
-          <button className="button button-primary" type="submit" disabled={saving || !name.trim() || (!isOAuth && !editing && !key.trim()) || (needsUrl && !baseUrl.trim())}>{saving ? (isOAuth && !editing ? "等待浏览器授权…" : "保存中…") : isOAuth && !editing ? "通过 Google 登录" : editing ? "保存" : "添加"}</button>
+          <button className="button button-primary" type="submit" disabled={saving || !name.trim() || (!isOAuth && !editing && !key.trim()) || (needsUrl && !baseUrl.trim())}>{saving ? (isOAuth && !editing ? oauthCopy.waiting : "保存中…") : isOAuth && !editing ? oauthCopy.action : editing ? "保存" : "添加"}</button>
         </div>
       </form>
     </div>
