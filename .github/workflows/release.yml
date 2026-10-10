@@ -105,13 +105,22 @@ jobs:
           cd "src-tauri/target/${{ matrix.target }}/release/bundle/macos"
           mv "AMC.app.tar.gz" "AMC_${{ matrix.arch }}.app.tar.gz"
           mv "AMC.app.tar.gz.sig" "AMC_${{ matrix.arch }}.app.tar.gz.sig"
+      - name: Collect release assets
+        # upload-artifact v4 以多路径的最近公共祖先为根：dmg/ 与 macos/
+        # 两个来源会让下载侧多出 bundle/{dmg,macos}/ 两级目录。统一拷进
+        # 单目录再以单路径上传，下载 merge-multiple 后即为扁平结构，
+        # Compose 与 softprops 都按 dmg/<文件名> 直接取用。
+        run: |
+          mkdir -p release-assets
+          cp src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg release-assets/
+          cp "src-tauri/target/${{ matrix.target }}/release/bundle/macos/AMC_${{ matrix.arch }}.app.tar.gz" \
+             "src-tauri/target/${{ matrix.target }}/release/bundle/macos/AMC_${{ matrix.arch }}.app.tar.gz.sig" \
+             release-assets/
+          ls -l release-assets/
       - uses: actions/upload-artifact@v4
         with:
           name: dmg-${{ matrix.arch }}
-          path: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
-            src-tauri/target/${{ matrix.target }}/release/bundle/macos/AMC_${{ matrix.arch }}.app.tar.gz
-            src-tauri/target/${{ matrix.target }}/release/bundle/macos/AMC_${{ matrix.arch }}.app.tar.gz.sig
+          path: release-assets/*
           if-no-files-found: error
 
   release:
