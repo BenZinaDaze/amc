@@ -186,13 +186,24 @@ textarea{resize:vertical;line-height:1.55}
 .diff-list{display:flex;flex-direction:column;gap:14px;margin-bottom:18px}
 .diff-card{border:1px solid #e4e7ee;border-radius:9px;overflow:hidden}
 .diff-path{display:flex;gap:8px;align-items:center;background:#f7f8fb;border-bottom:1px solid #e4e7ee;padding:9px 12px;color:#535d70;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
-.diff-columns{display:grid;grid-template-columns:1fr 1fr}
-.diff-columns>div{min-width:0;display:flex;flex-direction:column}
-.diff-columns>div:first-child{border-right:1px solid #e4e7ee}
-.diff-label{padding:7px 12px;font-size:11px;font-weight:700}
-.before-label{color:#aa5860;background:#fff3f4}
-.after-label{color:#26846c;background:#edfaf4}
-.diff-columns pre{white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;max-height:300px;min-height:50px;padding:12px;margin:0;font-size:11px;color:#4f5b70;line-height:1.6}
+.diff-path .tag{flex-shrink:0;font-family:system-ui}
+.diff-path-text{min-width:0}
+.diff-stats{display:inline-flex;gap:7px;margin-left:auto;flex-shrink:0;font-weight:700}
+.diff-stat-add{color:#1a7f37}
+.diff-stat-del{color:#cf222e}
+.diff-body{max-height:320px;overflow:auto;background:#fff;font-size:11px;line-height:1.65;padding:5px 0}
+.diff-row{display:flex;align-items:baseline;padding-right:12px}
+.diff-no{flex-shrink:0;width:36px;padding:0 6px;text-align:right;color:#9aa3b2;user-select:none;font-variant-numeric:tabular-nums}
+.diff-sign{flex-shrink:0;width:16px;text-align:center;color:#aab3c1;user-select:none}
+.diff-text{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;color:#414d63}
+.diff-row.diff-add{background:#e9f8ee}
+.diff-row.diff-add .diff-sign{color:#1a7f37;font-weight:700}
+.diff-row.diff-add .diff-text{color:#116329}
+.diff-row.diff-del{background:#ffeeef}
+.diff-row.diff-del .diff-sign{color:#cf222e;font-weight:700}
+.diff-row.diff-del .diff-text{color:#a40e26}
+.diff-hunk{padding:3px 12px;color:#8792a5;background:#f7f8fb;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;user-select:none}
+.diff-gap{padding:3px 12px;color:#909aaa;background:#f8f9fc;font-size:11px;text-align:center}
 .empty-diff{text-align:center;color:#909aaa;background:#f8f9fc;padding:24px;border-radius:8px;font-size:12px;margin-bottom:16px}
 .repo-remove-url{color:#3d475b;font-size:13px;overflow-wrap:anywhere}
 
@@ -422,8 +433,6 @@ textarea{resize:vertical;line-height:1.55}
   .repo-form{flex-direction:column;align-items:stretch}
   .repo-form label{width:100%}
   .repo-form button{align-self:flex-start}
-  .diff-columns{grid-template-columns:1fr}
-  .diff-columns>div:first-child{border-right:0;border-bottom:1px solid #e4e7ee}
   .modal-backdrop{padding:12px}
   .modal-head{padding:20px 18px 15px}
   .modal-body{padding:18px}

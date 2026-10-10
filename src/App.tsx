@@ -8,6 +8,7 @@ import { Glyph } from "./components/Glyph";
 import { Empty } from "./components/Empty";
 import { useSubscriptions } from "./apps/subscriptions/useSubscriptions";
 import { useRepositorySkills } from "./apps/repositories/useRepositorySkills";
+import { FileDiff } from "./apps/plan/FileDiff";
 import { AgentUsagePage } from "./pages/AgentUsagePage";
 import { AgentsPage } from "./pages/AgentsPage";
 import { McpPage } from "./pages/McpPage";
@@ -227,13 +228,7 @@ function App() {
               {plan.warnings.map((warning, index) => <p key={index}><Glyph name="warning" size={16} />{warning}</p>)}
             </div>}
             {plan.changes.length ? <div className="diff-list">
-              {plan.changes.map((change, index) => <div className="diff-card" key={`${change.path}:${index}`}>
-                <div className="diff-path"><Glyph name="code" size={16} />{change.path}</div>
-                <div className="diff-columns">
-                  <div><span className="diff-label before-label">变更前</span><pre>{change.before || "（无）"}</pre></div>
-                  <div><span className="diff-label after-label">变更后</span><pre>{change.after || "（删除）"}</pre></div>
-                </div>
-              </div>)}
+              {plan.changes.map((change, index) => <FileDiff key={`${change.path}:${index}`} change={change} />)}
             </div> : <div className="empty-diff">该计划没有文件差异；请确认摘要与警告。</div>}
             <div className="modal-actions">
               <button className="button button-muted" disabled={isBusy} onClick={() => setPlan(null)}>取消</button>
