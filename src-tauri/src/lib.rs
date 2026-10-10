@@ -385,6 +385,20 @@ async fn check_app_update() -> platform::Result<update::AppUpdate> {
         .map_err(|e| format!("后台操作失败: {e}"))?
 }
 
+#[tauri::command]
+async fn check_agent_update(agent: String) -> platform::Result<update::AppUpdate> {
+    tauri::async_runtime::spawn_blocking(move || update::check_agent(&agent))
+        .await
+        .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
+#[tauri::command]
+async fn update_agent(agent: String) -> platform::Result<String> {
+    tauri::async_runtime::spawn_blocking(move || usage::update_agent(&agent))
+        .await
+        .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -424,7 +438,9 @@ pub fn run() {
             remove_subscription_plan,
             antigravity_login_and_add,
             cursor_login_and_add,
-            check_app_update
+            check_app_update,
+            check_agent_update,
+            update_agent
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -326,13 +326,25 @@ pub struct CodexStatus {
     pub version: String,
 }
 
+fn executable() -> &'static str {
+    if cfg!(windows) {
+        "codex.exe"
+    } else {
+        "codex"
+    }
+}
+
 pub fn codex_status() -> CodexStatus {
-    let executable = if cfg!(windows) { "codex.exe" } else { "codex" };
-    let status = platform::cli_status(executable, &[".local/bin", ".codex/bin"]);
+    let status = platform::cli_status(executable(), &[".local/bin", ".codex/bin"]);
     CodexStatus {
         installed: status.installed,
         version: status.version,
     }
+}
+
+/// 运行 `codex update`：CLI 自带的检查并安装更新命令。
+pub fn codex_update() -> platform::Result<String> {
+    platform::cli_update(executable(), &[".local/bin", ".codex/bin"], &["update"])
 }
 
 #[cfg(test)]

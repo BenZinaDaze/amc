@@ -53,6 +53,11 @@ pub(crate) fn status() -> (bool, String) {
     (status.installed, status.version)
 }
 
+/// 运行 `omp update`：OMP 自带的检查并安装更新命令。
+pub(crate) fn update() -> platform::Result<String> {
+    platform::cli_update(OMP_EXECUTABLE, OMP_HOME_EXTRA_DIRS, &["update"])
+}
+
 // OMP loads dotenv files after Bun preloads the launch project's .env. Only
 // directory keys are retained; credentials in these files never enter AMC state.
 fn path_env() -> HashMap<String, String> {

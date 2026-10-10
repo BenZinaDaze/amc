@@ -59,6 +59,22 @@ pub(crate) use agents::claude::{claude_code_status, ClaudeCodeStatus};
 pub(crate) use agents::codex::{codex_status, CodexStatus};
 pub(crate) use agents::omp::status as omp_status;
 
+/// Runs the agent's own update subcommand (`omp update` / `claude update` /
+/// `codex update`); the CLI owns the update mechanics, AMC only launches it.
+pub fn update_agent(agent_id: &str) -> platform::Result<String> {
+    use agents::{
+        claude::claude_code_update,
+        codex::codex_update,
+        omp::update as omp_update,
+    };
+    match agent_id {
+        "omp" => omp_update(),
+        "claude-code" => claude_code_update(),
+        "codex" => codex_update(),
+        other => Err(format!("不支持的 Agent 更新来源: {other}")),
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageStats {

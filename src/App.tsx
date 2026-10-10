@@ -91,12 +91,15 @@ function App() {
     return () => { cancelled = true; };
   }, [reloadAndLoad]);
 
+  // 重测 Claude Code / Codex 运行时：进相关页面时拉一次，更新 Agent 后复用。
+  const refreshStatuses = useCallback(() => {
+    api.getClaudeCodeStatus().then(setClaudeCodeStatus).catch(() => setClaudeCodeStatus({ installed: false, version: "" }));
+    api.getCodexStatus().then(setCodexStatus).catch(() => setCodexStatus({ installed: false, version: "" }));
+  }, []);
+
   useEffect(() => {
-    if (page === "agents" || page === "claude" || page === "codex") {
-      api.getClaudeCodeStatus().then(setClaudeCodeStatus).catch(() => setClaudeCodeStatus({ installed: false, version: "" }));
-      api.getCodexStatus().then(setCodexStatus).catch(() => setCodexStatus({ installed: false, version: "" }));
-    }
-  }, [page]);
+    if (page === "agents" || page === "claude" || page === "codex") refreshStatuses();
+  }, [page, refreshStatuses]);
 
   // 屏蔽 WebView 默认右键菜单：与应用无关（刷新/检查等）。输入框、
   // 多行文本与可编辑区域保留系统菜单，粘贴仍可用。
@@ -200,10 +203,10 @@ function App() {
       <main className="main-area">
         <div className="content">
           {page === "overview" && <OverviewPage {...shared} subscriptions={subs.subscriptions} subscriptionsLoading={subs.loading} subscriptionsError={subs.error} loadSubscriptions={subs.load} removeSubscription={subs.remove} />}
-          {page === "agents" && <AgentsPage {...shared} claudeCodeStatus={claudeCodeStatus} codexStatus={codexStatus} />}
-          {page === "omp" && <AgentUsagePage agentId="omp" name="OMP" title="OMP" refreshName="OMP" error={error} notice={notice} setError={setError} setNotice={setNotice} pill={state && <span className={`omp-version-pill ${state.agent.installed && state.agent.version ? "available" : "missing"}`}>{state.agent.installed && state.agent.version ? state.agent.version.replace(/^omp\//i, "") : "未检测到"}</span>} />}
-          {page === "claude" && <AgentUsagePage agentId="claude-code" name="Claude Code" title="Claude Code" refreshName="Claude Code" error={error} notice={notice} setError={setError} setNotice={setNotice} pill={claudeCodeStatus && <span className={`omp-version-pill ${claudeCodeStatus.installed && claudeCodeStatus.version ? "available" : "missing"}`}>{claudeCodeStatus.installed && claudeCodeStatus.version ? claudeCodeStatus.version.split(/\s+/)[0] : "未检测到"}</span>} />}
-          {page === "codex" && <AgentUsagePage agentId="codex" name="Codex" title="Codex CLI" refreshName="Codex" error={error} notice={notice} setError={setError} setNotice={setNotice} pill={codexStatus && <span className={`omp-version-pill ${codexStatus.installed && codexStatus.version ? "available" : "missing"}`}>{codexStatus.installed && codexStatus.version ? codexStatus.version.split(/\s+/).pop() : "未检测到"}</span>} />}
+          {page === "agents" && <AgentsPage {...shared} claudeCodeStatus={claudeCodeStatus} codexStatus={codexStatus} refreshStatuses={refreshStatuses} />}
+          {page === "omp" && <AgentUsagePage agentId="omp" name="OMP" title="OMP" refreshName="OMP" error={error} notice={notice} setError={setError} setNotice={setNotice} pill={state && <span className={`omp-version-pill ${state.agent.installed && state.agent.version ? "available" : "missing"}`}>{state.agent.installed && state.agent.version ? state.agent.version.replace(/^omp\//i, "") : "未安装"}</span>} />}
+          {page === "claude" && <AgentUsagePage agentId="claude-code" name="Claude Code" title="Claude Code" refreshName="Claude Code" error={error} notice={notice} setError={setError} setNotice={setNotice} pill={claudeCodeStatus && <span className={`omp-version-pill ${claudeCodeStatus.installed && claudeCodeStatus.version ? "available" : "missing"}`}>{claudeCodeStatus.installed && claudeCodeStatus.version ? claudeCodeStatus.version.split(/\s+/)[0] : "未安装"}</span>} />}
+          {page === "codex" && <AgentUsagePage agentId="codex" name="Codex" title="Codex CLI" refreshName="Codex" error={error} notice={notice} setError={setError} setNotice={setNotice} pill={codexStatus && <span className={`omp-version-pill ${codexStatus.installed && codexStatus.version ? "available" : "missing"}`}>{codexStatus.installed && codexStatus.version ? codexStatus.version.split(/\s+/).pop() : "未安装"}</span>} />}
           {page === "mcp" && <McpPage {...shared} />}
           {page === "skills" && <SkillsPage {...shared} repositorySkills={repoSkills.skills} repositorySkillErrors={repoSkills.errors} repositoryScanLoading={repoSkills.scanLoading} />}
           {page === "repositories" && <RepositoriesPage {...shared} repositorySkills={repoSkills.skills} repositoryScanLoading={repoSkills.scanLoading} forget={repoSkills.forget} />}

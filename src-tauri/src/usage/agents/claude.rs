@@ -156,17 +156,25 @@ pub struct ClaudeCodeStatus {
     pub version: String,
 }
 
-pub fn claude_code_status() -> ClaudeCodeStatus {
-    let executable = if cfg!(windows) {
+fn executable() -> &'static str {
+    if cfg!(windows) {
         "claude.exe"
     } else {
         "claude"
-    };
-    let status = platform::cli_status(executable, &[".local/bin", ".claude/local"]);
+    }
+}
+
+pub fn claude_code_status() -> ClaudeCodeStatus {
+    let status = platform::cli_status(executable(), &[".local/bin", ".claude/local"]);
     ClaudeCodeStatus {
         installed: status.installed,
         version: status.version,
     }
+}
+
+/// 运行 `claude update`：CLI 自带的检查并安装更新命令。
+pub fn claude_code_update() -> platform::Result<String> {
+    platform::cli_update(executable(), &[".local/bin", ".claude/local"], &["update"])
 }
 
 #[cfg(test)]

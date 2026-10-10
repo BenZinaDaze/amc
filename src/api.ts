@@ -57,6 +57,8 @@ export type SubscriptionKind = { id: string; title: string; keyLabel: string; ke
 export type ClaudeCodeStatus = { installed: boolean; version: string };
 export type CodexStatus = { installed: boolean; version: string };
 export type AppUpdate = { latest: string; url: string };
+/// 已接入 Agent 的更新来源 id（对应后端 check_agent_update / update_agent）。
+export type AgentUpdateSource = "omp" | "claude-code" | "codex";
 export const api = {
   getDefaultWorkspace: () => invoke<Workspace>("get_default_workspace"),
   getState: (workspace: Workspace) => invoke<State>("get_state", { workspace }),
@@ -86,4 +88,6 @@ export const api = {
   cursorLogin: (name: string) => invoke<Message>("cursor_login_and_add", { name }),
   removeSubscriptionPlan: (id: string) => invoke<Message>("remove_subscription_plan", { id }),
   checkAppUpdate: () => invoke<AppUpdate>("check_app_update"),
+  checkAgentUpdate: (agent: AgentUpdateSource) => invoke<AppUpdate>("check_agent_update", { agent }),
+  updateAgent: (agent: AgentUpdateSource) => invoke<string>("update_agent", { agent }),
 };

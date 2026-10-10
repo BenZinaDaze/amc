@@ -300,6 +300,41 @@ pub fn cli_status(executable: &str, home_extra_dirs: &[&str]) -> CliStatus {
     }
 }
 
+/// 在候选目录中找到可执行文件并运行其自带的更新子命令，返回修剪后的
+/// 合并输出。候选无法启动（权限/架构不符）时尝试下一个；命令本身以
+/// 非零退出则优先把 stderr 作为失败原因带回。
+pub fn cli_update(executable: &str, home_extra_dirs: &[&str], args: &[&str]) -> Result<String> {
+    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_owned();
+    for program in cli_directories(executable, home().ok(), home_extra_dirs) {
+        if !program.is_file() {
+            continue;
+        }
+        let Ok(mut command) = cli_command(&program) else {
+            continue;
+        };
+        command.args(args);
+        let Ok(output) = command.output() else {
+            continue;
+        };
+        let (stdout, stderr) = (text(&output.stdout), text(&output.stderr));
+        if output.status.success() {
+            return Ok(if stdout.is_empty() { stderr } else { stdout });
+        }
+        return Err(if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            let code = output
+                .status
+                .code()
+                .map_or_else(|| "被信号终止".to_owned(), |code| format!("退出码 {code}"));
+            format!("{} 更新失败（{code}）", program.display())
+        });
+    }
+    Err(format!("找不到可用的 {executable} 可执行文件，无法更新"))
+}
+
 pub const HIDDEN_MCP_VALUE: &str = "[已隐藏]";
 
 pub fn is_sensitive_mcp_key(lower_name: &str) -> bool {

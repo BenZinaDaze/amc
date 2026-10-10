@@ -47,3 +47,10 @@ export function isNewerVersion(latest: string, current: string): boolean {
   }
   return false;
 }
+
+/// 从任意 CLI 版本输出中提取第一段点分版本号："omp/18.8.7"、
+/// "2.1.296 (Claude Code)"、"codex-cli 0.162.1" → "18.8.7"、"2.1.296"、"0.162.1"；
+/// 读不到版本时返回空串。
+export function versionToken(output: string): string {
+  return /(\d+(?:\.\d+)+)/.exec(output)?.[1] ?? "";
+}

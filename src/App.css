@@ -124,6 +124,9 @@ svg{flex-shrink:0}
 .tag-warn{background:#fff3dd;color:#b87923}
 .tag-info{background:var(--accent-soft);color:var(--accent-deep)}
 .tag-muted{background:#f0f2f5;color:#909aaa}
+/* 可点击的更新提示标签：还原按钮默认外观，悬停轻微加深。 */
+button.tag{border:0;transition:filter .15s}
+button.tag:hover{filter:brightness(.95)}
 .empty-state{display:flex;align-items:center;flex-direction:column;text-align:center;border:1px dashed #dbe0e9;background:#fff;border-radius:12px;padding:48px 16px}
 .empty-icon{width:59px;height:59px;display:grid;place-items:center;border-radius:17px;background:var(--accent-soft);color:var(--accent-icon);margin-bottom:17px}
 .empty-state h3{font-size:16px;margin:0 0 5px}
