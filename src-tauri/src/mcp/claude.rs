@@ -6,13 +6,25 @@
 use super::{json_remove, json_upsert, Location, McpWrite};
 use crate::platform::{self, Result};
 use serde_json::Value;
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
+
+/// Claude Code 的用户级配置目录：`CLAUDE_CONFIG_DIR`，默认 `~/.claude`。
+pub(crate) fn config_dir(home: &Path) -> PathBuf {
+    match non_empty(env::var_os("CLAUDE_CONFIG_DIR")) {
+        Some(dir) => PathBuf::from(dir),
+        None => home.join(".claude"),
+    }
+}
 
 pub(crate) fn locate() -> Result<Location> {
     let home = platform::home()?;
     match non_empty(env::var_os("CLAUDE_CONFIG_DIR")) {
-        Some(dir) => {
-            let dir = PathBuf::from(dir);
+        // 环境变量生效时，状态文件跟随配置目录；否则固定在 `~/.claude.json`。
+        Some(_) => {
+            let dir = config_dir(&home);
             let file = dir.join(".claude.json");
             Ok(Location {
                 present: dir.is_dir() || file.is_file(),
@@ -40,4 +52,3 @@ pub(crate) fn upsert(location: &Location, name: &str, spec: &Value) -> Result<Mc
 pub(crate) fn remove(location: &Location, name: &str) -> Result<Option<McpWrite>> {
     json_remove(&location.file, name)
 }
-

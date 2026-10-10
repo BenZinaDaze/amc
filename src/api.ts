@@ -56,6 +56,9 @@ export type SubscriptionStatus = {
 export type SubscriptionKind = { id: string; title: string; keyLabel: string; keyPlaceholder: string; auth: "key" | "oauth"; platforms: [string, string][]; urlLabel: string | null; urlPlaceholder: string | null };
 export type ClaudeCodeStatus = { installed: boolean; version: string };
 export type CodexStatus = { installed: boolean; version: string };
+export type AgentPathKind = "file" | "dir";
+export type ConfigPathEntry = { purpose: string; path: string; kind: AgentPathKind; exists: boolean };
+export type AgentConfigPaths = { agent: McpAgent; entries: ConfigPathEntry[] };
 export type AppUpdate = { latest: string; url: string };
 /// 已接入 Agent 的更新来源 id（对应后端 check_agent_update / update_agent）。
 export type AgentUpdateSource = "omp" | "claude-code" | "codex";
@@ -68,6 +71,7 @@ export const api = {
   getAgentsUsage: (range: UsageRange) => invoke<UsageStats>("get_agents_usage", { range }),
   getClaudeCodeStatus: () => invoke<ClaudeCodeStatus>("get_claude_code_status"),
   getCodexStatus: () => invoke<CodexStatus>("get_codex_status"),
+  getAgentConfigPaths: () => invoke<AgentConfigPaths[]>("get_agent_config_paths"),
   refreshPricing: () => invoke<string>("refresh_pricing"),
   planMcp: (name: string, config: Record<string, unknown> | null, agents: McpAgent[]) => invoke<Plan>("plan_mcp", { name, config, agents }),
   planMcpToggle: (name: string, agent: McpAgent, enabled: boolean) => invoke<Plan>("plan_mcp_toggle", { name, agent, enabled }),

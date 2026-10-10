@@ -14,6 +14,7 @@ import { AgentsPage } from "./pages/AgentsPage";
 import { McpPage } from "./pages/McpPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { RepositoriesPage } from "./pages/RepositoriesPage";
+import { SettingsPage } from "./pages/SettingsPage";
 import { SkillsPage } from "./pages/SkillsPage";
 import type { Page, PageProps } from "./pages/PageProps";
 import { errorText, isNewerVersion } from "./utils";
@@ -27,6 +28,7 @@ const navigation: { id: Page; title: string; icon: string; group?: boolean; chil
   { id: "mcp", title: "MCP", icon: "plug", group: true },
   { id: "skills", title: "Skills", icon: "spark", group: true },
   { id: "repositories", title: "仓库", icon: "repo", group: true },
+  { id: "settings", title: "设置", icon: "gear" },
 ];
 
 /// 应用壳：侧边栏导航 + 路由 + 全局状态（workspace/state、busy、
@@ -211,6 +213,7 @@ function App() {
           {page === "mcp" && <McpPage {...shared} />}
           {page === "skills" && <SkillsPage {...shared} repositorySkills={repoSkills.skills} repositorySkillErrors={repoSkills.errors} repositoryScanLoading={repoSkills.scanLoading} />}
           {page === "repositories" && <RepositoriesPage {...shared} repositorySkills={repoSkills.skills} repositoryScanLoading={repoSkills.scanLoading} forget={repoSkills.forget} />}
+          {page === "settings" && <SettingsPage {...shared} />}
           {!isUsagePage && loading && <div className="loading-panel" role="status"><span className="spinner" />正在加载状态…</div>}
           {!isUsagePage && !loading && !state && <Empty icon="warning" title="尚无法加载状态" description="AMC 无法读取本机数据目录或 Agent 配置，请刷新重试。" action="重新加载" onClick={() => { if (selectedWorkspace) void reloadAndLoad(selectedWorkspace); }} />}
         </div>

@@ -2,17 +2,18 @@ mod mcp;
 mod operations;
 mod platform;
 mod pricing;
+mod settings;
 mod skills;
 mod store;
+mod subscription;
 #[cfg(test)]
 mod test_support;
-mod subscription;
-mod usage;
 mod update;
+mod usage;
 mod workspace;
 
-use std::sync::{Arc, Mutex};
 use serde::Serialize;
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 
 type Shared = Arc<Mutex<operations::Core>>;
@@ -50,11 +51,7 @@ async fn plan_mcp(
     config: Option<serde_json::Value>,
     agents: Vec<mcp::Agent>,
 ) -> platform::Result<operations::Plan> {
-    dispatch(
-        state,
-        move |core| core.plan_mcp(name, config, agents),
-    )
-    .await
+    dispatch(state, move |core| core.plan_mcp(name, config, agents)).await
 }
 
 #[tauri::command]
@@ -64,10 +61,9 @@ async fn plan_mcp_toggle(
     agent: mcp::Agent,
     enabled: bool,
 ) -> platform::Result<operations::Plan> {
-    dispatch(
-        state,
-        move |core| core.plan_mcp_toggle(name, agent, enabled),
-    )
+    dispatch(state, move |core| {
+        core.plan_mcp_toggle(name, agent, enabled)
+    })
     .await
 }
 
@@ -120,7 +116,10 @@ async fn plan_skill(
     repository_id: i64,
     skill_path: String,
 ) -> platform::Result<operations::Plan> {
-    dispatch(state, move |core| core.plan_skill(repository_id, skill_path)).await
+    dispatch(state, move |core| {
+        core.plan_skill(repository_id, skill_path)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -210,6 +209,13 @@ async fn get_claude_code_status() -> platform::Result<usage::ClaudeCodeStatus> {
 }
 
 #[tauri::command]
+async fn get_agent_config_paths() -> platform::Result<Vec<settings::AgentConfigPaths>> {
+    tauri::async_runtime::spawn_blocking(settings::agent_config_paths)
+        .await
+        .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
+#[tauri::command]
 async fn get_codex_status() -> platform::Result<usage::CodexStatus> {
     tauri::async_runtime::spawn_blocking(usage::codex_status)
         .await
@@ -248,23 +254,26 @@ async fn fetch_subscriptions(
     // `subscription-status` per finished query) so the UI never waits for the
     // slowest vendor; `nonce` lets the frontend drop stale requests' events.
     tauri::async_runtime::spawn_blocking(move || {
-        Ok(subscription::fetch_all_streaming(&data_dir, |event| match &event {
-            subscription::FetchEvent::Begin(statuses) => {
-                let _ = app.emit(
-                    "subscription-load",
-                    SubscriptionLoadEvent {
-                        nonce,
-                        statuses: statuses.as_slice(),
-                    },
-                );
-            }
-            subscription::FetchEvent::Ready(status) => {
-                let _ = app.emit(
-                    "subscription-status",
-                    SubscriptionStatusEvent { nonce, status },
-                );
-            }
-        }))
+        Ok(subscription::fetch_all_streaming(
+            &data_dir,
+            |event| match &event {
+                subscription::FetchEvent::Begin(statuses) => {
+                    let _ = app.emit(
+                        "subscription-load",
+                        SubscriptionLoadEvent {
+                            nonce,
+                            statuses: statuses.as_slice(),
+                        },
+                    );
+                }
+                subscription::FetchEvent::Ready(status) => {
+                    let _ = app.emit(
+                        "subscription-status",
+                        SubscriptionStatusEvent { nonce, status },
+                    );
+                }
+            },
+        ))
     })
     .await
     .map_err(|e| format!("后台操作失败: {e}"))?
@@ -430,6 +439,7 @@ pub fn run() {
             get_agents_usage,
             get_claude_code_status,
             get_codex_status,
+            get_agent_config_paths,
             refresh_pricing,
             fetch_subscriptions,
             list_subscription_kinds,

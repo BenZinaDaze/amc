@@ -1,6 +1,6 @@
 import type { Plan, State } from "../api";
 
-export type Page = "overview" | "agents" | "omp" | "claude" | "codex" | "mcp" | "skills" | "repositories";
+export type Page = "overview" | "agents" | "omp" | "claude" | "codex" | "mcp" | "skills" | "repositories" | "settings";
 
 /// 页面与 App 壳之间的共享契约：页面负责自己的页头与告警条，
 /// 全局状态（busy/error/notice/plan 预览）仍由壳统一持有。

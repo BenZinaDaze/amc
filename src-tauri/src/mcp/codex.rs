@@ -7,17 +7,25 @@
 use super::{Location, McpWrite};
 use crate::platform::{self, Result};
 use serde_json::Value;
-use std::{env, fs, path::{Path, PathBuf}};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 use toml_edit::{Item, Table, TableLike};
 
+/// Codex 的用户级配置目录：`CODEX_HOME`，默认 `~/.codex`。
+pub(crate) fn config_dir(home: &Path) -> PathBuf {
+    match non_empty(env::var_os("CODEX_HOME")) {
+        Some(dir) => PathBuf::from(dir),
+        None => home.join(".codex"),
+    }
+}
+
 pub(crate) fn locate() -> Result<Location> {
-    let home = match non_empty(env::var_os("CODEX_HOME")) {
-        Some(home) => PathBuf::from(home),
-        None => platform::home()?.join(".codex"),
-    };
+    let dir = config_dir(&platform::home()?);
     Ok(Location {
-        present: home.is_dir(),
-        file: home.join("config.toml"),
+        present: dir.is_dir(),
+        file: dir.join("config.toml"),
     })
 }
 
@@ -43,7 +51,9 @@ fn read(path: &Path) -> Result<(Option<Vec<u8>>, toml_edit::DocumentMut)> {
 }
 
 fn servers_table_mut(document: &mut toml_edit::DocumentMut) -> Result<&mut dyn TableLike> {
-    if document.get("mcp_servers").is_some_and(|item| !item.is_none())
+    if document
+        .get("mcp_servers")
+        .is_some_and(|item| !item.is_none())
         && document
             .get_mut("mcp_servers")
             .and_then(Item::as_table_like_mut)
@@ -92,7 +102,6 @@ pub(crate) fn remove(location: &Location, name: &str) -> Result<Option<McpWrite>
         after: document.to_string().into_bytes(),
     }))
 }
-
 
 /// 统一 JSON spec → Codex TOML 服务表。核心字段强类型转换；其余字段
 /// 通用透传（Codex 对未知键宽容）。
@@ -172,9 +181,7 @@ fn json_to_toml_table(spec: &Value) -> Result<Table> {
 fn json_value_to_toml(value: &Value) -> Option<Item> {
     match value {
         Value::String(s) => Some(toml_edit::value(s.clone())),
-        Value::Number(n) if n.is_u64() || n.is_i64() => {
-            n.as_i64().map(toml_edit::value)
-        }
+        Value::Number(n) if n.is_u64() || n.is_i64() => n.as_i64().map(toml_edit::value),
         Value::Number(n) => n.as_f64().map(toml_edit::value),
         Value::Bool(b) => Some(toml_edit::value(*b)),
         Value::Array(items) => {
@@ -183,7 +190,10 @@ fn json_value_to_toml(value: &Value) -> Option<Item> {
                 match item {
                     Value::String(s) => array.push(s.clone()),
                     Value::Number(n) => {
-                        let number = n.as_i64().map(toml_edit::Value::from).or_else(|| n.as_f64().map(toml_edit::Value::from));
+                        let number = n
+                            .as_i64()
+                            .map(toml_edit::Value::from)
+                            .or_else(|| n.as_f64().map(toml_edit::Value::from));
                         array.push(number?);
                     }
                     Value::Bool(b) => array.push(*b),
@@ -209,9 +219,7 @@ fn json_value_to_toml(value: &Value) -> Option<Item> {
 /// 用户配置里其它段落（model_providers 的 experimental_bearer_token /
 /// http_headers 等）同样可能携带凭据，不能只处理 mcp_servers。
 pub(crate) fn preview_redacted(bytes: &[u8]) -> String {
-    let Ok(document) = String::from_utf8_lossy(bytes)
-        .parse::<toml_edit::DocumentMut>()
-    else {
+    let Ok(document) = String::from_utf8_lossy(bytes).parse::<toml_edit::DocumentMut>() else {
         return "[Codex TOML 不可预览；敏感字段未显示]".into();
     };
     let mut document = document;
