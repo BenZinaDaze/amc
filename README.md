@@ -6,13 +6,26 @@ AMC 是 macOS 桌面端的 Agent 管理工具，集中管理 Skills、MCP，并�
 
 从 [GitHub Releases](https://github.com/BenZinaDaze/amc/releases) 下载并安装 macOS 版本。
 
-目前 DMG 未签名。将 AMC.app 复制到 `/Applications` 后，若 macOS 阻止打开，仅在确认下载来源可信时运行以下命令。它会递归清除应用的扩展属性（包括下载隔离标记），不会为应用签名：
+目前 DMG 未做 Apple 公证。将 AMC.app 复制到 `/Applications` 后，若 macOS 阻止打开，仅在确认下载来源可信时运行以下命令。它会递归清除应用的扩展属性（包括下载隔离标记），不会为应用签名：
 
 ```sh
 xattr -cr /Applications/AMC.app
 ```
 
 然后重新打开 AMC。
+
+应用内置自动更新（[tauri-plugin-updater](https://v2.tauri.app/plugin/updater/)）：启动后检查新版本，可在应用内下载安装并重启。更新包以 Tauri minisign 密钥签名并在安装前校验。
+
+### 本地构建
+
+开启更新器归档后，`npm run tauri build` 需要签名私钥（仅 `tauri dev` 不需要）：
+
+```sh
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/amc.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+```
+
+私钥只保存在本机 `~/.tauri/amc.key` 与仓库 Secrets（`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）；丢失后无法为已发布版本签发更新，只能更换密钥对重新发布。
 
 ## 主要功能
 

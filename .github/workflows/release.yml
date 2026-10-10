@@ -90,12 +90,28 @@ jobs:
         run: |
           node -e 'const pkg = require("./package.json").version; const tauri = require("./src-tauri/tauri.conf.json").version; const metadata = JSON.parse(require("node:child_process").execFileSync("cargo", ["metadata", "--no-deps", "--format-version", "1", "--manifest-path", "src-tauri/Cargo.toml"])); const cargo = metadata.packages.find(p => p.name === "amc").version; if (`v${pkg}` !== process.env.RELEASE_TAG || pkg !== tauri || pkg !== cargo) { console.error(`Version mismatch: tag=${process.env.RELEASE_TAG}, package=${pkg}, tauri=${tauri}, cargo=${cargo}`); process.exit(1); }'
       - run: npm ci
-      - name: Build DMG
-        run: npm run tauri build -- --target ${{ matrix.target }} --bundles dmg
+      - name: Build DMG and updater archive
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        # 仅 --bundles dmg 不会产出更新器归档（bundler 只对含 app 目标的
+        # 构建生成 AMC.app.tar.gz），必须带上 app。
+        run: npm run tauri build -- --target ${{ matrix.target }} --bundles app,dmg
+      - name: Rename updater archive per arch
+        # 两个架构的归档同名（AMC.app.tar.gz），release job 的
+        # merge-multiple 会互相覆盖，先按架构改名；签名只覆盖归档内容，
+        # 改名不影响校验。
+        run: |
+          cd "src-tauri/target/${{ matrix.target }}/release/bundle/macos"
+          mv "AMC.app.tar.gz" "AMC_${{ matrix.arch }}.app.tar.gz"
+          mv "AMC.app.tar.gz.sig" "AMC_${{ matrix.arch }}.app.tar.gz.sig"
       - uses: actions/upload-artifact@v4
         with:
           name: dmg-${{ matrix.arch }}
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/AMC_${{ matrix.arch }}.app.tar.gz
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/AMC_${{ matrix.arch }}.app.tar.gz.sig
           if-no-files-found: error
 
   release:
@@ -140,10 +156,46 @@ jobs:
           pattern: dmg-*
           path: dmg
           merge-multiple: true
+      - name: Compose latest.json
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        # updater 端点指向 releases/latest/download/latest.json。signature
+        # 必须是 .sig 文件内容本身（含 untrusted comment 行）；notes 用
+        # 追加过功能提交列表的 body 版本，和应用内更新弹窗同源。
+        run: |
+          node -e '
+          const { readFileSync, writeFileSync } = require("node:fs");
+          const tag = process.env.RELEASE_TAG;
+          const base = "https://github.com/BenZinaDaze/amc/releases/download/" + tag;
+          const platform = (arch) => ({
+            signature: readFileSync(`dmg/AMC_${arch}.app.tar.gz.sig`, "utf8").trim(),
+            url: `${base}/AMC_${arch}.app.tar.gz`,
+          });
+          writeFileSync("dmg/latest.json", JSON.stringify({
+            version: tag.replace(/^v/, ""),
+            notes: readFileSync(process.env.RELEASE_NOTES, "utf8").trim(),
+            pub_date: new Date().toISOString(),
+            platforms: {
+              "darwin-aarch64": platform("aarch64"),
+              "darwin-x86_64": platform("x86_64"),
+            },
+          }, null, 2));
+          '
+      # 先传全部二进制产物并创建 Release,latest.json 最后单独补传:
+      # updater 端点解析 releases/latest/download/latest.json,它一出现
+      # 就代表 DMG 与更新器归档都已就绪,不会指到半成品 Release。
+      # latest.json 缺失期间 check() 得到 404,应用侧静默忽略。
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: AMC ${{ github.ref_name }}
           body_path: ${{ env.RELEASE_NOTES }}
-          files: dmg/*.dmg
+          files: |
+            dmg/*.dmg
+            dmg/*.app.tar.gz
+            dmg/*.app.tar.gz.sig
           fail_on_unmatched_files: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dmg/latest.json

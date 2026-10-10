@@ -181,6 +181,10 @@ textarea{resize:vertical;line-height:1.55}
 .modal-backdrop{position:fixed;inset:0;background:#141c34a8;z-index:10;display:flex;justify-content:center;align-items:center;padding:22px}
 .modal{width:min(530px,100%);max-height:min(90vh,850px);display:flex;flex-direction:column;background:#fff;border-radius:16px;box-shadow:0 22px 70px #0c15344f;overflow:hidden}
 .plan-modal{width:min(960px,100%)}
+.update-modal{width:min(560px,100%)}
+.update-notes{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;margin-bottom:16px;padding:12px 14px;font-size:13px;line-height:1.65;color:#3d4a63;background:#f7f8fb;border:1px solid #eef0f5;border-radius:10px}
+.update-progress{height:6px;border-radius:99px;background:#e9ecf3;overflow:hidden;margin-bottom:16px}
+.update-progress-bar{display:block;height:100%;border-radius:99px;background:var(--accent);transition:width .2s ease}
 .modal-head{display:flex;align-items:flex-start;justify-content:space-between;padding:23px 26px 17px;border-bottom:1px solid #eef0f5;flex-shrink:0}
 .modal-head h2{font-size:20px;overflow-wrap:anywhere}
 .modal-body{padding:22px 26px 25px;overflow:auto;min-height:0}

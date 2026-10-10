@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import { version } from "../package.json";
-import { api, type AppUpdate, type ClaudeCodeStatus, type CodexStatus, type Plan, type State, type Workspace } from "./api";
+import { api, type ClaudeCodeStatus, type CodexStatus, type Plan, type State, type Workspace } from "./api";
 import "./App.css";
 import { Glyph } from "./components/Glyph";
 import { Empty } from "./components/Empty";
@@ -16,7 +17,8 @@ import { RepositoriesPage } from "./pages/RepositoriesPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SkillsPage } from "./pages/SkillsPage";
 import type { Page, PageProps } from "./pages/PageProps";
-import { errorText, isNewerVersion } from "./utils";
+import { AppUpdateModal } from "./components/AppUpdateModal";
+import { errorText } from "./utils";
 
 const navigation: { id: Page; title: string; icon: string; group?: boolean; child?: boolean }[] = [
   { id: "overview", title: "概览", icon: "grid" },
@@ -44,7 +46,8 @@ function App() {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [claudeCodeStatus, setClaudeCodeStatus] = useState<ClaudeCodeStatus | null>(null);
   const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
-  const [appUpdate, setAppUpdate] = useState<AppUpdate | null>(null);
+  const [appUpdate, setAppUpdate] = useState<Update | null>(null);
+  const [updateOpen, setUpdateOpen] = useState(false);
   const loadId = useRef(0);
 
   const subs = useSubscriptions();
@@ -121,15 +124,32 @@ function App() {
     setNotice("");
   }, [page]);
 
-  // 启动后延迟查询一次应用更新：不打扰首屏加载，失败静默（版本提示是纯增益）。
+  // 启动后延迟检查一次应用更新（updater 插件，服务端比版本）。失败一律
+  // 静默：首个新版发布前 latest.json 是 404，离线同样只影响这个纯增益提示。
   useEffect(() => {
+    if (import.meta.env.DEV) return;
     let cancelled = false;
     const timer = setTimeout(() => {
-      api.checkAppUpdate()
-        .then((info) => { if (!cancelled && isNewerVersion(info.latest, version)) setAppUpdate(info); })
-        .catch(() => {});
+      check().then((update) => { if (!cancelled && update) setAppUpdate(update); }).catch(() => {});
     }, 2000);
     return () => { cancelled = true; clearTimeout(timer); };
+  }, []);
+
+  // 手动检查（设置 → 关于）：把结果以一句话返回给触发处展示；发现新版
+  // 直接弹更新窗口。
+  const checkForUpdates = useCallback(async (): Promise<string> => {
+    if (import.meta.env.DEV) return "开发模式下不检查更新";
+    try {
+      const update = await check();
+      if (update) {
+        setAppUpdate(update);
+        setUpdateOpen(true);
+        return "";
+      }
+      return `当前已是最新版本（v${version}）`;
+    } catch (reason) {
+      return `检查更新失败：${errorText(reason)}`;
+    }
   }, []);
 
 
@@ -200,7 +220,7 @@ function App() {
             {item.id === "agents" && <button type="button" className="nav-group-toggle" aria-expanded={agentsNavOpen} aria-label={agentsNavOpen ? "折叠 Agents 分组" : "展开 Agents 分组"} title={agentsNavOpen ? "折叠 Agents 分组" : "展开 Agents 分组"} onClick={() => setAgentsNavOpen((open) => !open)}><Glyph name="arrow" size={15} /></button>}
           </div>)}
         </nav>
-        <div className="sidebar-bottom"><div className="sidebar-orbit"><Glyph name="shield" size={15} /><span>写入前预览确认</span></div><div className="sidebar-version"><span>版本</span><strong>{version}</strong>{appUpdate && <button type="button" className="sidebar-update" onClick={() => openExternal(appUpdate.url)} title={`查看新版本 ${appUpdate.latest} 的发布说明`}><Glyph name="arrow" size={11} />有新版 {appUpdate.latest}</button>}</div></div>
+        <div className="sidebar-bottom"><div className="sidebar-orbit"><Glyph name="shield" size={15} /><span>写入前预览确认</span></div><div className="sidebar-version"><span>版本</span><strong>{version}</strong>{appUpdate && <button type="button" className="sidebar-update" onClick={() => setUpdateOpen(true)} title={`查看新版本 ${appUpdate.version} 的更新内容`}><Glyph name="arrow" size={11} />有新版 {appUpdate.version}</button>}</div></div>
       </aside>
       <main className="main-area">
         <div className="content">
@@ -212,7 +232,7 @@ function App() {
           {page === "mcp" && <McpPage {...shared} />}
           {page === "skills" && <SkillsPage {...shared} repositorySkills={repoSkills.skills} repositorySkillErrors={repoSkills.errors} repositoryScanLoading={repoSkills.scanLoading} />}
           {page === "repositories" && <RepositoriesPage {...shared} repositorySkills={repoSkills.skills} repositoryScanLoading={repoSkills.scanLoading} forget={repoSkills.forget} />}
-          {page === "settings" && <SettingsPage {...shared} />}
+          {page === "settings" && <SettingsPage {...shared} onCheckForUpdates={checkForUpdates} />}
           {!isUsagePage && loading && <div className="loading-panel" role="status"><span className="spinner" />正在加载状态…</div>}
           {!isUsagePage && !loading && !state && <Empty icon="warning" title="尚无法加载状态" description="AMC 无法读取本机数据目录或 Agent 配置，请刷新重试。" action="重新加载" onClick={() => { if (selectedWorkspace) void reloadAndLoad(selectedWorkspace); }} />}
         </div>
@@ -239,6 +259,7 @@ function App() {
           </div>
         </div>
       </div>}
+      {appUpdate && updateOpen && <AppUpdateModal update={appUpdate} onClose={() => setUpdateOpen(false)} />}
     </div>
   );
 }

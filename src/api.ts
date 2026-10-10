@@ -91,7 +91,6 @@ export const api = {
   antigravityLogin: (name: string) => invoke<Message>("antigravity_login_and_add", { name }),
   cursorLogin: (name: string) => invoke<Message>("cursor_login_and_add", { name }),
   removeSubscriptionPlan: (id: string) => invoke<Message>("remove_subscription_plan", { id }),
-  checkAppUpdate: () => invoke<AppUpdate>("check_app_update"),
   checkAgentUpdate: (agent: AgentUpdateSource) => invoke<AppUpdate>("check_agent_update", { agent }),
   updateAgent: (agent: AgentUpdateSource) => invoke<string>("update_agent", { agent }),
 };

@@ -13,7 +13,7 @@ const settingsTabs: { id: SettingsTab; label: string }[] = [
 ];
 
 /// 设置页：多个 tab 的容器，各面板自行管理数据加载与错误展示。
-export function SettingsPage({ error, notice, setError, setNotice, state }: PageProps) {
+export function SettingsPage({ error, notice, setError, setNotice, state, onCheckForUpdates }: PageProps & { onCheckForUpdates?: () => Promise<string> }) {
   const [tab, setTab] = useState<SettingsTab>("config");
   return <>
     <PageHeading title="设置" description="查看 AMC 管理的用户级配置位置与应用信息。" />
@@ -22,6 +22,6 @@ export function SettingsPage({ error, notice, setError, setNotice, state }: Page
       {settingsTabs.map((item) => <button key={item.id} role="tab" aria-selected={tab === item.id} className={`tab${tab === item.id ? " active" : ""}`} onClick={() => setTab(item.id)}>{item.label}</button>)}
     </div>
     {tab === "config" && <ConfigPathsPanel />}
-    {tab === "about" && <AboutPanel workspacePath={state?.workspace.path} />}
+    {tab === "about" && <AboutPanel workspacePath={state?.workspace.path} onCheckForUpdates={onCheckForUpdates} />}
   </>;
 }

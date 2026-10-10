@@ -388,13 +388,6 @@ async fn cursor_login_and_add(
 }
 
 #[tauri::command]
-async fn check_app_update() -> platform::Result<update::AppUpdate> {
-    tauri::async_runtime::spawn_blocking(update::check)
-        .await
-        .map_err(|e| format!("后台操作失败: {e}"))?
-}
-
-#[tauri::command]
 async fn check_agent_update(agent: String) -> platform::Result<update::AppUpdate> {
     tauri::async_runtime::spawn_blocking(move || update::check_agent(&agent))
         .await
@@ -412,6 +405,8 @@ async fn update_agent(agent: String) -> platform::Result<String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             pricing::ensure_cache(&data_dir).map_err(std::io::Error::other)?;
@@ -448,7 +443,6 @@ pub fn run() {
             remove_subscription_plan,
             antigravity_login_and_add,
             cursor_login_and_add,
-            check_app_update,
             check_agent_update,
             update_agent
         ])

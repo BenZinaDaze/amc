@@ -19,12 +19,6 @@ pub struct AppUpdate {
     pub url: String,
 }
 
-/// 查询 AMC 自己的最新 release。失败一律返回 Err，由前端静默忽略——
-/// 版本提示是纯增益信息，不能打扰主流程。
-pub fn check() -> Result<AppUpdate> {
-    github_release("BenZinaDaze/amc")
-}
-
 /// 已接入 Agent 的更新来源（id 与 usage 模块一致）：OMP 走 GitHub
 /// Releases，Claude Code 与 Codex CLI 的正式发布渠道是 npm。
 pub fn check_agent(agent: &str) -> Result<AppUpdate> {
