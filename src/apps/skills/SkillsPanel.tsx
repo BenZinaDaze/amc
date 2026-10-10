@@ -60,12 +60,12 @@ export function SkillsPanel({ state, repositorySkills, repositorySkillErrors, re
     <div className="section-heading section-heading-top">
       <div><h2>{skillTab === "installed" ? "技能列表" : "发现技能"} <span className="count">{skillTab === "installed" ? distributedSkills.length : discoveredSkills.length}</span></h2><p>{skillTab === "installed" ? "分发技能写入用户级目录，图标即开关。" : "从已添加的仓库发现技能，逐个选择安装。"}</p></div>
       <div className="section-actions">
-        <div className="skill-tabs" role="tablist" aria-label="Skills 视图">
-          <button className={`skill-tab ${skillTab === "installed" ? "active" : ""}`} role="tab" aria-selected={skillTab === "installed"} onClick={() => setSkillTab("installed")}>已分发</button>
-          <button className={`skill-tab ${skillTab === "discover" ? "active" : ""}`} role="tab" aria-selected={skillTab === "discover"} onClick={() => setSkillTab("discover")}>发现技能</button>
+        <div className="tabs" role="tablist" aria-label="Skills 视图">
+          <button className={`tab${skillTab === "installed" ? " active" : ""}`} role="tab" aria-selected={skillTab === "installed"} onClick={() => setSkillTab("installed")}>已分发</button>
+          <button className={`tab${skillTab === "discover" ? " active" : ""}`} role="tab" aria-selected={skillTab === "discover"} onClick={() => setSkillTab("discover")}>发现技能</button>
         </div>
         {skillTab === "discover" && <>
-          <div className="skill-tool-buttons">
+          <div className="section-actions skill-tool-buttons">
             <button className="button button-primary" onClick={navigateRepositories}><Glyph name="plus" size={16} />管理仓库</button>
             <button className="button button-muted" onClick={() => void refreshAllRepositories()} disabled={isBusy || repositoryScanLoading}><Glyph name="refresh" size={16} />刷新所有仓库</button>
             <button className="button button-muted skill-search-toggle" aria-label="搜索" title="搜索" aria-pressed={discoverSearchOpen} onClick={() => { setDiscoverSearchOpen((open) => !open); if (discoverSearchOpen) setDiscoverSearch(""); }}><Glyph name="search" size={18} /></button>

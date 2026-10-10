@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import ompIcon from "./assets/omp.svg";
 import { version } from "../package.json";
 import { api, type AppUpdate, type ClaudeCodeStatus, type CodexStatus, type Plan, type State, type Workspace } from "./api";
 import "./App.css";
@@ -197,7 +196,7 @@ function App() {
         {/*<div className="sidebar-caption">通用来源</div>*/}
         <nav aria-label="主导航" className="navigation">
           {navigation.map((item) => <div key={item.id} className={`nav-section${item.group ? " group" : ""}${item.child ? " nav-child" : ""}${item.child && !agentsNavOpen ? " collapsed" : ""}`}>
-            <button className={`nav-item ${page === item.id ? "selected" : ""}`} onClick={() => setPage(item.id)} aria-current={page === item.id ? "page" : undefined}>{item.icon === "omp" ? <img className="omp-nav-icon" src={ompIcon} alt="" /> : <Glyph name={item.icon} size={19} />}<span>{item.title}</span></button>
+            <button className={`nav-item ${page === item.id ? "selected" : ""}`} onClick={() => setPage(item.id)} aria-current={page === item.id ? "page" : undefined}><Glyph name={item.icon} size={19} /><span>{item.title}</span></button>
             {item.id === "agents" && <button type="button" className="nav-group-toggle" aria-expanded={agentsNavOpen} aria-label={agentsNavOpen ? "折叠 Agents 分组" : "展开 Agents 分组"} title={agentsNavOpen ? "折叠 Agents 分组" : "展开 Agents 分组"} onClick={() => setAgentsNavOpen((open) => !open)}><Glyph name="arrow" size={15} /></button>}
           </div>)}
         </nav>

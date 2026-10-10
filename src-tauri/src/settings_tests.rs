@@ -143,6 +143,29 @@ fn env_overrides_redirect_locations() {
 }
 
 #[test]
+fn missing_agent_reports_uncreated() {
+    let mut names = vec!["HOME"];
+    names.extend_from_slice(PATH_ENV);
+    let guard = EnvGuard::new(&names);
+    guard.clear(&names);
+    // 空沙箱 HOME = 三个 Agent 都未安装
+    let sandbox = env::temp_dir().join(format!("amc-settings-empty-{}", std::process::id()));
+    fs::create_dir_all(&sandbox).unwrap();
+    env::set_var("HOME", &sandbox);
+
+    let groups = agent_config_paths().unwrap();
+    assert_eq!(groups.len(), 3);
+    for group in &groups {
+        assert_eq!(group.entries.len(), 3);
+        for entry in &group.entries {
+            assert!(!entry.exists, "未安装的 Agent 不应虚报存在: {}", entry.path);
+        }
+    }
+
+    fs::remove_dir_all(&sandbox).ok();
+}
+
+#[test]
 fn exists_flags_match_filesystem() {
     let guard = EnvGuard::new(PATH_ENV);
     guard.clear(PATH_ENV);

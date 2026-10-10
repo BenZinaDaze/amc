@@ -5,6 +5,7 @@ export function Glyph({ name, size = 20 }: { name: string; size?: number }) {
   const paths: Record<string, ReactNode> = {
     grid: <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
     agents: <><rect x="4" y="4" width="16" height="16" rx="4" /><path d="M9 10h.01M15 10h.01M9 15c1.7 1.5 4.3 1.5 6 0M12 1v3M8 1h8" /></>,
+    omp: <path d="M3.5 5h17M6.5 5.2v11.3M16.5 5.2V13" />,
     claude: <path d="M12 2.5v19M2.5 12h19M5.3 5.3l13.4 13.4M18.7 5.3 5.3 18.7" />,
     codex: <><path d="M5 6.5 11 12l-6 5.5" /><path d="M13 17.5h6" /></>,
     plug: <><path d="M8 3v5m8-5v5M7 8h10v3a5 5 0 0 1-10 0V8Zm5 8v5m-4 0h8" /></>,

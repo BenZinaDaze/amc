@@ -18,8 +18,8 @@ export function SettingsPage({ error, notice, setError, setNotice, state }: Page
   return <>
     <PageHeading title="设置" description="查看 AMC 管理的用户级配置位置与应用信息。" />
     <Alerts error={error} notice={notice} onErrorClose={() => setError("")} onNoticeClose={() => setNotice("")} />
-    <div className="settings-tabs" role="tablist" aria-label="设置分组">
-      {settingsTabs.map((item) => <button key={item.id} role="tab" aria-selected={tab === item.id} className={`settings-tab${tab === item.id ? " active" : ""}`} onClick={() => setTab(item.id)}>{item.label}</button>)}
+    <div className="tabs settings-tabs" role="tablist" aria-label="设置分组">
+      {settingsTabs.map((item) => <button key={item.id} role="tab" aria-selected={tab === item.id} className={`tab${tab === item.id ? " active" : ""}`} onClick={() => setTab(item.id)}>{item.label}</button>)}
     </div>
     {tab === "config" && <ConfigPathsPanel />}
     {tab === "about" && <AboutPanel workspacePath={state?.workspace.path} />}
