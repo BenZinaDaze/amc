@@ -359,7 +359,7 @@ mod tests {
         range: &str,
         prices: &crate::pricing::Pricing,
     ) -> crate::usage::UsageStats {
-        let store = crate::usage::store::UsageStore::new(root).unwrap();
+        let mut store = crate::usage::store::UsageStore::new(root).unwrap();
         let scan = adapter.scan(0).unwrap();
         store.ingest("codex", &scan.records).unwrap();
         store

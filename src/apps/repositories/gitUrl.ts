@@ -1,7 +1,7 @@
 import type { Repository } from "../../api";
 
 export function repositoryWebUrl(repository?: Repository): string | null {
-  if (!repository || repository.localPath) return null;
+  if (!repository || repository.local) return null;
   const value = repository.url.trim();
   const location = /^git@github\.com:/i.test(value)
     ? value.slice("git@github.com:".length)

@@ -640,6 +640,58 @@ fn distribution_repo(fixture: &Fixture, core: &mut Core, body: &str) -> (PathBuf
 }
 
 #[test]
+fn skill_apply_rolls_back_directory_writes_when_config_write_fails() {
+    let fixture = Fixture::new();
+    let home = fixture.root.clone();
+    let _env = McpEnv::new(&home);
+    let mut core = fixture.core();
+    let (_repo, repository_id) = distribution_repo(&fixture, &mut core, "First");
+    // 预置带残留 ignoredSkills 的 OMP 配置：安装计划会同时产生目录写入
+    // （中央副本 + 两个投影）与清理残留项的 config.yml 写入。
+    let omp_config = home.join("omp/config.yml");
+    fs::create_dir_all(home.join("omp")).unwrap();
+    fs::write(&omp_config, "skills:\n  ignoredSkills:\n    - example\n").unwrap();
+
+    let plan = core
+        .plan_skill(repository_id, "skills/example".into())
+        .unwrap();
+    assert!(
+        plan.changes.iter().any(|change| change.path.ends_with("config.yml")),
+        "安装计划应包含 config.yml 变更: {:?}",
+        plan.changes.iter().map(|change| &change.path).collect::<Vec<_>>()
+    );
+    // 预览后、应用前改动 OMP 配置 → 配置写入因漂移校验失败。
+    fs::write(
+        &omp_config,
+        "skills:\n  ignoredSkills:\n    - example\n# touched\n",
+    )
+    .unwrap();
+    let error = core.apply(plan.id).unwrap_err();
+    assert!(error.contains("自预览后已变化"), "{error}");
+    // 目录写入必须已回滚：中央副本与两个投影都不存在，记录未落库。
+    assert!(!fixture.root.join("data/skills/example").exists());
+    assert!(!home.join(".agents/skills/example").exists());
+    assert!(!home.join(".claude/skills/example").exists());
+    assert!(core.store.skill("example").unwrap().is_none());
+    // 校验失败不执行任何配置写入，用户预览后的改动原样保留。
+    let config_text = fs::read_to_string(&omp_config).unwrap();
+    assert!(config_text.contains("# touched"), "{config_text}");
+    // 回滚干净后可重新预览安装并成功。
+    let plan = core
+        .plan_skill(repository_id, "skills/example".into())
+        .unwrap();
+    let plan_id = plan.id.clone();
+    core.apply(plan.id).unwrap();
+    assert!(
+        fs::read_to_string(home.join(".agents/skills/example/SKILL.md"))
+            .unwrap()
+            .contains("First")
+    );
+    // 回滚不留备份残骸。
+    assert!(!fixture.root.join("data/backups/skills").join(&plan_id).exists());
+}
+
+#[test]
 fn skill_distribution_installs_toggles_updates_and_removes() {
     let fixture = Fixture::new();
     let home = fixture.root.clone();
@@ -694,7 +746,7 @@ fn skill_distribution_installs_toggles_updates_and_removes() {
     assert!(agents_dir.exists() && !claude_dir.exists());
     let codex_text = fs::read_to_string(&codex_config).unwrap();
     assert!(codex_text.contains("[[skills.config]]") && codex_text.contains("enabled = false"), "{codex_text}");
-    assert!(codex_text.contains(&agents_dir.join("SKILL.md").to_string_lossy().as_ref()), "{codex_text}");
+    assert!(codex_text.contains(agents_dir.join("SKILL.md").to_string_lossy().as_ref()), "{codex_text}");
     let record = core.store.skill("example").unwrap().unwrap();
     assert!(record.omp && !record.codex && !record.claude);
     let omp_config = home.join("omp/config.yml");
@@ -935,7 +987,7 @@ fn enabling_one_from_both_off_restores_other_isolation() {
     assert!(!omp_text.contains("example"), "{omp_text}");
     let codex_text = fs::read_to_string(&codex_config).unwrap();
     assert!(codex_text.contains("[[skills.config]]") && codex_text.contains("enabled = false"), "{codex_text}");
-    assert!(codex_text.contains(&agents_dir.join("SKILL.md").to_string_lossy().as_ref()), "{codex_text}");
+    assert!(codex_text.contains(agents_dir.join("SKILL.md").to_string_lossy().as_ref()), "{codex_text}");
     let record = core.store.skill("example").unwrap().unwrap();
     assert!(record.omp && !record.codex);
 }

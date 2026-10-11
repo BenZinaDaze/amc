@@ -17,6 +17,15 @@ pub struct Repository {
     pub id: i64,
     pub url: String,
     pub reference: String,
+    /// url 是本地绝对路径（而非远程 Git 地址）时为 true；本地仓库在
+    /// 前端有专门的卡片展示与移除文案。
+    pub local: bool,
+}
+
+/// 本地仓库的 url 是 canonicalize 过的绝对路径；远程地址（https/ssh/
+/// git@）都不会被当成绝对路径。
+fn is_local_url(url: &str) -> bool {
+    Path::new(url).is_absolute()
 }
 
 /// 统一 MCP 服务器记录：`spec` 是中立的 JSON 配置，三个布尔是各 Agent
@@ -129,9 +138,11 @@ impl Store {
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| {
+                let url: String = r.get(1)?;
                 Ok(Repository {
                     id: r.get(0)?,
-                    url: r.get(1)?,
+                    local: is_local_url(&url),
+                    url,
                     reference: r.get(2)?,
                 })
             })
@@ -300,9 +311,11 @@ impl Store {
                 "SELECT id,url,git_ref FROM repositories WHERE id=?1",
                 [id],
                 |r| {
+                    let url: String = r.get(1)?;
                     Ok(Repository {
                         id: r.get(0)?,
-                        url: r.get(1)?,
+                        local: is_local_url(&url),
+                        url,
                         reference: r.get(2)?,
                     })
                 },
@@ -333,7 +346,12 @@ impl Store {
             )
             .map_err(|e| e.to_string())?;
         let id = self.db.last_insert_rowid();
-        let repo = Repository { id, url, reference };
+        let repo = Repository {
+            id,
+            local: is_local_url(&url),
+            url,
+            reference,
+        };
         if let Err(error) = self.clone_repository(&repo) {
             self.db
                 .execute("DELETE FROM repositories WHERE id=?1", [id])
@@ -540,6 +558,19 @@ mod tests {
     }
 
     #[test]
+    fn local_flag_marks_absolute_paths_only() {
+        // 远程 Git 地址一律不是本地仓库。
+        assert!(!is_local_url("https://github.com/o/r.git"));
+        assert!(!is_local_url("git@github.com:o/r.git"));
+        assert!(!is_local_url("ssh://git@github.com/o/r.git"));
+        if cfg!(windows) {
+            assert!(is_local_url("C:\\some\\repo"));
+        } else {
+            assert!(is_local_url("/tmp/some/repo"));
+        }
+    }
+
+    #[test]
     fn removing_repository_requires_no_distribution_skills_and_purges_cache() {
         let fixture = Fixture(
             std::env::temp_dir().join(format!("amc-repo-removal-{}", uuid::Uuid::new_v4())),
@@ -555,6 +586,8 @@ mod tests {
         let repo_id = store.db.last_insert_rowid();
         let cache = store.repo_dir(repo_id);
         fs::create_dir_all(&cache).unwrap();
+        // 远程地址不带 local 标志。
+        assert!(!store.repository(repo_id).unwrap().local);
         // 有分发技能时拒绝删除。
         store
             .save_skill(&SkillRecord {

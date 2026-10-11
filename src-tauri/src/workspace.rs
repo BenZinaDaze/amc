@@ -2,7 +2,7 @@ use crate::platform::{self, Result, SkillView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
-    env, fs,
+    fs,
     path::{Component, Path, PathBuf},
 };
 
@@ -34,7 +34,7 @@ pub fn default_workspace() -> Result<Workspace> {
 }
 
 pub fn default_root() -> Result<PathBuf> {
-    let home = fs::canonicalize(home()?).map_err(|e| format!("用户目录无效: {e}"))?;
+    let home = fs::canonicalize(platform::home()?).map_err(|e| format!("用户目录无效: {e}"))?;
     if !home.is_dir() {
         return Err("用户目录必须是目录".into());
     }
@@ -42,26 +42,13 @@ pub fn default_root() -> Result<PathBuf> {
     Ok(home)
 }
 
-fn home() -> Result<PathBuf> {
-    let value = if cfg!(windows) {
-        env::var_os("USERPROFILE").or_else(|| env::var_os("HOME"))
-    } else {
-        env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"))
-    };
-    value
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .ok_or_else(|| "无法定位用户目录，无法扫描通用来源".into())
-}
-
-
 pub struct SkillSource {
     pub path: PathBuf,
     pub label: &'static str,
 }
 
 pub fn skill_sources(root: &Path) -> Result<Vec<SkillSource>> {
-    let home = home()?;
+    let home = platform::home()?;
     Ok(vec![
         SkillSource {
             path: root.join(".agents/skills"),

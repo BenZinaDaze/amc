@@ -258,20 +258,21 @@ fn placeholder_status(entry: &store::StoredSubscription) -> SubscriptionStatus {
 #[derive(Debug, Clone)]
 pub enum FetchEvent {
     Begin(Vec<SubscriptionStatus>),
-    Ready(SubscriptionStatus),
+    Ready(Box<SubscriptionStatus>),
 }
 
 /// One card per entry, queried in parallel so several keys stay responsive.
-pub fn fetch_all_streaming<F>(data_dir: &Path, on_event: F) -> Vec<SubscriptionStatus>
+/// 读取存储失败（文件损坏等）直接报错，绝不下发空列表顶替。
+pub fn fetch_all_streaming<F>(data_dir: &Path, on_event: F) -> Result<Vec<SubscriptionStatus>>
 where
     F: Fn(FetchEvent) + Sync,
 {
-    let stored = store::read_stored(data_dir);
+    let stored = store::read_stored(data_dir)?;
     on_event(FetchEvent::Begin(
         stored.entries.iter().map(placeholder_status).collect(),
     ));
     let on_event = &on_event;
-    std::thread::scope(|scope| {
+    let statuses = std::thread::scope(|scope| {
         let handles: Vec<_> = stored
             .entries
             .iter()
@@ -291,7 +292,7 @@ where
                             ..placeholder_status(entry)
                         },
                     };
-                    on_event(FetchEvent::Ready(status.clone()));
+                    on_event(FetchEvent::Ready(Box::new(status.clone())));
                     status
                 })
             })
@@ -307,12 +308,13 @@ where
                 })
             })
             .collect()
-    })
+    });
+    Ok(statuses)
 }
 
 /// Aggregate variant for tests; production streams via [`fetch_all_streaming`].
 #[cfg(test)]
-pub fn fetch_all(data_dir: &Path) -> Vec<SubscriptionStatus> {
+pub fn fetch_all(data_dir: &Path) -> Result<Vec<SubscriptionStatus>> {
     fetch_all_streaming(data_dir, |_| {})
 }
 

@@ -14,7 +14,7 @@ use crate::{
     store::{SkillRecord, Store},
 };
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{collections::HashMap, fs, path::PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -466,7 +466,7 @@ fn omp_ignore_write(
     let name_value = serde_yaml::Value::String(name.into());
     let mut changed = false;
     if ignore {
-        let present = list.iter().any(|item| *item == name_value);
+        let present = list.contains(&name_value);
         if !present {
             list.push(name_value);
             changed = true;
@@ -592,15 +592,32 @@ impl Targets {
 
 /// 列表数据：中央副本提供描述，仓库缓存提供更新标记。
 pub fn state(store: &Store) -> Result<Vec<SkillView>> {
+    let records = store.skills()?;
+    // 每个仓库只 rev-parse 一次：HEAD 与安装记录的提交一致时，缓存
+    // 工作树必然还是安装时的内容（AMC 只做 checkout --force --detach，
+    // 从不改动缓存），可以跳过逐技能的全量快照哈希——那要把仓库文件
+    // 整个读进内存（上限 128 MiB），同一仓库多条技能时重复读多遍。
+    let mut repo_commits: HashMap<i64, Option<String>> = HashMap::new();
+    for record in &records {
+        repo_commits
+            .entry(record.repository_id)
+            .or_insert_with(|| store.commit(record.repository_id).ok());
+    }
     let mut views = Vec::new();
-    for record in store.skills()? {
+    for record in records {
         let description = platform::skill_metadata(&central_dir(store, &record.name).join("SKILL.md"))
             .map(|(_, description)| description)
             .unwrap_or_default();
-        let source = store.repo_dir(record.repository_id).join(&record.skill_path);
-        let update_available = platform::source_snapshot(&source, &store.repo_dir(record.repository_id))
-            .map(|files| !files.is_empty() && platform::tree_hash(&files) != record.hash)
-            .unwrap_or(false);
+        let repo_root = store.repo_dir(record.repository_id);
+        let source = repo_root.join(&record.skill_path);
+        let update_available = match repo_commits.get(&record.repository_id) {
+            Some(Some(commit)) if *commit == record.commit => false,
+            // 提交已变化（或仓库缓存缺失/无法读取）时退回内容哈希比较；
+            // 缓存缺失时快照同样失败，按无更新处理。
+            _ => platform::source_snapshot(&source, &repo_root)
+                .map(|files| !files.is_empty() && platform::tree_hash(&files) != record.hash)
+                .unwrap_or(false),
+        };
         views.push(SkillView {
             id: record.id,
             description,

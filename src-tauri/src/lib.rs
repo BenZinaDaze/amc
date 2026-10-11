@@ -254,7 +254,7 @@ async fn fetch_subscriptions(
     // `subscription-status` per finished query) so the UI never waits for the
     // slowest vendor; `nonce` lets the frontend drop stale requests' events.
     tauri::async_runtime::spawn_blocking(move || {
-        Ok(subscription::fetch_all_streaming(
+        subscription::fetch_all_streaming(
             &data_dir,
             |event| match &event {
                 subscription::FetchEvent::Begin(statuses) => {
@@ -269,11 +269,14 @@ async fn fetch_subscriptions(
                 subscription::FetchEvent::Ready(status) => {
                     let _ = app.emit(
                         "subscription-status",
-                        SubscriptionStatusEvent { nonce, status },
+                        SubscriptionStatusEvent {
+                            nonce,
+                            status: status.as_ref(),
+                        },
                     );
                 }
             },
-        ))
+        )
     })
     .await
     .map_err(|e| format!("后台操作失败: {e}"))?

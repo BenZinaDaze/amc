@@ -60,7 +60,7 @@ export function RepositoriesPanel({ state, skills, scanLoading, forget, busy, is
     if (!result) return;
     setRepositoryRemoval(null);
     forget(repository.id);
-    setNotice(result.message || `已移除 ${repository.localPath || repository.url}`);
+    setNotice(result.message || `已移除 ${repository.url}`);
     await reload();
   }
 
@@ -83,12 +83,12 @@ export function RepositoriesPanel({ state, skills, scanLoading, forget, busy, is
       {state.repositories.map((repo) => {
         const repositoryUrl = repositoryWebUrl(repo);
         return <article className="item-card repo-card" key={repo.id}>
-          <div className="item-icon mint"><Glyph name={repo.localPath ? "folder" : "repo"} /></div>
-          <div className="item-content"><h3>{repo.localPath ? "本地 Git 仓库" : repo.url}</h3>{repo.localPath && <p className="path-line">{repo.localPath}</p>}<p>{repo.localPath ? "本地仓库工作树" : `引用：${repo.reference || "默认分支"}`} · {skills[repo.id]?.length ?? (scanLoading ? "扫描中" : 0)} 项技能 · {state.skills.filter((item) => item.repositoryId === repo.id).length} 项已分发</p></div>
+          <div className="item-icon mint"><Glyph name={repo.local ? "folder" : "repo"} /></div>
+          <div className="item-content"><h3>{repo.local ? "本地 Git 仓库" : repo.url}</h3>{repo.local && <p className="path-line" title={repo.url}>{repo.url}</p>}<p>{repo.local ? "本地仓库工作树" : `引用：${repo.reference || "默认分支"}`} · {skills[repo.id]?.length ?? (scanLoading ? "扫描中" : 0)} 项技能 · {state.skills.filter((item) => item.repositoryId === repo.id).length} 项已分发</p></div>
           <div className="item-actions">
             {repositoryUrl && <button type="button" className="icon-button skill-source-link" title="打开 GitHub 仓库" aria-label={`打开 ${repo.url} 的 GitHub 仓库`} onClick={() => openExternal(repositoryUrl)}><Glyph name="external" size={15} /></button>}
             <button className="button button-muted" disabled={isBusy || scanLoading} onClick={() => void checkUpdates(repo.id)}>检查更新</button>
-            <button className="button button-danger-ghost" disabled={isBusy} onClick={() => { setError(""); setRepositoryRemoval(repo); }}>{repo.localPath ? "移除来源" : "移除仓库"}</button>
+            <button className="button button-danger-ghost" disabled={isBusy} onClick={() => { setError(""); setRepositoryRemoval(repo); }}>{repo.local ? "移除来源" : "移除仓库"}</button>
           </div>
         </article>;
       })}
@@ -96,17 +96,17 @@ export function RepositoriesPanel({ state, skills, scanLoading, forget, busy, is
     {repositoryRemoval && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !isBusy) setRepositoryRemoval(null); }}>
       <div className="modal" role="dialog" aria-modal="true" aria-labelledby="remove-repo-title">
         <div className="modal-head">
-          <div><div className="eyebrow">技能来源 / 移除确认</div><h2 id="remove-repo-title">{repositoryRemoval.localPath ? "移除本地 Git 来源" : "移除 Git 仓库"}</h2></div>
+          <div><div className="eyebrow">技能来源 / 移除确认</div><h2 id="remove-repo-title">{repositoryRemoval.local ? "移除本地 Git 来源" : "移除 Git 仓库"}</h2></div>
           <button className="icon-button" aria-label="关闭" disabled={isBusy} onClick={() => setRepositoryRemoval(null)}><Glyph name="close" size={20} /></button>
         </div>
         <div className="modal-body">
           {error && <div className="alert alert-error" role="alert"><Glyph name="warning" size={18} /><span>{error}</span></div>}
-          <p className="repo-remove-url">{repositoryRemoval.localPath || repositoryRemoval.url}</p>
+          <p className="repo-remove-url" title={repositoryRemoval.url}>{repositoryRemoval.url}</p>
           {repositoryRecords.length > 0 ? <div className="plan-warnings"><p><Glyph name="warning" size={16} />此来源还有 {repositoryRecords.length} 项已分发技能。请先移除这些技能，再移除来源。</p></div> :
-            <div className="plan-warnings"><p><Glyph name="warning" size={16} />将删除来源记录及 AMC 管理的{repositoryRemoval.localPath ? "本地 Git 缓存" : "Git 缓存"}。{repositoryRemoval.localPath && "原始路径不会删除。"}此操作无法撤销。</p></div>}
+            <div className="plan-warnings"><p><Glyph name="warning" size={16} />将删除来源记录及 AMC 管理的{repositoryRemoval.local ? "本地 Git 缓存" : "Git 缓存"}。{repositoryRemoval.local && "原始路径不会删除。"}此操作无法撤销。</p></div>}
           <div className="modal-actions">
             <button className="button button-muted" disabled={isBusy} onClick={() => setRepositoryRemoval(null)}>取消</button>
-            <button className="button button-danger" disabled={isBusy || repositoryRecords.length > 0} onClick={() => void removeRepository()}>{isBusy ? "正在移除…" : repositoryRemoval.localPath ? "确认移除来源" : "确认移除仓库"}</button>
+            <button className="button button-danger" disabled={isBusy || repositoryRecords.length > 0} onClick={() => void removeRepository()}>{isBusy ? "正在移除…" : repositoryRemoval.local ? "确认移除来源" : "确认移除仓库"}</button>
           </div>
         </div>
       </div>

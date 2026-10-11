@@ -487,7 +487,7 @@ mod tests {
         range: &str,
         prices: &Pricing,
     ) -> crate::usage::UsageStats {
-        let store = crate::usage::store::UsageStore::new(root).unwrap();
+        let mut store = crate::usage::store::UsageStore::new(root).unwrap();
         let scan = adapter.scan(0).unwrap();
         store.ingest("omp", &scan.records).unwrap();
         store
@@ -686,7 +686,7 @@ mod tests {
             mcp_json: root.join("agent/mcp.json"),
             config_root: root.clone(),
         };
-        let store = crate::usage::store::UsageStore::new(&root).unwrap();
+        let mut store = crate::usage::store::UsageStore::new(&root).unwrap();
         let scan = adapter.scan(0).unwrap();
         store.ingest("omp", &scan.records).unwrap();
         let range = crate::usage::UsageRange::parse(

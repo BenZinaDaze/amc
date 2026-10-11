@@ -15,7 +15,6 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    sync::atomic::AtomicI64,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -279,8 +278,6 @@ fn collect_jsonl(source: &str, directory: &Path, files: &mut Vec<PathBuf>) -> pl
     Ok(())
 }
 
-static LAST_SUCCESSFUL_SYNC: AtomicI64 = AtomicI64::new(0);
-
 /// Every agent AMC collects usage from; a new source registers here and
 /// implements [`AgentUsageAdapter`], nothing else.
 const AGENT_IDS: &[&str] = &["omp", "claude-code", "codex"];
@@ -315,7 +312,7 @@ fn adapter_for_read(agent_id: &str) -> platform::Result<Box<dyn AgentUsageAdapte
 /// Ingests one source's newest records into the archive; returns the scan's
 /// own last-write time so callers can report `synced_at`.
 fn ingest_source(
-    store: &store::UsageStore,
+    store: &mut store::UsageStore,
     agent_id: &str,
     adapter: &dyn AgentUsageAdapter,
 ) -> platform::Result<i64> {
@@ -364,12 +361,12 @@ pub fn sync_agent_usage(
 ) -> platform::Result<UsageStats> {
     let range = UsageRange::parse(range, now_millis()?)?;
     let prices = Pricing::load(price_file)?;
-    let store = store::UsageStore::new(data_dir)?;
+    let mut store = store::UsageStore::new(data_dir)?;
     let adapter = adapter_for(agent_id)?;
     adapter.sync_source()?;
-    let synced_at = ingest_source(&store, agent_id, adapter.as_ref())?;
+    let synced_at = ingest_source(&mut store, agent_id, adapter.as_ref())?;
     let now = now_millis()?;
-    LAST_SUCCESSFUL_SYNC.store(now, std::sync::atomic::Ordering::Relaxed);
+    store.set_synced_at(agent_id, now)?;
     let mut raw = store.query(Some(agent_id), range, &prices)?;
     raw.synced_at = now.max(synced_at);
     Ok(raw.finish())
@@ -386,9 +383,9 @@ pub fn get_agent_usage(
 ) -> platform::Result<UsageStats> {
     let range = UsageRange::parse(range, now_millis()?)?;
     let prices = Pricing::load(price_file)?;
-    let store = store::UsageStore::new(data_dir)?;
+    let mut store = store::UsageStore::new(data_dir)?;
     let mut synced_at = match adapter_for_read(agent_id) {
-        Ok(adapter) => match ingest_source(&store, agent_id, adapter.as_ref()) {
+        Ok(adapter) => match ingest_source(&mut store, agent_id, adapter.as_ref()) {
             Ok(scan_synced_at) => scan_synced_at,
             Err(error) => {
                 require_archive(&store, agent_id, error)?;
@@ -401,7 +398,8 @@ pub fn get_agent_usage(
         }
     };
     let mut raw = store.query(Some(agent_id), range, &prices)?;
-    synced_at = synced_at.max(LAST_SUCCESSFUL_SYNC.load(std::sync::atomic::Ordering::Relaxed));
+    // 「上次同步」只看本来源：别的 Agent 刚同步过不代表这个来源刷新过。
+    synced_at = synced_at.max(store.synced_at(Some(agent_id))?);
     raw.synced_at = synced_at;
     Ok(raw.finish())
 }
@@ -416,35 +414,35 @@ pub fn sync_agents_usage(
 ) -> platform::Result<UsageStats> {
     let range = UsageRange::parse(range, now_millis()?)?;
     let prices = Pricing::load(price_file)?;
-    let store = store::UsageStore::new(data_dir)?;
+    let mut store = store::UsageStore::new(data_dir)?;
     let mut first_error: Option<String> = None;
-    let mut synced_any = false;
+    let mut synced_sources: Vec<&str> = Vec::new();
     for agent_id in AGENT_IDS {
         let result = adapter_for(agent_id)
             .and_then(|adapter| {
                 adapter.sync_source()?;
-                ingest_source(&store, agent_id, adapter.as_ref())
+                ingest_source(&mut store, agent_id, adapter.as_ref())
             })
             .map(|_| ());
         match result {
-            Ok(()) => synced_any = true,
+            Ok(()) => synced_sources.push(agent_id),
             Err(error) => {
                 let _ = first_error.get_or_insert(error);
             }
         }
     }
-    if !synced_any && !store.has_records(None)? {
+    if synced_sources.is_empty() && !store.has_records(None)? {
         return Err(first_error.unwrap_or_else(|| "没有可统计的 Agent 用量来源".to_owned()));
     }
     let now = now_millis()?;
-    if synced_any {
-        LAST_SUCCESSFUL_SYNC.store(now, std::sync::atomic::Ordering::Relaxed);
+    for source in &synced_sources {
+        store.set_synced_at(source, now)?;
     }
     let mut raw = store.query(None, range, &prices)?;
-    raw.synced_at = if synced_any {
-        now
+    raw.synced_at = if synced_sources.is_empty() {
+        store.synced_at(None)?
     } else {
-        LAST_SUCCESSFUL_SYNC.load(std::sync::atomic::Ordering::Relaxed)
+        now
     };
     Ok(raw.finish())
 }
@@ -458,18 +456,20 @@ pub fn get_agents_usage(
 ) -> platform::Result<UsageStats> {
     let range = UsageRange::parse(range, now_millis()?)?;
     let prices = Pricing::load(price_file)?;
-    let store = store::UsageStore::new(data_dir)?;
+    let mut store = store::UsageStore::new(data_dir)?;
     let mut synced_at = 0;
     for agent_id in AGENT_IDS {
         match adapter_for_read(agent_id)
-            .and_then(|adapter| ingest_source(&store, agent_id, adapter.as_ref()))
+            .and_then(|adapter| ingest_source(&mut store, agent_id, adapter.as_ref()))
         {
             Ok(scan_synced_at) => synced_at = synced_at.max(scan_synced_at),
             Err(error) => require_archive(&store, agent_id, error)?,
         }
     }
     let mut raw = store.query(None, range, &prices)?;
-    raw.synced_at = synced_at.max(LAST_SUCCESSFUL_SYNC.load(std::sync::atomic::Ordering::Relaxed));
+    // 汇总视图取全部来源里最近一次成功同步的时间。
+    synced_at = synced_at.max(store.synced_at(None)?);
+    raw.synced_at = synced_at;
     Ok(raw.finish())
 }
 
@@ -555,7 +555,7 @@ mod tests {
     #[test]
     fn the_archive_merges_every_source_in_one_query_per_model() {
         let root = env::temp_dir().join(format!("amc-archive-merge-{}", uuid::Uuid::new_v4()));
-        let store = store::UsageStore::new(&root).unwrap();
+        let mut store = store::UsageStore::new(&root).unwrap();
         let timestamp = 1_700_000_000_000;
         store
             .ingest(
@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn same_model_from_different_sources_merges_into_one_priced_row() {
         let root = env::temp_dir().join(format!("amc-archive-relay-{}", uuid::Uuid::new_v4()));
-        let store = store::UsageStore::new(&root).unwrap();
+        let mut store = store::UsageStore::new(&root).unwrap();
         let timestamp = 1_700_000_000_000;
         let prices = prices();
         let expected = 2. * prices.cost("gpt-6-sol", 1, 3, 0, 2).unwrap();

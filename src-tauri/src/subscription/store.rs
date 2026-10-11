@@ -58,11 +58,22 @@ pub(super) struct StoredSubscriptions {
     pub(super) entries: Vec<StoredSubscription>,
 }
 
-pub(super) fn read_stored(data_dir: &Path) -> StoredSubscriptions {
-    let mut stored: StoredSubscriptions = fs::read_to_string(data_dir.join(SUBSCRIPTIONS_FILE))
-        .ok()
-        .and_then(|contents| serde_json::from_str(&contents).ok())
-        .unwrap_or_default();
+/// 读取已存条目。文件不存在视为首次运行返回空；文件存在但读取或解析
+/// 失败必须报错——静默清零会让下一次 add 直接把（可能是半截的）凭据
+/// 文件覆盖掉，造成不可恢复的丢失。
+pub(super) fn read_stored(data_dir: &Path) -> Result<StoredSubscriptions> {
+    let path = data_dir.join(SUBSCRIPTIONS_FILE);
+    let contents = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(StoredSubscriptions::default()),
+        Err(e) => return Err(format!("读取订阅数据 {} 失败: {e}", path.display())),
+    };
+    let mut stored: StoredSubscriptions = serde_json::from_str(&contents).map_err(|e| {
+        format!(
+            "订阅数据 {} 已损坏（{e}）；请修复或删除该文件后重试",
+            path.display()
+        )
+    })?;
     // Counter-less files (hand-written) would otherwise fall back to
     // surviving-entry ids; lift the counter above every stored id before any
     // deletion can empty the list and a re-add reuse an id.
@@ -73,14 +84,14 @@ pub(super) fn read_stored(data_dir: &Path) -> StoredSubscriptions {
         .max()
         .unwrap_or(0);
     stored.next_id = stored.next_id.max(highest);
-    stored
+    Ok(stored)
 }
 
 fn write_stored_entries(data_dir: &Path, stored: StoredSubscriptions) -> Result<()> {
-    fs::create_dir_all(data_dir).map_err(|e| format!("创建数据目录失败: {e}"))?;
-    let path = data_dir.join(SUBSCRIPTIONS_FILE);
     let bytes = serde_json::to_vec_pretty(&stored).map_err(|e| format!("序列化失败: {e}"))?;
-    write_private(&path, &bytes)
+    // 原子替换 + 0600：写中途崩溃最多留下一个 .tmp 暂存文件，正式文件
+    // 始终是完整的一份。
+    crate::platform::write_atomic_private(&data_dir.join(SUBSCRIPTIONS_FILE), &bytes)
 }
 
 pub(super) fn validate_name(name: &str) -> Result<String> {
@@ -104,24 +115,6 @@ fn validate_key(key: &str) -> Result<String> {
     Ok(key.to_owned())
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    let mut file = options
-        .open(path)
-        .map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|e| e.to_string())?;
-    }
-    file.write_all(bytes)
-        .map_err(|e| format!("写入 {} 失败: {e}", path.display()))
-}
-
 // ---------------------------------------------------------------- entry CRUD
 
 #[allow(clippy::too_many_arguments)]
@@ -141,7 +134,7 @@ pub fn add_plan(
     let platform = validate_platform(kind, platform)?;
     let base_url = validate_base_url(kind, base_url)?;
     let key = validate_key(key)?;
-    let mut stored = read_stored(data_dir);
+    let mut stored = read_stored(data_dir)?;
     let id = next_entry_id(&mut stored);
     let account = account
         .map(str::trim)
@@ -171,7 +164,7 @@ pub fn update_plan(
 ) -> Result<()> {
     let name = validate_name(name)?;
     let key = key.map(validate_key).transpose()?;
-    let mut stored = read_stored(data_dir);
+    let mut stored = read_stored(data_dir)?;
     let entry = stored
         .entries
         .iter_mut()
@@ -187,7 +180,7 @@ pub fn update_plan(
 }
 
 pub fn remove_plan(data_dir: &Path, id: &str) -> Result<()> {
-    let mut stored = read_stored(data_dir);
+    let mut stored = read_stored(data_dir)?;
     let before = stored.entries.len();
     stored.entries.retain(|entry| entry.id != id);
     if stored.entries.len() != before {
@@ -248,7 +241,7 @@ mod tests {
             None
         )
         .is_err());
-        assert!(fetch_all(&dir).is_empty());
+        assert!(fetch_all(&dir).unwrap().is_empty());
 
         // The same vendor can be added twice with different keys.
         add_plan(&dir, "glm", "  主号  ", "zai", "  12345678abcdef  ", None, None).unwrap();
@@ -263,7 +256,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let entries = read_stored(&dir).entries;
+        let entries = read_stored(&dir).unwrap().entries;
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].id, "1");
         assert_eq!(entries[1].id, "2");
@@ -282,26 +275,26 @@ mod tests {
         // A missing key keeps the stored one; a blank one is rejected.
         update_plan(&dir, "1", "主力", "bigmodel", None, None).unwrap();
         assert!(update_plan(&dir, "1", "主力", "bigmodel", Some("  "), None).is_err());
-        let entry = &read_stored(&dir).entries[0];
+        let entry = &read_stored(&dir).unwrap().entries[0];
         assert_eq!(entry.name, "主力");
         assert_eq!(entry.platform, "bigmodel");
         assert_eq!(entry.key, "12345678abcdef");
         update_plan(&dir, "1", "主力", "zai", Some("aaaa1234"), None).unwrap();
-        assert_eq!(read_stored(&dir).entries[0].key, "aaaa1234");
+        assert_eq!(read_stored(&dir).unwrap().entries[0].key, "aaaa1234");
         assert!(update_plan(&dir, "99", "x", "zai", None, None).is_err());
         // The instance URL is replaced on every edit.
         update_plan(&dir, "3", "自建", "", None, Some("http://127.0.0.1:9")).unwrap();
         assert_eq!(
-            read_stored(&dir).entries[2].base_url.as_deref(),
+            read_stored(&dir).unwrap().entries[2].base_url.as_deref(),
             Some("http://127.0.0.1:9")
         );
 
         remove_plan(&dir, "1").unwrap();
-        assert_eq!(read_stored(&dir).entries.len(), 2);
+        assert_eq!(read_stored(&dir).unwrap().entries.len(), 2);
         remove_plan(&dir, "1").unwrap(); // removing again is a no-op
 
         // Each entry renders as its own card with its own name and masked key.
-        let statuses = fetch_all(&dir);
+        let statuses = fetch_all(&dir).unwrap();
         assert_eq!(statuses.len(), 2);
         assert_eq!(statuses[0].id, "2");
         assert_eq!(statuses[0].title, "备用");
@@ -313,11 +306,48 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_store_file_errors_instead_of_silently_wiping() {
+        let dir = temp_dir("corrupt");
+        fs::write(dir.join(SUBSCRIPTIONS_FILE), "{ not json").unwrap();
+        // 读取必须报错（带文件路径），而不是当成空列表。
+        let Err(error) = read_stored(&dir) else {
+            panic!("损坏的存储文件必须报错");
+        };
+        assert!(error.contains("已损坏"), "{error}");
+        assert!(error.contains(SUBSCRIPTIONS_FILE), "{error}");
+        // 所有写入口与查询都拒绝在损坏文件之上继续，避免覆盖凭据。
+        assert!(add_plan(&dir, "glm", "名", "zai", "12345678", None, None).is_err());
+        assert!(update_plan(&dir, "1", "名", "zai", None, None).is_err());
+        assert!(remove_plan(&dir, "1").is_err());
+        assert!(fetch_all(&dir).is_err());
+        // 文件内容原样保留，用户可自行抢救。
+        assert_eq!(
+            fs::read_to_string(dir.join(SUBSCRIPTIONS_FILE)).unwrap(),
+            "{ not json"
+        );
+    }
+
+    #[test]
+    fn atomic_writes_leave_no_staging_files() {
+        let dir = temp_dir("staging");
+        add_plan(&dir, "glm", "名", "zai", "12345678abcdef", None, None).unwrap();
+        update_plan(&dir, "1", "改名", "zai", None, None).unwrap();
+        remove_plan(&dir, "1").unwrap();
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "残留暂存文件: {leftovers:?}");
+        assert!(dir.join(SUBSCRIPTIONS_FILE).is_file());
+    }
+
+    #[test]
     fn streaming_paints_placeholders_then_one_ready_per_entry() {
         let dir = temp_dir("streaming");
         // Empty store: a single Begin with no cards.
         let events = Mutex::new(Vec::new());
-        let statuses = fetch_all_streaming(&dir, |event| events.lock().push(event));
+        let statuses = fetch_all_streaming(&dir, |event| events.lock().push(event)).unwrap();
         assert!(statuses.is_empty());
         assert!(matches!(
             &events.into_inner()[0],
@@ -346,7 +376,7 @@ mod tests {
         )
         .unwrap();
         let events = Mutex::new(Vec::new());
-        let statuses = fetch_all_streaming(&dir, |event| events.lock().push(event));
+        let statuses = fetch_all_streaming(&dir, |event| events.lock().push(event)).unwrap();
         // The returned list keeps stored order regardless of completion order.
         let ids: Vec<&str> = statuses.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["1", "2"]);
@@ -376,17 +406,17 @@ mod tests {
         add_plan(&dir, "glm", "乙", "zai", "12345678abcdef", None, None).unwrap();
         remove_plan(&dir, "2").unwrap();
         add_plan(&dir, "glm", "丙", "zai", "12345678abcdef", None, None).unwrap();
-        let stored = read_stored(&dir);
+        let stored = read_stored(&dir).unwrap();
         let ids: Vec<&str> = stored.entries.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["1", "3"]);
         // A stale view of the deleted entry cannot touch the new one.
         assert!(update_plan(&dir, "2", "幽灵", "zai", None, None).is_err());
         remove_plan(&dir, "2").unwrap(); // removing a stale id is a no-op
-        assert_eq!(read_stored(&dir).entries.len(), 2);
+        assert_eq!(read_stored(&dir).unwrap().entries.len(), 2);
 
         remove_plan(&dir, "1").unwrap();
         add_plan(&dir, "glm", "丁", "zai", "12345678abcdef", None, None).unwrap();
-        let stored = read_stored(&dir);
+        let stored = read_stored(&dir).unwrap();
         let ids: Vec<&str> = stored.entries.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["3", "4"]);
     }
@@ -407,6 +437,6 @@ mod tests {
         remove_plan(&dir, "5").unwrap();
         add_plan(&dir, "glm", "新的", "zai", "12345678abcdef", None, None).unwrap();
         let stored = read_stored(&dir);
-        assert_eq!(stored.entries[0].id, "6");
+        assert_eq!(stored.unwrap().entries[0].id, "6");
     }
 }

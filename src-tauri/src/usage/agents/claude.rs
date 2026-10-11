@@ -296,7 +296,7 @@ mod tests {
         )
         .unwrap();
         let adapter = ClaudeCodeUsageAdapter::from_base(root.clone()).unwrap();
-        let store = crate::usage::store::UsageStore::new(&root).unwrap();
+        let mut store = crate::usage::store::UsageStore::new(&root).unwrap();
         let scan = adapter.scan(0).unwrap();
         store.ingest("claude-code", &scan.records).unwrap();
         // A second scan of the unchanged files archives nothing new: the

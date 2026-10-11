@@ -52,6 +52,10 @@ fn sanitize(message: String, token: &str) -> String {
 fn get_json(url: &str, token: &str) -> Result<Value> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(15)))
+        // 非 2xx 走下面的状态分支，把接口的错误体带出来（与其余供应商
+        // 的 HTTP 层同款；缺省时 ureq 会把 4xx/5xx 直接变成 Err，状态
+        // 分支只剩 2xx-非-200 可达，错误详情丢失）。
+        .http_status_as_error(false)
         .build()
         .into();
     let response = agent

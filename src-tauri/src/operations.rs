@@ -542,32 +542,47 @@ impl Core {
         match pending {
             Pending::Mcp(pending) => {
                 let McpPending { writes, action } = *pending;
-                apply_mcp(&self.store.root, &id, &writes)?;
-                let message = match action {
+                apply_mcp(&id, &writes)?;
+                // 数据库动作失败时按 before 还原已写入的 Agent 文件——与
+                // skills 路径对称：文件先落盘、DB 后提交，DB 失败必须回滚。
+                let outcome = match action {
                     McpAction::Save { record } => {
                         let name = record.name.clone();
-                        self.store.save_mcp_server(&record)?;
-                        format!("MCP {name} 已保存并写入所选 Agent 的用户级配置")
+                        self.store
+                            .save_mcp_server(&record)
+                            .map(|_| format!("MCP {name} 已保存并写入所选 Agent 的用户级配置"))
                     }
                     McpAction::Delete { name } => {
-                        self.store.delete_mcp_server(&name)?;
-                        format!("MCP {name} 已从数据库与各 Agent 配置中移除")
+                        self.store
+                            .delete_mcp_server(&name)
+                            .map(|_| format!("MCP {name} 已从数据库与各 Agent 配置中移除"))
                     }
                     McpAction::Toggle {
                         name,
                         agent,
                         enabled,
-                    } => {
-                        let mut record = self
-                            .store
-                            .mcp_server(&name)?
-                            .ok_or("方案已失效，请重新预览")?;
-                        record.set_enabled(agent, enabled);
-                        self.store.save_mcp_server(&record)?;
-                        format!("已在 {} 中{} {name}", agent.title(), if enabled { "启用" } else { "停用" })
-                    }
+                    } => self
+                        .store
+                        .mcp_server(&name)
+                        .and_then(|record| record.ok_or_else(|| "方案已失效，请重新预览".to_string()))
+                        .and_then(|mut record| {
+                            record.set_enabled(agent, enabled);
+                            self.store.save_mcp_server(&record).map(|_| {
+                                format!(
+                                    "已在 {} 中{} {name}",
+                                    agent.title(),
+                                    if enabled { "启用" } else { "停用" }
+                                )
+                            })
+                        }),
                 };
-                Ok(Message { message })
+                match outcome {
+                    Ok(message) => Ok(Message { message }),
+                    Err(error) => match undo_mcp_writes(&writes) {
+                        Ok(()) => Err(error),
+                        Err(recovery) => Err(format!("{error}；{recovery}")),
+                    },
+                }
             }
             Pending::Skills(pending) => {
                 let SkillsPending {
@@ -592,7 +607,15 @@ impl Core {
                 }
                 let (backup_dir, undo_steps) =
                     apply_skill_writes(&self.store.root, &id, &writes)?;
-                apply_config_writes(&id, &config_writes)?;
+                if let Err(error) = apply_config_writes(&id, &config_writes) {
+                    // 配置写入失败（已执行的部分由 apply_config_writes 就地
+                    // 还原，未执行的不触碰用户当前内容）：目录写入已生效，
+                    // 必须与数据库失败走同一回滚出口。
+                    if let Err(recovery) = undo_skill_writes(&backup_dir, &undo_steps) {
+                        return Err(format!("{error}；{recovery}"));
+                    }
+                    return Err(error);
+                }
                 let result = match &action {
                     skills::SkillAction::Save { record, .. } => self
                         .store
@@ -663,17 +686,18 @@ fn config_change(write: &skills::ConfigWrite) -> Change {
     };
     Change {
         path: write.path.display().to_string(),
-        before: write
-            .before
-            .as_deref()
-            .map_or_else(|| "（新建）".to_owned(), |bytes| render(bytes)),
+        before: match &write.before {
+            Some(bytes) => render(bytes),
+            None => "（新建）".to_owned(),
+        },
         after: render(&write.after),
     }
 }
 
 /// 配置文件写入（OMP config.yml / Codex config.toml）：先全量校验
-/// before 防漂移，再以临时文件 + rename 原子替换。回滚所需旧字节保留在
-/// ConfigWrite.before 中（见 undo_config_writes），无需磁盘备份。
+/// before 防漂移，再以临时文件 + rename 原子替换。写入中途失败时，已
+/// 执行的写入就地还原（校验失败时尚无任何写入，不触碰用户当前内容）。
+/// 回滚所需旧字节保留在 ConfigWrite.before 中，无需磁盘备份。
 fn apply_config_writes(id: &str, writes: &[skills::ConfigWrite]) -> Result<()> {
     for write in writes {
         let actual = match fs::read(&write.path) {
@@ -688,15 +712,33 @@ fn apply_config_writes(id: &str, writes: &[skills::ConfigWrite]) -> Result<()> {
             ));
         }
     }
-    for (index, write) in writes.iter().enumerate() {
-        let parent = write.path.parent().ok_or("配置文件路径无效")?;
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        let temp = parent.join(format!(".amc-cfg-{id}-{index}.tmp"));
-        write_private(&temp, &write.after)?;
-        fs::rename(&temp, &write.path).map_err(|error| {
-            let _ = fs::remove_file(&temp);
-            format!("写入 {} 失败: {error}", write.path.display())
-        })?;
+    let mut executed: Vec<&skills::ConfigWrite> = Vec::new();
+    let failure = (|| -> Result<()> {
+        for (index, write) in writes.iter().enumerate() {
+            let parent = write.path.parent().ok_or("配置文件路径无效")?;
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            let temp = parent.join(format!(".amc-cfg-{id}-{index}.tmp"));
+            write_private(&temp, &write.after)?;
+            fs::rename(&temp, &write.path).map_err(|error| {
+                let _ = fs::remove_file(&temp);
+                format!("写入 {} 失败: {error}", write.path.display())
+            })?;
+            executed.push(write);
+        }
+        Ok(())
+    })();
+    if let Err(error) = failure {
+        for write in executed.iter().rev() {
+            match &write.before {
+                Some(bytes) => {
+                    let _ = fs::write(&write.path, bytes);
+                }
+                None => {
+                    let _ = fs::remove_file(&write.path);
+                }
+            }
+        }
+        return Err(error);
     }
     Ok(())
 }
@@ -829,7 +871,10 @@ fn apply_skill_writes(
     Ok((backup_dir, done))
 }
 
-fn apply_mcp(data_dir: &Path, id: &str, writes: &[McpWrite]) -> Result<()> {
+/// MCP 文件写入：先全量校验 before 防漂移，再以临时文件 + rename 原子
+/// 替换。回滚用配置目录里的 `.amc-<id>-<n>.old` 临时文件；旧内容本身
+/// 保留在每个写入的 `before` 字节里（见 undo_mcp_writes），无需额外备份。
+fn apply_mcp(id: &str, writes: &[McpWrite]) -> Result<()> {
     for write in writes {
         let parent = write.path.parent().ok_or("MCP 目标路径无效")?;
         platform::no_links(&write.path, parent)?;
@@ -842,17 +887,12 @@ fn apply_mcp(data_dir: &Path, id: &str, writes: &[McpWrite]) -> Result<()> {
             return Err("MCP 文件自预览后已变化，请重新预览".into());
         }
     }
-    let backup_dir = data_dir.join("backups/mcp");
-    fs::create_dir_all(&backup_dir).map_err(|e| e.to_string())?;
     let mut staged = Vec::new();
     for (index, write) in writes.iter().enumerate() {
         let parent = write.path.parent().ok_or("MCP 目标路径无效")?;
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         let temp = parent.join(format!(".amc-{id}-{index}.tmp"));
         let stage_result = (|| -> Result<()> {
-            if let Some(old) = &write.before {
-                write_private(&backup_dir.join(format!("{id}-{index}.bak")), old)?;
-            }
             write_private(&temp, &write.after)?;
             if let Ok(metadata) = fs::metadata(&write.path) {
                 fs::set_permissions(&temp, metadata.permissions()).map_err(|e| e.to_string())?;
@@ -883,7 +923,7 @@ fn apply_mcp(data_dir: &Path, id: &str, writes: &[McpWrite]) -> Result<()> {
             if write.before.is_some() {
                 if let Err(recovery) = fs::rename(&old_path, &write.path) {
                     failure = Some(format!(
-                        "写入失败: {error}; 恢复失败: {recovery}，旧文件在 {}",
+                        "写入失败: {error}; 恢复失败: {recovery}，旧文件保留在 {}",
                         old_path.display()
                     ));
                     break;
@@ -899,25 +939,24 @@ fn apply_mcp(data_dir: &Path, id: &str, writes: &[McpWrite]) -> Result<()> {
         for index in (0..completed).rev() {
             let write = &writes[index];
             let parent = write.path.parent().ok_or("MCP 目标路径无效")?;
+            let old_path = parent.join(format!(".amc-{id}-{index}.old"));
             let restored = if write.before.is_some() {
-                fs::remove_file(&write.path).and_then(|_| {
-                    fs::rename(parent.join(format!(".amc-{id}-{index}.old")), &write.path)
-                })
+                fs::remove_file(&write.path).and_then(|_| fs::rename(&old_path, &write.path))
             } else {
                 fs::remove_file(&write.path)
             };
             if let Err(e) = restored {
-                recovery_error = Some(e.to_string());
+                recovery_error = Some(match write.before.is_some() {
+                    true => format!("{e}（旧文件保留在 {}）", old_path.display()),
+                    false => e.to_string(),
+                });
             }
         }
         for path in staged {
             let _ = fs::remove_file(path);
         }
         if let Some(recovery) = recovery_error {
-            return Err(format!(
-                "{error}; 恢复失败: {recovery}，原文件备份在 {}",
-                backup_dir.display()
-            ));
+            return Err(format!("{error}; 恢复失败: {recovery}"));
         }
         return Err(error);
     }
@@ -928,6 +967,31 @@ fn apply_mcp(data_dir: &Path, id: &str, writes: &[McpWrite]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// apply_mcp 已写入文件、但随后的数据库动作失败时使用：按 before 字节
+/// 还原各 Agent 配置文件；before 为 None 的新建文件直接删除。
+fn undo_mcp_writes(writes: &[McpWrite]) -> Result<()> {
+    let mut failures = Vec::new();
+    for write in writes.iter().rev() {
+        let outcome = match &write.before {
+            Some(bytes) => fs::write(&write.path, bytes)
+                .map_err(|error| format!("还原 {}: {error}", write.path.display())),
+            None => match fs::remove_file(&write.path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!("移除 {}: {error}", write.path.display())),
+            },
+        };
+        if let Err(error) = outcome {
+            failures.push(error);
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("MCP 配置回滚未完全成功：{}", failures.join("；")))
+    }
 }
 
 fn preview_mcp(path: &Path, data: &[u8]) -> String {

@@ -6,10 +6,10 @@
 //! updates reprice archived usage.
 use super::{RawUsage, Totals, UsageRange, UsageRecord};
 use crate::{platform, pricing::Pricing};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use std::{
     collections::BTreeMap,
-    path::{Path, PathBuf},
+    path::Path,
     time::Duration,
 };
 
@@ -19,21 +19,18 @@ type UsageRow = (String, i64, i64, i64, i64, i64, i64);
 const FILE_NAME: &str = "usage.sqlite3";
 const BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 
+/// 持有一个连接：每次命令只 open/建表/迁移一次，后续读写共用
+/// （WAL + busy_timeout 允许多命令并发）。
 pub(super) struct UsageStore {
-    path: PathBuf,
+    db: rusqlite::Connection,
 }
 
 impl UsageStore {
     pub(super) fn new(data_dir: &Path) -> platform::Result<Self> {
         std::fs::create_dir_all(data_dir).map_err(|e| format!("创建 AMC 数据目录失败: {e}"))?;
-        Ok(Self {
-            path: data_dir.join(FILE_NAME),
-        })
-    }
-
-    fn open(&self) -> platform::Result<rusqlite::Connection> {
-        let db = rusqlite::Connection::open(&self.path)
-            .map_err(|e| format!("打开 AMC 用量数据库 {} 失败: {e}", self.path.display()))?;
+        let path = data_dir.join(FILE_NAME);
+        let db = rusqlite::Connection::open(&path)
+            .map_err(|e| format!("打开 AMC 用量数据库 {} 失败: {e}", path.display()))?;
         db.busy_timeout(BUSY_TIMEOUT)
             .map_err(|e| format!("设置 AMC 用量数据库并发超时失败: {e}"))?;
         // WAL keeps concurrent command handlers from failing on locks; the
@@ -89,18 +86,18 @@ impl UsageStore {
             )
             .map_err(|e| format!("记录 AMC 用量数据库版本失败: {e}"))?;
         }
-        Ok(db)
+        Ok(Self { db })
     }
 
     /// Inserts unseen records and returns how many were new. The primary
     /// key makes repeated scans of the same source idempotent: resumes,
     /// forks and re-broadcasts collapse into the record they duplicate.
-    pub(super) fn ingest(&self, source: &str, records: &[UsageRecord]) -> platform::Result<usize> {
+    pub(super) fn ingest(&mut self, source: &str, records: &[UsageRecord]) -> platform::Result<usize> {
         if records.is_empty() {
             return Ok(0);
         }
-        let mut db = self.open()?;
-        let transaction = db
+        let transaction = self
+            .db
             .transaction()
             .map_err(|e| format!("开启 AMC 用量事务失败: {e}"))?;
         let mut inserted = 0;
@@ -154,11 +151,11 @@ impl UsageStore {
         range: UsageRange,
         prices: &Pricing,
     ) -> platform::Result<RawUsage> {
-        let db = self.open()?;
         let mut totals = Totals::default();
         let mut models: BTreeMap<String, Totals> = BTreeMap::new();
         let mut trend: BTreeMap<i64, (i64, i64)> = BTreeMap::new();
-        let mut stmt = db
+        let mut stmt = self
+            .db
             .prepare(
                 "SELECT model, timestamp, input_tokens, output_tokens, \
                  cache_read_tokens, cache_write_tokens, total_tokens \
@@ -218,26 +215,66 @@ impl UsageStore {
     /// source as a lower bound so files that cannot hold anything newer are
     /// skipped without parsing.
     pub(super) fn high_water(&self, source: &str) -> platform::Result<i64> {
-        let db = self.open()?;
-        db.query_row(
-            "SELECT MAX(timestamp) FROM usage_records WHERE source = ?1",
-            [source],
-            |row| row.get::<_, Option<i64>>(0),
-        )
-        .map_err(|e| format!("读取 AMC 用量水位失败: {e}"))
-        .map(|value| value.unwrap_or(0))
+        self.db
+            .query_row(
+                "SELECT MAX(timestamp) FROM usage_records WHERE source = ?1",
+                [source],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(|e| format!("读取 AMC 用量水位失败: {e}"))
+            .map(|value| value.unwrap_or(0))
     }
 
     /// Whether the archive holds any records for a source (or for any
     /// source when `source` is `None`).
     pub(super) fn has_records(&self, source: Option<&str>) -> platform::Result<bool> {
-        let db = self.open()?;
-        db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM usage_records WHERE ?1 IS NULL OR source = ?1)",
-            params![source],
-            |row| row.get::<_, bool>(0),
-        )
-        .map_err(|e| format!("读取 AMC 用量数据库失败: {e}"))
+        self.db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM usage_records WHERE ?1 IS NULL OR source = ?1)",
+                params![source],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|e| format!("读取 AMC 用量数据库失败: {e}"))
+    }
+
+    /// 记录某来源最近一次成功同步的时间（meta 表，per-source）。单 Agent
+    /// 页的「上次同步」只反映该来源自己，不被其他 Agent 的同步污染。
+    pub(super) fn set_synced_at(&self, source: &str, at: i64) -> platform::Result<()> {
+        self.db
+            .execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, ?2)",
+                params![format!("last_sync:{source}"), at.to_string()],
+            )
+            .map_err(|e| format!("记录 AMC 同步时间失败: {e}"))?;
+        Ok(())
+    }
+
+    /// 某来源（`None` 时取全部来源的最大值）最近一次成功同步的时间；
+    /// 无记录为 0。
+    pub(super) fn synced_at(&self, source: Option<&str>) -> platform::Result<i64> {
+        match source {
+            Some(source) => {
+                let text: Option<String> = self
+                    .db
+                    .query_row(
+                        "SELECT value FROM meta WHERE key = ?1",
+                        [format!("last_sync:{source}")],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| format!("读取 AMC 同步时间失败: {e}"))?;
+                Ok(text.and_then(|text| text.parse().ok()).unwrap_or(0))
+            }
+            None => self
+                .db
+                .query_row(
+                    "SELECT MAX(CAST(value AS INTEGER)) FROM meta WHERE key LIKE 'last_sync:%'",
+                    [],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .map_err(|e| format!("读取 AMC 同步时间失败: {e}"))
+                .map(|value| value.unwrap_or(0)),
+        }
     }
 }
 
@@ -261,7 +298,7 @@ mod tests {
     #[test]
     fn repeated_ingests_are_idempotent_per_source_and_external_id() {
         let root = std::env::temp_dir().join(format!("amc-store-dedupe-{}", uuid::Uuid::new_v4()));
-        let store = UsageStore::new(&root).unwrap();
+        let mut store = UsageStore::new(&root).unwrap();
         let records = [record("a", 1_700_000_000_000, 6), record("b", 1_700_000_001_000, 6)];
         assert_eq!(store.ingest("omp", &records).unwrap(), 2);
         // The same records again — a fresh scan of an unchanged source.
@@ -289,7 +326,7 @@ mod tests {
     #[test]
     fn queries_filter_by_source_and_range_boundaries() {
         let root = std::env::temp_dir().join(format!("amc-store-range-{}", uuid::Uuid::new_v4()));
-        let store = UsageStore::new(&root).unwrap();
+        let mut store = UsageStore::new(&root).unwrap();
         let start = 1_700_000_000_000;
         let end = start + 86_400_000;
         store
@@ -313,6 +350,25 @@ mod tests {
             .finish();
         assert_eq!(stats.total_requests, 2);
         assert_eq!(stats.synced_at, 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn synced_at_is_tracked_per_source() {
+        let root = std::env::temp_dir().join(format!("amc-store-sync-{}", uuid::Uuid::new_v4()));
+        let store = UsageStore::new(&root).unwrap();
+        assert_eq!(store.synced_at(Some("omp")).unwrap(), 0);
+        assert_eq!(store.synced_at(None).unwrap(), 0);
+        store.set_synced_at("omp", 100).unwrap();
+        store.set_synced_at("claude-code", 200).unwrap();
+        // 单来源只读自己的时间；汇总视图取全部来源的最大值。
+        assert_eq!(store.synced_at(Some("omp")).unwrap(), 100);
+        assert_eq!(store.synced_at(Some("codex")).unwrap(), 0);
+        assert_eq!(store.synced_at(None).unwrap(), 200);
+        // 重复同步覆盖旧时间。
+        store.set_synced_at("omp", 300).unwrap();
+        assert_eq!(store.synced_at(Some("omp")).unwrap(), 300);
+        assert_eq!(store.synced_at(None).unwrap(), 300);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -347,7 +403,7 @@ mod tests {
             )
             .unwrap();
         }
-        let store = UsageStore::new(&root).unwrap();
+        let mut store = UsageStore::new(&root).unwrap();
         // The write guard refuses a usage-less record alongside a real one;
         // the open inside also runs the v1 purge of the legacy row.
         let mut failed = record("failed", 1_700_000_001_000, 0);

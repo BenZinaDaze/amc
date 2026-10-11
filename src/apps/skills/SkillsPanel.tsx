@@ -52,7 +52,7 @@ export function SkillsPanel({ state, repositorySkills, repositorySkillErrors, re
   const normalizedDiscoverSearch = discoverSearch.trim().toLocaleLowerCase();
   const filteredDiscoveredSkills = normalizedDiscoverSearch ? discoveredSkills.filter((skill) => {
     const repository = state.repositories.find((item) => item.id === skill.repositoryId);
-    return [skill.name, skill.description, skill.path, repository?.url, repository?.localPath, repository?.reference].filter(Boolean).join(" ").toLocaleLowerCase().includes(normalizedDiscoverSearch);
+    return [skill.name, skill.description, skill.path, repository?.url, repository?.reference].filter(Boolean).join(" ").toLocaleLowerCase().includes(normalizedDiscoverSearch);
   }) : discoveredSkills;
   const repositoryFailureCount = Object.keys(repositorySkillErrors).length;
 

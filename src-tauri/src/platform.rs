@@ -7,8 +7,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     env, fs,
+    io::Write,
     path::{Component, Path, PathBuf},
     process::Command,
+    time::Duration,
 };
 
 pub type Result<T, E = String> = std::result::Result<T, E>;
@@ -125,6 +127,43 @@ fn skill_metadata_text(text: &str, file: &Path) -> Result<(String, String)> {
 
 pub fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+/// 原子替换写入：内容先进 0600 + fsync 的临时文件，再 rename 覆盖目标。
+/// 任一步失败都保留目标原文件不变。含密钥的文件必须走这条路，禁止原地
+/// truncate 写——进程中途崩溃会把半截文件留在盘上。
+pub fn write_atomic_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().ok_or("写入路径无效")?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("写入路径无效")?;
+    fs::create_dir_all(parent).map_err(|e| format!("创建目录 {} 失败: {e}", parent.display()))?;
+    let staging = parent.join(format!(".{}-{}.tmp", file_name, uuid::Uuid::new_v4()));
+    let staged = (|| -> Result<()> {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        let mut file = options
+            .open(&staging)
+            .map_err(|e| format!("创建 {} 失败: {e}", staging.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))
+                .map_err(|e| e.to_string())?;
+        }
+        file.write_all(bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|e| format!("写入 {} 失败: {e}", staging.display()))
+    })();
+    if let Err(error) = staged {
+        let _ = fs::remove_file(&staging);
+        return Err(error);
+    }
+    fs::rename(&staging, path).map_err(|error| {
+        let _ = fs::remove_file(&staging);
+        format!("替换 {} 失败: {error}", path.display())
+    })
 }
 
 pub fn snapshot(directory: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>> {
@@ -284,13 +323,11 @@ pub fn cli_status(executable: &str, home_extra_dirs: &[&str]) -> CliStatus {
         }
         found = true;
         if let Ok(mut command) = cli_command(&program) {
-            if let Ok(output) = command.arg("--version").output() {
-                if output.status.success() {
-                    return CliStatus {
-                        installed: true,
-                        version: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-                    };
-                }
+            if let Some(version) = probe_version(&mut command, CLI_PROBE_TIMEOUT) {
+                return CliStatus {
+                    installed: true,
+                    version,
+                };
             }
         }
     }
@@ -298,6 +335,42 @@ pub fn cli_status(executable: &str, home_extra_dirs: &[&str]) -> CliStatus {
         installed: found,
         version: String::new(),
     }
+}
+
+/// `--version` 探测超时：状态构建会连跑三个 CLI 探测，还持着 Core 的
+/// 锁——挂住的 CLI 不能拖住整个应用，超时即杀。
+const CLI_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 起子进程读 `--version` 输出，轮询等待；超时杀进程返回 `None`。
+/// 输出只在读到退出后才取（`--version` 输出远小于管道缓冲），不会死锁。
+fn probe_version(command: &mut Command, timeout: Duration) -> Option<String> {
+    use std::io::Read;
+    command
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let mut child = command.spawn().ok()?;
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(_) => return None,
+        }
+    };
+    if !status.success() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.read_to_end(&mut bytes);
+    }
+    Some(String::from_utf8_lossy(&bytes).trim().to_owned())
 }
 
 /// 在候选目录中找到可执行文件并运行其自带的更新子命令，返回修剪后的
@@ -343,11 +416,16 @@ pub fn is_sensitive_mcp_key(lower_name: &str) -> bool {
         "authorization"
             | "token"
             | "accesstoken"
+            | "access_token"
             | "refreshtoken"
+            | "refresh_token"
             | "clientsecret"
+            | "client_secret"
             | "credentialid"
             | "apikey"
             | "api_key"
+            | "x-api-key"
+            | "x_api_key"
             | "bearer_token"
             | "experimental_bearer_token"
             | "password"
@@ -479,5 +557,24 @@ mod tests {
         assert!(valid_mcp_name("server_name:v1"));
         assert!(!valid_mcp_name("server/name"));
         assert!(!valid_mcp_name(&"a".repeat(101)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn version_probe_kills_hanging_clis_within_timeout() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("amc-hang-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("hang-cli");
+        fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut command = Command::new(&script);
+        let started = std::time::Instant::now();
+        assert!(probe_version(&mut command, Duration::from_millis(300)).is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "挂住的 CLI 应在超时后被杀掉"
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

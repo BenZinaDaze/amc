@@ -223,7 +223,7 @@ fn connect_unary(agent: &ureq::Agent, path: &str, access_token: &str) -> Result<
         .header("x-cursor-client-version", CLIENT_VERSION)
         .header("x-cursor-client-type", "cli")
         .header("x-ghost-mode", "true")
-        .send_json(&json!({}))
+        .send_json(json!({}))
         .map_err(|error| match error {
             ureq::Error::StatusCode(401) => {
                 "Cursor 登录已过期，请删除该套餐后重新登录".to_owned()
