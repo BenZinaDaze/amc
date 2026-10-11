@@ -287,6 +287,19 @@ async fn list_subscription_kinds() -> platform::Result<Vec<subscription::Subscri
     Ok(subscription::list_kinds())
 }
 
+/// 单卡刷新（订阅卡片右键菜单）：只查询一个条目，供应商错误进卡片的
+/// error 字段而不是让命令失败。
+#[tauri::command]
+async fn fetch_subscription(
+    app: tauri::AppHandle,
+    id: String,
+) -> platform::Result<subscription::SubscriptionStatus> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || subscription::fetch_one(&data_dir, &id))
+        .await
+        .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
 #[tauri::command]
 async fn add_subscription_plan(
     app: tauri::AppHandle,
@@ -440,6 +453,7 @@ pub fn run() {
             get_agent_config_paths,
             refresh_pricing,
             fetch_subscriptions,
+            fetch_subscription,
             list_subscription_kinds,
             add_subscription_plan,
             update_subscription_plan,

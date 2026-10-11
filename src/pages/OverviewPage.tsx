@@ -7,13 +7,14 @@ import { SubscriptionSection } from "../apps/subscriptions/SubscriptionSection";
 import type { SubscriptionStatus } from "../api";
 import type { PageProps } from "./PageProps";
 
-/// 概览页：状态统计卡 + 订阅配额卡片流，套餐增删改在本页内完成。
-export function OverviewPage({ state, loading, isBusy, error, notice, setError, setNotice, reload, navigate, subscriptions, subscriptionsLoading, subscriptionsError, loadSubscriptions, removeSubscription }: PageProps & {
+/// 概览页：状态统计卡 + 订阅配额卡片流，套餐增删改与单卡刷新在本页内完成。
+export function OverviewPage({ state, loading, isBusy, error, notice, setError, setNotice, reload, navigate, subscriptions, subscriptionsLoading, subscriptionsError, loadSubscriptions, removeSubscription, refreshSubscription }: PageProps & {
   subscriptions: SubscriptionStatus[] | null;
   subscriptionsLoading: boolean;
   subscriptionsError: string;
   loadSubscriptions: (force: boolean) => Promise<void>;
   removeSubscription: (id: string) => Promise<void>;
+  refreshSubscription: (id: string) => Promise<void>;
 }) {
   const [planForm, setPlanForm] = useState<{ mode: "add" } | { mode: "edit"; status: SubscriptionStatus } | null>(null);
   const [cardMenu, setCardMenu] = useState<{ x: number; y: number; status: SubscriptionStatus; confirming: boolean } | null>(null);
@@ -48,7 +49,10 @@ export function OverviewPage({ state, loading, isBusy, error, notice, setError, 
       <div className="stat-grid"><button className="stat-card" onClick={() => navigate("mcp")}><span className="stat-icon purple"><Glyph name="plug" /></span><span className="stat-value">{state.mcp.length}</span><span className="stat-title">MCP 服务</span><small>查看配置来源 <Glyph name="arrow" size={13} /></small></button><button className="stat-card" onClick={() => navigate("skills")}><span className="stat-icon amber"><Glyph name="spark" /></span><span className="stat-value">{state.skills.length}</span><span className="stat-title">已分发 Skills</span><small>管理技能开关与来源 <Glyph name="arrow" size={13} /></small></button><button className="stat-card" onClick={() => navigate("repositories")}><span className="stat-icon mint"><Glyph name="repo" /></span><span className="stat-value">{state.repositories.length}</span><span className="stat-title">Git 仓库</span><small>发现更多技能 <Glyph name="arrow" size={13} /></small></button></div>
       <SubscriptionSection statuses={subscriptions} loading={subscriptionsLoading} error={subscriptionsError} onRefresh={() => void loadSubscriptions(true)} onAddPlan={() => setPlanForm({ mode: "add" })} onMenu={(status, x, y) => setCardMenu({ x, y, status, confirming: false })} />
       {planForm && <PlanFormModal form={planForm} onClose={() => setPlanForm(null)} onSaved={() => { setPlanForm(null); void loadSubscriptions(true); }} />}
-      {cardMenu && <div className="card-menu" role="menu" style={{ left: Math.max(8, Math.min(cardMenu.x, window.innerWidth - 156)), top: Math.max(8, Math.min(cardMenu.y, window.innerHeight - 98)) }}>
+      {cardMenu && <div className="card-menu" role="menu" style={{ left: Math.max(8, Math.min(cardMenu.x, window.innerWidth - 156)), top: Math.max(8, Math.min(cardMenu.y, window.innerHeight - 132)) }}>
+        <button role="menuitem" onMouseDown={(event) => { event.stopPropagation(); setCardMenu(null); void refreshSubscription(cardMenu.status.id); }}>
+          <Glyph name="refresh" size={15} />刷新
+        </button>
         <button role="menuitem" onMouseDown={(event) => { event.stopPropagation(); setCardMenu(null); setPlanForm({ mode: "edit", status: cardMenu.status }); }}>
           <Glyph name="edit" size={15} />编辑
         </button>

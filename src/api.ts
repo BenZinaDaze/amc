@@ -85,6 +85,7 @@ export const api = {
   planSkillToggle: (name: string, target: SkillTarget, enabled: boolean) => invoke<Plan>("plan_skill_toggle", { name, target, enabled }),
   planSkillRemove: (name: string) => invoke<Plan>("plan_skill_remove", { name }),
   fetchSubscriptions: (nonce: number) => invoke<SubscriptionStatus[]>("fetch_subscriptions", { nonce }),
+  fetchSubscription: (id: string) => invoke<SubscriptionStatus>("fetch_subscription", { id }),
   listSubscriptionKinds: () => invoke<SubscriptionKind[]>("list_subscription_kinds"),
   addSubscriptionPlan: (kind: string, name: string, platform: string, key: string, baseUrl: string) => invoke<Message>("add_subscription_plan", { kind, name, platform, key, baseUrl: baseUrl || null }),
   updateSubscriptionPlan: (id: string, name: string, platform: string, key: string, baseUrl: string) => invoke<Message>("update_subscription_plan", { id, name, platform, key: key || null, baseUrl: baseUrl || null }),

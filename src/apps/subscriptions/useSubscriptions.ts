@@ -73,5 +73,30 @@ export function useSubscriptions() {
     }
   }, [load]);
 
-  return { subscriptions, loading, error, load, remove };
+  /// 单卡刷新（右键菜单）：先把该卡置为 pending 骨架，再查询替换。
+  /// 与整批刷新互不干扰——两边都按 id 定位卡片，后到的结果覆盖先到的。
+  const refresh = useCallback(async (id: string) => {
+    setSubscriptions((prev) =>
+      prev?.map((entry) => (entry.id === id ? { ...entry, pending: true } : entry)) ?? prev,
+    );
+    try {
+      const status = await api.fetchSubscription(id);
+      setSubscriptions((prev) => {
+        if (!prev) return [status];
+        const index = prev.findIndex((entry) => entry.id === id);
+        if (index < 0) return prev; // 卡片已被删除，不复活。
+        const next = [...prev];
+        next[index] = status;
+        return next;
+      });
+    } catch (reason) {
+      // 基础设施错误（存储损坏、条目已删等）：恢复骨架并提示。
+      setSubscriptions((prev) =>
+        prev?.map((entry) => (entry.id === id ? { ...entry, pending: false } : entry)) ?? prev,
+      );
+      setError(`刷新订阅配额失败：${errorText(reason)}`);
+    }
+  }, []);
+
+  return { subscriptions, loading, error, load, remove, refresh };
 }

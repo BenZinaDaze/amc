@@ -201,7 +201,7 @@ fn next_entry_id(stored: &mut StoredSubscriptions) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::subscription::{fetch_all, fetch_all_streaming, FetchEvent};
+    use crate::subscription::{fetch_all, fetch_all_streaming, fetch_one, FetchEvent};
     use serde_json::json;
     use std::path::PathBuf;
     use parking_lot::Mutex;
@@ -340,6 +340,36 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "残留暂存文件: {leftovers:?}");
         assert!(dir.join(SUBSCRIPTIONS_FILE).is_file());
+    }
+
+    #[test]
+    fn fetch_one_refreshes_a_single_card() {
+        let dir = temp_dir("fetch-one");
+        // 条目不存在 → 命令失败。
+        let error = fetch_one(&dir, "9").unwrap_err();
+        assert!(error.contains("订阅套餐不存在"), "{error}");
+        // 供应商查询失败（连接拒绝）→ 成功返回带 error 的卡片状态。
+        add_plan(
+            &dir,
+            "sub2api",
+            "自建",
+            "",
+            "sk-abcdef123456",
+            Some("http://127.0.0.1:9"),
+            None,
+        )
+        .unwrap();
+        let status = fetch_one(&dir, "1").unwrap();
+        assert_eq!(status.id, "1");
+        assert_eq!(status.title, "自建");
+        assert_eq!(status.provider, "sub2api");
+        assert_eq!(status.key_hint.as_deref(), Some("…3456"));
+        assert!(!status.pending);
+        let error = status.error.expect("连接拒绝应进卡片 error 字段");
+        assert!(!error.contains("sk-abcdef123456"), "{error}");
+        // 删除后单刷同一个 id → 报错。
+        remove_plan(&dir, "1").unwrap();
+        assert!(fetch_one(&dir, "1").is_err());
     }
 
     #[test]

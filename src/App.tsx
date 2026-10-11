@@ -224,7 +224,7 @@ function App() {
       </aside>
       <main className="main-area">
         <div className="content">
-          {page === "overview" && <OverviewPage {...shared} subscriptions={subs.subscriptions} subscriptionsLoading={subs.loading} subscriptionsError={subs.error} loadSubscriptions={subs.load} removeSubscription={subs.remove} />}
+          {page === "overview" && <OverviewPage {...shared} subscriptions={subs.subscriptions} subscriptionsLoading={subs.loading} subscriptionsError={subs.error} loadSubscriptions={subs.load} removeSubscription={subs.remove} refreshSubscription={subs.refresh} />}
           {page === "agents" && <AgentsPage {...shared} claudeCodeStatus={claudeCodeStatus} codexStatus={codexStatus} refreshStatuses={refreshStatuses} />}
           {page === "omp" && <AgentUsagePage agentId="omp" name="OMP" title="OMP" refreshName="OMP" error={error} notice={notice} setError={setError} setNotice={setNotice} pill={state && <span className={`omp-version-pill ${state.agent.installed && state.agent.version ? "available" : "missing"}`}>{state.agent.installed && state.agent.version ? state.agent.version.replace(/^omp\//i, "") : "未安装"}</span>} />}
           {page === "claude" && <AgentUsagePage agentId="claude-code" name="Claude Code" title="Claude Code" refreshName="Claude Code" error={error} notice={notice} setError={setError} setNotice={setNotice} pill={claudeCodeStatus && <span className={`omp-version-pill ${claudeCodeStatus.installed && claudeCodeStatus.version ? "available" : "missing"}`}>{claudeCodeStatus.installed && claudeCodeStatus.version ? claudeCodeStatus.version.split(/\s+/)[0] : "未安装"}</span>} />}

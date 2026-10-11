@@ -318,6 +318,32 @@ pub fn fetch_all(data_dir: &Path) -> Result<Vec<SubscriptionStatus>> {
     fetch_all_streaming(data_dir, |_| {})
 }
 
+/// 单条刷新：只查询一个条目并返回其卡片状态（右键菜单的「刷新」）。
+/// 供应商查询失败以卡片的 error 字段带回（与整批刷新的 Ready 事件一致），
+/// 只有存储读取失败或条目不存在才让整个命令失败。
+pub fn fetch_one(data_dir: &Path, id: &str) -> Result<SubscriptionStatus> {
+    let stored = store::read_stored(data_dir)?;
+    let entry = stored
+        .entries
+        .iter()
+        .find(|entry| entry.id == id)
+        .ok_or_else(|| format!("订阅套餐不存在: {id}"))?;
+    Ok(match fetch_entry(entry) {
+        Ok(report) => SubscriptionStatus {
+            plan: report.plan,
+            quotas: report.quotas,
+            metrics: report.metrics,
+            pending: false,
+            ..placeholder_status(entry)
+        },
+        Err(error) => SubscriptionStatus {
+            error: Some(error),
+            pending: false,
+            ..placeholder_status(entry)
+        },
+    })
+}
+
 /// 登录型供应商的添加入口：跑完 OAuth 流程后直接落库，refresh token
 /// 只进存储、不出后端。名称先校验，避免浏览器打开后才发现名称非法。
 pub fn antigravity_login_and_add(data_dir: &Path, name: &str) -> Result<()> {
