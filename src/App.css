@@ -182,7 +182,14 @@ textarea{resize:vertical;line-height:1.55}
 .modal{width:min(530px,100%);max-height:min(90vh,850px);display:flex;flex-direction:column;background:#fff;border-radius:16px;box-shadow:0 22px 70px #0c15344f;overflow:hidden}
 .plan-modal{width:min(960px,100%)}
 .update-modal{width:min(560px,100%)}
-.update-notes{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;margin-bottom:16px;padding:12px 14px;font-size:13px;line-height:1.65;color:#3d4a63;background:#f7f8fb;border:1px solid #eef0f5;border-radius:10px}
+.update-notes{max-height:320px;overflow:auto;margin-bottom:16px;padding:12px 14px;font-size:13px;line-height:1.65;color:#3d4a63;background:#f7f8fb;border:1px solid #eef0f5;border-radius:10px}
+.update-notes h3{margin:0 0 6px;font-size:15px;color:#202a3f}
+.update-notes h4{margin:14px 0 4px;font-size:13.5px;color:#202a3f}
+.update-notes h5{margin:10px 0 2px;font-size:12.5px;color:#55617a}
+.update-notes p{margin:0 0 8px}
+.update-notes ul{margin:0 0 8px;padding-left:18px;display:grid;gap:4px}
+.update-notes pre{margin:0 0 8px;padding:8px 10px;background:#eef0f5;border-radius:8px;font-family:var(--font-mono);font-size:12px;white-space:pre;overflow-x:auto}
+.update-notes>:last-child{margin-bottom:0}
 .update-progress{height:6px;border-radius:99px;background:#e9ecf3;overflow:hidden;margin-bottom:16px}
 .update-progress-bar{display:block;height:100%;border-radius:99px;background:var(--accent);transition:width .2s ease}
 .modal-head{display:flex;align-items:flex-start;justify-content:space-between;padding:23px 26px 17px;border-bottom:1px solid #eef0f5;flex-shrink:0}

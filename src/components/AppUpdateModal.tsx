@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import type { Update } from "@tauri-apps/plugin-updater";
 import { Glyph } from "./Glyph";
+import { ReleaseNotes } from "./ReleaseNotes";
 import { errorText } from "../utils";
 
 /// 应用更新弹窗：展示版本迁移与更新说明，下载带进度条，安装完成后
@@ -57,7 +58,7 @@ export function AppUpdateModal({ update, onClose }: { update: Update; onClose: (
         </div>
         <div className="modal-body">
           {error && <div className="alert alert-error" role="alert"><Glyph name="warning" size={18} /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><Glyph name="close" size={16} /></button></div>}
-          <div className="update-notes">{update.body || "本次更新没有附带说明。"}</div>
+          <div className="update-notes"><ReleaseNotes body={update.body || "本次更新没有附带说明。"} /></div>
           {progress !== null && !installed && <div className="update-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}><span className="update-progress-bar" style={{ width: `${Math.round(progress * 100)}%` }} /></div>}
           <div className="modal-actions">
             <button className="button button-muted" disabled={busy} onClick={onClose}>稍后</button>
