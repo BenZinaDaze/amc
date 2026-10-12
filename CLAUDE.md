@@ -10,7 +10,7 @@ npm run tauri dev           # 完整应用(dev;更新器检查在 DEV 下自动�
 npm run build               # tsc 类型检查 + Vite 构建(前端验证用这个,没有前端测试框架)
 cargo test                  # 后端测试(在 src-tauri/ 下;120+ 用例,全离线)
 cargo clippy --all-targets  # 后端 lint,保持零警告
-npm run tauri build         # 发布构建;需要 TAURI_SIGNING_PRIVATE_KEY 环境变量(见 README)
+npm run tauri build         # 发布构建;需要 TAURI_SIGNING_PRIVATE_KEY 环境变量(见 docs/development.md)
 ```
 
 测试约定:fixture 一律放 `std::env::temp_dir()` 下以 uuid 命名的目录并在 Drop 中清理;会改写全局环境变量(HOME/CODEX_HOME 等)的测试必须持 `crate::test_support::env_lock()` 互斥。较大的测试文件用 `#[cfg(test)] #[path = "..._tests.rs"] mod tests;` 拆分(见 operations/settings)。
