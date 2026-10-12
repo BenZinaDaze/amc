@@ -444,11 +444,12 @@ impl Core {
             codex: previous.as_ref().is_none_or(|record| record.codex),
             claude: previous.as_ref().is_none_or(|record| record.claude),
         };
-        let summary = if previous.is_some() {
-            format!("更新技能 {name} 并同步已启用的投影目录")
-        } else {
-            format!("安装技能 {name} → 通用目录 (OMP/Codex) + Claude Code")
-        };
+        // 标题不枚举 Agent 名称（后续会增加新 Agent），
+        // 具体写入哪些目录由变更列表展示。
+        let summary = format!(
+            "{}技能 {name}",
+            if previous.is_some() { "更新" } else { "安装" }
+        );
         let source = self.store.repo_dir(repository_id).join(&skill_path);
         let action = skills::SkillAction::Save {
             record,
@@ -519,7 +520,7 @@ impl Core {
         let action = skills::SkillAction::Remove { name: name.clone() };
         let targets = skills::Targets::from_env()?;
         let (writes, config_writes, warnings) = skills::project(&self.store, &targets, &action)?;
-        let summary = format!("移除技能 {name}（删除所有投影目录与中央副本）");
+        let summary = format!("移除技能 {name}（各 Agent 目录中的副本一并删除）");
         let changes = writes
             .iter()
             .flat_map(dir_changes)
@@ -620,7 +621,7 @@ impl Core {
                     skills::SkillAction::Save { record, .. } => self
                         .store
                         .save_skill(record)
-                        .map(|_| format!("技能 {} 已保存并同步到启用的投影目录", record.name)),
+                        .map(|_| format!("技能 {} 已保存并同步到启用中的 Agent", record.name)),
                     skills::SkillAction::Toggle {
                         name,
                         target,
@@ -644,7 +645,7 @@ impl Core {
                     skills::SkillAction::Remove { name } => self
                         .store
                         .delete_skill(name)
-                        .map(|_| format!("技能 {name} 已从投影目录与 AMC 移除")),
+                        .map(|_| format!("技能 {name} 已从各 Agent 目录与 AMC 移除")),
                 };
                 match result {
                     Ok(message) => {
