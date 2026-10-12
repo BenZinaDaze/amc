@@ -13,7 +13,7 @@ jobs:
     name: Release notes check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history so the previous tag and the feat range are visible.
           fetch-depth: 0
@@ -73,8 +73,8 @@ jobs:
           - arch: x86_64
             target: x86_64-apple-darwin
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -117,7 +117,7 @@ jobs:
              "src-tauri/target/${{ matrix.target }}/release/bundle/macos/AMC_${{ matrix.arch }}.app.tar.gz.sig" \
              release-assets/
           ls -l release-assets/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dmg-${{ matrix.arch }}
           path: release-assets/*
@@ -129,7 +129,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history so the feat appendix can span the whole release.
           fetch-depth: 0
@@ -160,7 +160,7 @@ jobs:
             fi
           fi
           echo "RELEASE_NOTES=${BODY}" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: dmg-*
           path: dmg
