@@ -17,7 +17,9 @@
 :root{font-family:'DM Sans','Noto Sans SC',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#202938;background:#f7f8fa;font-synthesis:none;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased}
 *{box-sizing:border-box}
 html,body{height:100%}
-html{overscroll-behavior:none}
+/* 滚动条:细窄 + 柔和冷灰,与界面中性色一致;保留系统 overlay 自动隐藏行为
+   (标准属性需 WebKit ≥ 18.2,旧系统自动回退原生样式,勿改用 ::-webkit-scrollbar —— 那会变成常驻占位滚动条) */
+html{overscroll-behavior:none;scrollbar-width:thin;scrollbar-color:#b9c1cf transparent}
 body{margin:0;min-width:320px;overflow:hidden}
 button,input,textarea{font:inherit}
 button{cursor:pointer}
