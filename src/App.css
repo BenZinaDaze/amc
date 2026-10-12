@@ -146,7 +146,8 @@ button.tag:hover{filter:brightness(.95)}
 
 /* ---- Alerts / loading ---- */
 .alert{display:flex;align-items:flex-start;gap:10px;padding:13px 14px;border-radius:9px;margin-bottom:18px;font-size:12px;line-height:1.55;overflow-wrap:anywhere}
-.alert span{flex:1}
+/* pre-line：CLI 原始输出回退进通知时保留换行 */
+.alert span{flex:1;white-space:pre-line}
 .alert button{border:0;background:none;color:inherit;padding:0;display:flex}
 .alert-error{background:#fff0f0;color:#aa4850;border:1px solid #f8dadd}
 .alert-success{background:#eaf8f2;color:#2b9b76;border:1px solid #d3f0e3}

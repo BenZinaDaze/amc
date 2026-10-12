@@ -58,20 +58,55 @@ pub(crate) use agents::claude::{claude_code_status, ClaudeCodeStatus};
 pub(crate) use agents::codex::{codex_status, CodexStatus};
 pub(crate) use agents::omp::status as omp_status;
 
-/// Runs the agent's own update subcommand (`omp update` / `claude update` /
-/// `codex update`); the CLI owns the update mechanics, AMC only launches it.
+/// 运行 Agent 自带的更新子命令（`omp update` / `claude update` /
+/// `codex update`）；CLI 拥有更新机制，AMC 只负责启动它。通知文案由
+/// 更新前后实测的 `--version` 蒸馏（见 [`update_summary`]），不解析 CLI
+/// 的英文原始输出。
 pub fn update_agent(agent_id: &str) -> platform::Result<String> {
     use agents::{
         claude::claude_code_update,
         codex::codex_update,
         omp::update as omp_update,
     };
+    let (name, run): (&str, fn() -> platform::Result<String>) = match agent_id {
+        "omp" => ("OMP", omp_update),
+        "claude-code" => ("Claude Code", claude_code_update),
+        "codex" => ("Codex", codex_update),
+        other => return Err(format!("不支持的 Agent 更新来源: {other}")),
+    };
+    let before = agent_version(agent_id);
+    let output = run()?;
+    let after = agent_version(agent_id);
+    Ok(update_summary(name, &before, &after, &output))
+}
+
+/// 与各 Agent 状态卡片同一探测路径读一次 `--version`，探测失败返回空串。
+fn agent_version(agent_id: &str) -> String {
     match agent_id {
-        "omp" => omp_update(),
-        "claude-code" => claude_code_update(),
-        "codex" => codex_update(),
-        other => Err(format!("不支持的 Agent 更新来源: {other}")),
+        "omp" => omp_status().1,
+        "claude-code" => claude_code_status().version,
+        "codex" => codex_status().version,
+        _ => String::new(),
     }
+}
+
+/// 把更新结果蒸馏成一句中文通知：版本变化给「从 X 更新到 Y」，未变化
+/// 给「已是最新版本 X」。CLI 原始输出是多行英文日志且各家风味多变，
+/// 不做文本解析；只有更新后探测不到版本时才回退原始输出（可能多行，
+/// 由前端按换行原样展示）。
+fn update_summary(name: &str, before: &str, after: &str, output: &str) -> String {
+    let after_token = platform::version_token(after);
+    if after_token.is_empty() {
+        return output.trim().to_owned();
+    }
+    let before_token = platform::version_token(before);
+    if before_token.is_empty() {
+        return format!("{name} 已更新到 {after_token}");
+    }
+    if before_token == after_token {
+        return format!("{name} 已是最新版本 {after_token}");
+    }
+    format!("{name} 已从 {before_token} 更新到 {after_token}")
 }
 
 #[derive(Serialize)]
@@ -699,5 +734,36 @@ mod tests {
         env::remove_var("CODEX_HOME");
         fs::remove_dir_all(data_dir).unwrap();
         fs::remove_dir_all(empty_dir).unwrap();
+    }
+
+    #[test]
+    fn update_notices_distill_probed_versions_and_fall_back_to_raw_output() {
+        // 版本变化：蒸馏成「从 X 更新到 Y」，CLI 原始文案不进通知。
+        assert_eq!(
+            update_summary(
+                "OMP",
+                "omp 18.8.7",
+                "omp 18.10.0",
+                "Current version: 18.8.7\nNew version available: 18.10.0\n…"
+            ),
+            "OMP 已从 18.8.7 更新到 18.10.0"
+        );
+        // 更新前探测不到版本：只报新版本。
+        assert_eq!(
+            update_summary("Codex", "", "codex-cli 0.162.2", "…"),
+            "Codex 已更新到 0.162.2"
+        );
+        // 版本未变（含「本来就最新」）：报已是最新版本。
+        assert_eq!(
+            update_summary(
+                "Claude Code",
+                "2.1.296 (Claude Code)",
+                "2.1.296 (Claude Code)",
+                "…"
+            ),
+            "Claude Code 已是最新版本 2.1.296"
+        );
+        // 更新后探测不到版本：回退原始输出，保留换行、去掉首尾空白。
+        assert_eq!(update_summary("OMP", "18.8.7", "", " line1\nline2 "), "line1\nline2");
     }
 }

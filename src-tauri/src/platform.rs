@@ -373,11 +373,66 @@ fn probe_version(command: &mut Command, timeout: Duration) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).trim().to_owned())
 }
 
-/// 在候选目录中找到可执行文件并运行其自带的更新子命令，返回修剪后的
-/// 合并输出。候选无法启动（权限/架构不符）时尝试下一个；命令本身以
-/// 非零退出则优先把 stderr 作为失败原因带回。
+/// 从 CLI `--version` 原始输出中提取第一段点分版本号（与前端
+/// `versionToken` 同规则）："omp/18.8.7"、"2.1.296 (Claude Code)"、
+/// "codex-cli 0.162.1" → "18.8.7"、"2.1.296"、"0.162.1"；读不到返回空串。
+pub fn version_token(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut start = 0;
+    while start < bytes.len() {
+        if !bytes[start].is_ascii_digit() {
+            start += 1;
+            continue;
+        }
+        // 数字起点：吞掉整段「数字与点」，再校验是否为合法的点分数字组
+        //（每个点两侧都是数字，且至少一个点）。
+        let mut end = start;
+        while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
+            end += 1;
+        }
+        let candidate = &raw[start..end];
+        let dotted = candidate.contains('.')
+            && candidate
+                .split('.')
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()));
+        if dotted {
+            return candidate.to_owned();
+        }
+        start = end;
+    }
+    String::new()
+}
+
+/// 去除 ANSI CSI 转义序列（颜色/光标控制）：个别 CLI 在非终端管道里
+/// 仍会输出控制符，原样带进通知不可读。
+fn strip_ansi(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut cleaned = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        // 完整的 CSI 序列：ESC [ 参数字节(0x20–0x3F) 最终字节(0x40–0x7E)。
+        if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'[') {
+            let mut cursor = index + 2;
+            while bytes.get(cursor).is_some_and(|byte| (0x20..=0x3f).contains(byte)) {
+                cursor += 1;
+            }
+            if bytes.get(cursor).is_some_and(|byte| (0x40..=0x7e).contains(byte)) {
+                index = cursor + 1;
+                continue;
+            }
+        }
+        cleaned.push(bytes[index]);
+        index += 1;
+    }
+    // 被丢弃的都是 ASCII 区间字节，不会切断多字节 UTF-8 字符。
+    String::from_utf8_lossy(&cleaned).into_owned()
+}
+
+/// 在候选目录中找到可执行文件并运行其自带的更新子命令，返回去除
+/// 转义序列后修剪的合并输出。候选无法启动（权限/架构不符）时尝试
+/// 下一个；命令本身以非零退出则优先把 stderr 作为失败原因带回。
 pub fn cli_update(executable: &str, home_extra_dirs: &[&str], args: &[&str]) -> Result<String> {
-    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_owned();
+    let text = |bytes: &[u8]| strip_ansi(&String::from_utf8_lossy(bytes)).trim().to_owned();
     for program in cli_directories(executable, home().ok(), home_extra_dirs) {
         if !program.is_file() {
             continue;
@@ -576,5 +631,28 @@ mod tests {
             "挂住的 CLI 应在超时后被杀掉"
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn version_tokens_take_the_first_dotted_number() {
+        assert_eq!(version_token("omp/18.8.7"), "18.8.7");
+        assert_eq!(version_token("2.1.296 (Claude Code)"), "2.1.296");
+        assert_eq!(version_token("codex-cli 0.162.1"), "0.162.1");
+        // 纯数字（无点）、断开的点组都不算版本号。
+        assert_eq!(version_token("build 20261012"), "");
+        assert_eq!(version_token("sha256:96e2052…"), "");
+        assert_eq!(version_token("x.2"), "");
+        // 点组不合法时跳过该数字段，继续找下一个。
+        assert_eq!(version_token("1..2 3.4"), "3.4");
+        assert_eq!(version_token("1.2x3.4"), "1.2");
+    }
+
+    #[test]
+    fn ansi_sequences_are_stripped_from_captured_output() {
+        assert_eq!(strip_ansi("\x1b[32m✔ Updated\x1b[0m"), "✔ Updated");
+        assert_eq!(strip_ansi("中文\x1b[1;32m输出\x1b[0m"), "中文输出");
+        assert_eq!(strip_ansi("no escapes"), "no escapes");
+        // 不完整的转义序列原样保留。
+        assert_eq!(strip_ansi("tail\x1b["), "tail\x1b[");
     }
 }
