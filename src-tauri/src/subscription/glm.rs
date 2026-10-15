@@ -1,9 +1,9 @@
 //! GLM Coding Plan provider (Z.ai 国际版 / 智谱 BigModel 中国).
 //!
 //! Three monitor endpoints per credential: `quota/limit` (credit bars),
-//! `model-usage` (token totals plus the per-model split, windowed to the
-//! weekly credit cycle) and `tool-usage` (MCP calls). The endpoints are
-//! undocumented; [Z.ai's own usage plugin][plugin] is the reference.
+//! `model-usage` (token totals, windowed to the weekly credit cycle) and
+//! `tool-usage` (MCP calls). The endpoints are undocumented; [Z.ai's own
+//! usage plugin][plugin] is the reference.
 
 use crate::platform::Result;
 use chrono::{DateTime, Local, Timelike};
@@ -372,28 +372,11 @@ fn model_metrics(data: &Value, weekly: bool) -> Vec<MetricUsage> {
             value: calls,
         });
     }
-    // Per-model totals as reported by the API (modelSummaryList).
-    if let Some(models) = total
-        .and_then(|t| t.get("modelSummaryList"))
-        .and_then(Value::as_array)
-    {
-        let mut models: Vec<(String, i64)> = models
-            .iter()
-            .filter_map(|model| {
-                let name = model.get("modelName").and_then(Value::as_str)?.trim();
-                let tokens = model.get("totalTokens").and_then(Value::as_i64)?;
-                (!name.is_empty()).then(|| (name.to_owned(), tokens))
-            })
-            .collect();
-        models.sort_by_key(|(_, tokens)| std::cmp::Reverse(*tokens));
-        for (name, tokens) in models {
-            metrics.push(MetricUsage {
-                id: "model".to_owned(),
-                label: name,
-                value: tokens,
-            });
-        }
-    }
+    // modelSummaryList 故意不展示：服务端对它按「天」粒度聚合（窗口只要与某天
+    // 相交就计入那一整天，与 startTime 的时分秒无关），而 totalTokensUsage 按
+    // 「小时」桶聚合。周周期从周中某时刻开始时，拆分明细会把起始日 0 点到周期
+    // 起点之间属于上一周期的用量整段算进来（实测总和可达总数的两倍以上），
+    // 与上面的总数直接矛盾，且无法用查询参数修正——与总数对不上的数值不展示。
     metrics
 }
 
@@ -449,7 +432,10 @@ fn usage_window_query(start: Option<DateTime<Local>>) -> String {
 
 /// Start of the running weekly credit cycle: the weekly `CREDIT_LIMIT` entry's
 /// next reset minus seven days. Model-usage windows anchored here make the
-/// token totals cover the same span as the weekly reset bar.
+/// token totals cover the same span as the weekly reset bar. The API buckets
+/// usage by hour and counts any bucket the window touches, so the first
+/// partial hour may include up to an hour of the previous cycle — granularity
+/// limit of the endpoint, not fixable client-side.
 fn weekly_cycle_start(quota: &QuotaData) -> Option<DateTime<Local>> {
     let next = quota
         .limits
@@ -624,6 +610,7 @@ mod tests {
                 ]
             }
         });
+        // modelSummaryList 与总数矛盾（按天聚合），即使返回也不进指标。
         assert_eq!(
             model_metrics(&model, true),
             vec![
@@ -636,16 +623,6 @@ mod tests {
                     id: "requests".into(),
                     label: "模型请求（本周）".into(),
                     value: 318
-                },
-                MetricUsage {
-                    id: "model".into(),
-                    label: "GLM-5.3-Flash".into(),
-                    value: 44035108
-                },
-                MetricUsage {
-                    id: "model".into(),
-                    label: "GLM-5.3".into(),
-                    value: 6890648
                 },
             ]
         );
