@@ -66,7 +66,7 @@ fn default_locations_follow_home() {
     let groups = agent_config_paths().unwrap();
     assert_eq!(
         groups.iter().map(|group| group.agent).collect::<Vec<_>>(),
-        vec![Agent::Omp, Agent::Claude, Agent::Codex]
+        vec![Agent::Omp, Agent::Claude, Agent::Codex, Agent::Zcode]
     );
 
     let home = crate::platform::home().unwrap();
@@ -99,6 +99,23 @@ fn default_locations_follow_home() {
     assert_eq!(
         entry(codex, "Skills 目录").path,
         home.join(".agents/skills").display().to_string()
+    );
+
+    let zcode = groups
+        .iter()
+        .find(|group| group.agent == Agent::Zcode)
+        .unwrap();
+    assert_eq!(
+        entry(zcode, "配置文件").path,
+        home.join(".zcode/cli/config.json").display().to_string()
+    );
+    assert_eq!(
+        entry(zcode, "数据目录").path,
+        home.join(".zcode/cli").display().to_string()
+    );
+    assert_eq!(
+        entry(zcode, "Skills 目录").path,
+        home.join(".zcode/skills").display().to_string()
     );
 }
 
@@ -148,13 +165,13 @@ fn missing_agent_reports_uncreated() {
     names.extend_from_slice(PATH_ENV);
     let guard = EnvGuard::new(&names);
     guard.clear(&names);
-    // 空沙箱 HOME = 三个 Agent 都未安装
+    // 空沙箱 HOME = 四个 Agent 都未安装
     let sandbox = env::temp_dir().join(format!("amc-settings-empty-{}", std::process::id()));
     fs::create_dir_all(&sandbox).unwrap();
     env::set_var("HOME", &sandbox);
 
     let groups = agent_config_paths().unwrap();
-    assert_eq!(groups.len(), 3);
+    assert_eq!(groups.len(), 4);
     for group in &groups {
         assert_eq!(group.entries.len(), 3);
         for entry in &group.entries {

@@ -45,7 +45,8 @@ fn entry(purpose: &str, path: PathBuf, kind: PathKind) -> ConfigPathEntry {
     }
 }
 
-/// 汇总各 Agent 的用户级配置位置，按 OMP / Claude Code / Codex 排列。
+/// 汇总各 Agent 的用户级配置位置，按 OMP / Claude Code / Codex / ZCode
+/// 排列。
 pub fn agent_config_paths() -> Result<Vec<AgentConfigPaths>> {
     let home = platform::home()?;
     let targets = mcp::Targets::from_env()?;
@@ -73,6 +74,14 @@ pub fn agent_config_paths() -> Result<Vec<AgentConfigPaths>> {
                 entry("配置目录", mcp::codex::config_dir(&home), PathKind::Dir),
                 entry("Skills 目录", SkillTarget::Codex.dir(&home), PathKind::Dir),
                 entry("配置文件", targets.codex.file, PathKind::File),
+            ],
+        },
+        AgentConfigPaths {
+            agent: Agent::Zcode,
+            entries: vec![
+                entry("数据目录", mcp::zcode::config_dir(&home), PathKind::Dir),
+                entry("Skills 目录", SkillTarget::Zcode.dir(&home), PathKind::Dir),
+                entry("配置文件", targets.zcode.file, PathKind::File),
             ],
         },
     ])

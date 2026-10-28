@@ -2,11 +2,13 @@ import type { McpAgent } from "../api";
 
 /// 各 Agent 的品牌图标开关：激活为品牌色，未激活灰色。
 /// Claude / Codex（OpenAI）path 取自 simple-icons（CC0）；OMP 内联
-/// oh-my-pi 官方图标的 π 形几何（assets/icon.svg）。
+/// oh-my-pi 官方图标的 π 形几何（assets/icon.svg）；ZCode 品牌为黑白
+/// 单色，取可读的蓝色变体。
 export const agentMeta: Record<McpAgent, { label: string; color: string }> = {
   omp: { label: "OMP", color: "#f97316" },
   claude: { label: "Claude Code", color: "#d97757" },
   codex: { label: "Codex", color: "#10a37f" },
+  zcode: { label: "ZCode", color: "#3b82f6" },
 };
 
 export function AgentMark({ agent, active }: { agent: McpAgent; active: boolean }) {
@@ -24,6 +26,9 @@ export function AgentMark({ agent, active }: { agent: McpAgent; active: boolean 
           <rect x="15" y="14.7" width="0.9" height="2.2" rx="0.4" />
           <rect x="17.1" y="14.7" width="0.9" height="2.2" rx="0.4" />
         </g>
+      )}
+      {agent === "zcode" && (
+        <path fill="currentColor" d="M6 4.5h12v2.7l-7.3 9.6h7.6v2.7H6v-2.7l7.3-9.6H6z" />
       )}
       <title>{label}</title>
     </svg>

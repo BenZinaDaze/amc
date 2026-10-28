@@ -8,10 +8,11 @@ import { skillWebUrl } from "../repositories/gitUrl";
 type SkillTab = "installed" | "discover";
 type DiscoveredSkill = RepositorySkill & { repositoryId: number };
 
-const skillTargetMeta: Record<SkillTarget, { label: string; path: string }> = {
-  omp: { label: "OMP", path: "~/.agents/skills" },
-  codex: { label: "Codex", path: "~/.agents/skills" },
-  claude: { label: "Claude Code", path: "~/.claude/skills" },
+const skillTargetMeta: Record<SkillTarget, { label: string; path: string; note: string }> = {
+  omp: { label: "OMP", path: "~/.agents/skills", note: "（与另一 Agent 共用目录，停用写入其配置文件）" },
+  codex: { label: "Codex", path: "~/.agents/skills", note: "（与另一 Agent 共用目录，停用写入其配置文件）" },
+  claude: { label: "Claude Code", path: "~/.claude/skills", note: "" },
+  zcode: { label: "ZCode", path: "~/.zcode/skills", note: "（自动发现共用目录中的技能，停用时写入其配置隔离）" },
 };
 
 /// Skills 页：已分发（图标即开关）与发现（从仓库安装）两个视图。
@@ -40,8 +41,7 @@ export function SkillsPanel({ state, repositorySkills, repositorySkillErrors, re
   }
 
   async function toggleSkillTarget(skill: Skill, target: SkillTarget) {
-    const enabled = target === "omp" ? !skill.omp : target === "codex" ? !skill.codex : !skill.claude;
-    prepare(`${enabled ? "启用" : "停用"} ${skill.name}`, () => api.planSkillToggle(skill.name, target, enabled));
+    prepare(`${skill[target] ? "停用" : "启用"} ${skill.name}`, () => api.planSkillToggle(skill.name, target, !skill[target]));
   }
 
   // Agent 图标开关只对检测到已安装的 Agent 显示。
@@ -85,11 +85,10 @@ export function SkillsPanel({ state, repositorySkills, repositorySkillErrors, re
             </div>
             <div className="item-actions">
               <div className="skill-targets">
-                {(["omp", "codex", "claude"] as SkillTarget[]).filter((target) => installedAgents.includes(target) || (target === "omp" ? skill.omp : target === "codex" ? skill.codex : skill.claude)).map((target) => {
-                  const enabled = target === "omp" ? skill.omp : target === "codex" ? skill.codex : skill.claude;
+                {(["omp", "codex", "claude", "zcode"] as SkillTarget[]).filter((target) => installedAgents.includes(target) || skill[target]).map((target) => {
+                  const enabled = skill[target];
                   const detected = installedAgents.includes(target);
-                  const note = target === "claude" ? "" : "（与另一 Agent 共用目录，停用写入其配置文件）";
-                  return <button key={target} type="button" className={`mcp-agent-mark ${enabled && detected ? "on" : ""}`} disabled={isBusy} aria-pressed={enabled} aria-label={`${skillTargetMeta[target].label} ${enabled ? "停用" : "启用"}`} title={`${skillTargetMeta[target].label} · ${skillTargetMeta[target].path}${note}${detected ? "" : " · 未检测到安装"} · ${enabled ? "已启用，点击停用" : "未启用，点击启用"}`} onClick={() => void toggleSkillTarget(skill, target)}>
+                  return <button key={target} type="button" className={`mcp-agent-mark ${enabled && detected ? "on" : ""}`} disabled={isBusy} aria-pressed={enabled} aria-label={`${skillTargetMeta[target].label} ${enabled ? "停用" : "启用"}`} title={`${skillTargetMeta[target].label} · ${skillTargetMeta[target].path}${skillTargetMeta[target].note}${detected ? "" : " · 未检测到安装"} · ${enabled ? "已启用，点击停用" : "未启用，点击启用"}`} onClick={() => void toggleSkillTarget(skill, target)}>
                     <AgentMark agent={target} active={enabled && detected} />
                   </button>;
                 })}
@@ -99,7 +98,7 @@ export function SkillsPanel({ state, repositorySkills, repositorySkillErrors, re
             </div>
           </article>;
         })}
-      </div> : <Empty icon="spark" title="还没有分发的技能" description="切换到“发现技能”，从已添加的仓库安装；安装会写入 ~/.agents/skills（OMP 与 Codex）与 ~/.claude/skills，图标即开关。" action="发现技能" onClick={() => setSkillTab("discover")} />}
+      </div> : <Empty icon="spark" title="还没有分发的技能" description="切换到“发现技能”，从已添加的仓库安装；安装会写入 ~/.agents/skills（OMP 与 Codex）、~/.claude/skills 与 ~/.zcode/skills，图标即开关。" action="发现技能" onClick={() => setSkillTab("discover")} />}
       {detectedOnlySkills.length > 0 && <section className="section-block detected-skills">
         <div className="section-heading"><div><h2>已检测到的其他 Skills <span className="count">{detectedOnlySkills.length}</span></h2><p>这些技能来自本地通用或兼容来源，不属于 AMC 分发管理；这里只读展示，不提供更新或卸载操作。</p></div></div>
         <div className="card-list">

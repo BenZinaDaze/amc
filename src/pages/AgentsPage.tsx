@@ -5,7 +5,7 @@ import { Alerts } from "../components/Alerts";
 import { PageHeading } from "../components/PageHeading";
 import { AgentsUsagePanel } from "../apps/usage/AgentsUsagePanel";
 import { useAgentsUsage } from "../apps/usage/useUsage";
-import { api, type AgentUpdateSource, type AppUpdate, type ClaudeCodeStatus, type CodexStatus } from "../api";
+import { api, type AgentUpdateSource, type AppUpdate, type ClaudeCodeStatus, type CodexStatus, type ZcodeStatus } from "../api";
 import { isNewerVersion, versionToken } from "../utils";
 import type { PageProps } from "./PageProps";
 
@@ -34,9 +34,10 @@ function UpdateTag({ update, current, updating, disabled, onUpdate }: { update: 
 
 /// Agents 页：全 Agent 用量汇总 + 本机运行时检测；有新版时点击标签即
 /// 调用各 Agent 自带的更新命令。
-export function AgentsPage({ state, loading, error, notice, setError, setNotice, reload, navigate, operation, claudeCodeStatus, codexStatus, refreshStatuses }: PageProps & {
+export function AgentsPage({ state, loading, error, notice, setError, setNotice, reload, navigate, operation, claudeCodeStatus, codexStatus, zcodeStatus, refreshStatuses }: PageProps & {
   claudeCodeStatus: ClaudeCodeStatus | null;
   codexStatus: CodexStatus | null;
+  zcodeStatus: ZcodeStatus | null;
   refreshStatuses: () => void;
 }) {
   const usage = useAgentsUsage();
@@ -90,6 +91,11 @@ export function AgentsPage({ state, loading, error, notice, setError, setNotice,
             <div className="item-icon codex-icon-tile"><Glyph name="codex" size={22} /></div>
             <div className="item-content"><div className="item-title"><h3>Codex CLI</h3><span className={`tag ${codexStatus?.installed ? "tag-good" : "tag-muted"}`}>{codexStatus?.installed ? "已安装" : "未安装"}</span>{codexUpdate && <UpdateTag update={codexUpdate} current={codexVersion} updating={updating === "codex"} disabled={updating !== null} onUpdate={() => void runUpdate("codex", "Codex")} />}</div><p>{codexStatus ? (codexStatus.installed ? (codexStatus.version || "已找到可执行文件，但无法读取版本") : "未找到可用的 codex 可执行文件") : "正在检测 Codex CLI…"}</p></div>
             <div className="item-actions"><button className="button button-muted" onClick={() => navigate("codex")}>查看详情 <Glyph name="arrow" size={14} /></button></div>
+          </article>
+          <article className="item-card">
+            <div className="item-icon zcode-icon-tile"><Glyph name="zcode" size={22} /></div>
+            <div className="item-content"><div className="item-title"><h3>ZCode</h3><span className={`tag ${zcodeStatus?.installed ? "tag-good" : "tag-muted"}`}>{zcodeStatus?.installed ? "已安装" : "未安装"}</span></div><p>{zcodeStatus ? (zcodeStatus.installed ? (zcodeStatus.version ? `桌面应用 · 内核 ${zcodeStatus.version}（更新请在应用内完成）` : "已找到数据目录，但无法读取版本；更新请在应用内完成") : "未找到 ZCode 数据目录") : "正在检测 ZCode…"}</p></div>
+            <div className="item-actions"><button className="button button-muted" onClick={() => navigate("zcode")}>查看详情 <Glyph name="arrow" size={14} /></button></div>
           </article>
         </div>
       </section>

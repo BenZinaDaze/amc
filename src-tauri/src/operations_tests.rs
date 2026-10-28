@@ -1076,3 +1076,123 @@ fn undo_skill_writes_keeps_backup_and_reports_path_on_failed_restore() {
     assert!(!backup_dir.exists());
 }
 
+
+#[test]
+fn mcp_zcode_projects_into_nested_servers_and_preserves_other_keys() {
+    let fixture = Fixture::new();
+    let home = fixture.root.clone();
+    let _env = McpEnv::new(&home);
+    // 预置 ZCode 配置：mcp.servers 嵌套键 + 同文件里的 hooks 状态。
+    let config = home.join(".zcode/cli/config.json");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        &config,
+        r#"{"hooks":{"enabled":true},"mcp":{"servers":{"old":{"command":"keep"}}}}"#,
+    )
+    .unwrap();
+    let mut core = fixture.core();
+    let plan = core
+        .plan_mcp(
+            "demo".into(),
+            Some(json!({"type":"stdio","command":"true"})),
+            vec![mcp::Agent::Zcode],
+        )
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    let document: Value =
+        serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    assert_eq!(document["hooks"]["enabled"], true);
+    assert_eq!(document["mcp"]["servers"]["old"]["command"], "keep");
+    assert_eq!(document["mcp"]["servers"]["demo"]["command"], "true");
+    // ZCode 条目 schema 严格：不写 $schema，也不落到顶层 mcpServers。
+    assert!(document.get("$schema").is_none());
+    assert!(document.get("mcpServers").is_none());
+    // 停用后条目移除，其余内容原样保留。
+    let plan = core
+        .plan_mcp_toggle("demo".into(), mcp::Agent::Zcode, false)
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    let document: Value =
+        serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    assert!(document["mcp"]["servers"].get("demo").is_none());
+    assert_eq!(document["mcp"]["servers"]["old"]["command"], "keep");
+    assert_eq!(document["hooks"]["enabled"], true);
+}
+
+#[test]
+fn skill_zcode_toggle_isolates_shared_copy_via_config_override() {
+    let fixture = Fixture::new();
+    let home = fixture.root.clone();
+    let _env = McpEnv::new(&home);
+    // ZCode 已安装（配置目录存在），共享目录与自有目录都可用。
+    let zcode_config = home.join(".zcode/cli/config.json");
+    fs::create_dir_all(zcode_config.parent().unwrap()).unwrap();
+    fs::write(&zcode_config, r#"{"hooks":{"enabled":true}}"#).unwrap();
+    let mut core = fixture.core();
+    let (_repo, repository_id) = distribution_repo(&fixture, &mut core, "First");
+    let shared_dir = home.join(".agents/skills/example");
+    let zcode_dir = home.join(".zcode/skills/example");
+    let shared_md = shared_dir.join("SKILL.md");
+
+    // 安装：四个目标默认全开（含 ~/.zcode/skills）。
+    let plan = core
+        .plan_skill(repository_id, "skills/example".into())
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    assert!(zcode_dir.join("SKILL.md").is_file());
+    let document: Value =
+        serde_json::from_slice(&fs::read(&zcode_config).unwrap()).unwrap();
+    assert!(document.get("skillOverrides").is_none(), "全开时无需禁用项");
+
+    // 停用 ZCode（OMP/Codex 仍启用）：自有目录删除，共享副本被
+    // skillOverrides 按绝对路径隔离；同文件其它键保留。
+    let plan = core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Zcode, false)
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    assert!(!zcode_dir.exists() && shared_dir.exists());
+    let document: Value =
+        serde_json::from_slice(&fs::read(&zcode_config).unwrap()).unwrap();
+    assert_eq!(
+        document["skillOverrides"][shared_md.to_string_lossy().as_ref()],
+        json!({"enable": false})
+    );
+    assert_eq!(document["hooks"]["enabled"], true);
+
+    // 重新启用 ZCode：目录恢复，禁用项清除。
+    let plan = core
+        .plan_skill_toggle("example".into(), skills::SkillTarget::Zcode, true)
+        .unwrap();
+    core.apply(plan.id).unwrap();
+    assert!(zcode_dir.join("SKILL.md").is_file());
+    let document: Value =
+        serde_json::from_slice(&fs::read(&zcode_config).unwrap()).unwrap();
+    assert!(
+        document
+            .get("skillOverrides")
+            .and_then(|v| v.as_object())
+            .is_none_or(|m| m.is_empty())
+    );
+
+    // 共享目录整体移除（OMP/Codex 双关）后：zcode 停用不再补禁用项，
+    // 残留条目随目录一并清理。
+    for target in [
+        skills::SkillTarget::Codex,
+        skills::SkillTarget::Omp,
+        skills::SkillTarget::Zcode,
+    ] {
+        let plan = core
+            .plan_skill_toggle("example".into(), target, false)
+            .unwrap();
+        core.apply(plan.id).unwrap();
+    }
+    assert!(!shared_dir.exists() && !zcode_dir.exists());
+    let document: Value =
+        serde_json::from_slice(&fs::read(&zcode_config).unwrap()).unwrap();
+    assert!(
+        document
+            .get("skillOverrides")
+            .and_then(|v| v.as_object())
+            .is_none_or(|m| m.is_empty())
+    );
+}

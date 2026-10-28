@@ -40,6 +40,7 @@ pub struct McpRecord {
     pub omp: bool,
     pub claude: bool,
     pub codex: bool,
+    pub zcode: bool,
     pub managed: bool,
 }
 
@@ -52,6 +53,7 @@ impl McpRecord {
             omp: false,
             claude: false,
             codex: false,
+            zcode: false,
             managed: true,
         }
     }
@@ -61,6 +63,7 @@ impl McpRecord {
             Agent::Omp => self.omp,
             Agent::Claude => self.claude,
             Agent::Codex => self.codex,
+            Agent::Zcode => self.zcode,
         }
     }
 
@@ -69,15 +72,18 @@ impl McpRecord {
             Agent::Omp => self.omp = enabled,
             Agent::Claude => self.claude = enabled,
             Agent::Codex => self.codex = enabled,
+            Agent::Zcode => self.zcode = enabled,
         }
     }
 }
 
-/// 分发技能记录：仓库来源 + 固定的提交/内容哈希。投影目录只有两个
-/// 物理位置：`~/.agents/skills`（OMP 与 Codex 共用）与
-/// `~/.claude/skills`。`omp`、`codex` 的分离不靠目录，而靠各自配置
+/// 分发技能记录：仓库来源 + 固定的提交/内容哈希。物理目录有三个：
+/// `~/.agents/skills`（OMP 与 Codex 共用）、`~/.claude/skills` 与
+/// `~/.zcode/skills`。`omp`、`codex` 的分离不靠目录，而靠各自配置
 /// 文件里的禁用项（OMP config.yml ignoredSkills / Codex config.toml
-/// [[skills.config]]），所以两列都为 0 时目录才会被移除。
+/// [[skills.config]]），所以两列都为 0 时目录才会被移除；ZCode 还会
+/// 自动发现 `~/.agents/skills` 中的技能，其停用隔离靠 config.json 的
+/// skillOverrides（见 skills.rs）。
 #[derive(Clone, Serialize)]
 pub struct SkillRecord {
     pub id: i64,
@@ -89,6 +95,29 @@ pub struct SkillRecord {
     pub omp: bool,
     pub codex: bool,
     pub claude: bool,
+    pub zcode: bool,
+}
+
+/// 为已存在的表补一列（INTEGER NOT NULL DEFAULT 0）：新库由建表语句
+/// 覆盖，老库在这里按需 ALTER，已补过则跳过。
+fn migrate_column(db: &Connection, table: &str, column: &str) -> Result<()> {
+    let mut stmt = db
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|e| format!("读取 {table} 表结构失败: {e}"))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| format!("读取 {table} 表结构失败: {e}"))?
+        .collect::<rusqlite::Result<Vec<String>>>()
+        .map_err(|e| format!("读取 {table} 表结构失败: {e}"))?;
+    if columns.iter().any(|name| name == column) {
+        return Ok(());
+    }
+    db.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"),
+        [],
+    )
+    .map_err(|e| format!("迁移 {table}.{column} 失败: {e}"))?;
+    Ok(())
 }
 
 pub struct Store {
@@ -116,7 +145,8 @@ impl Store {
                 content_hash TEXT NOT NULL,
                 omp INTEGER NOT NULL DEFAULT 0,
                 codex INTEGER NOT NULL DEFAULT 0,
-                claude INTEGER NOT NULL DEFAULT 0
+                claude INTEGER NOT NULL DEFAULT 0,
+                zcode INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS mcp_servers (
                 name TEXT PRIMARY KEY,
@@ -124,10 +154,14 @@ impl Store {
                 omp INTEGER NOT NULL DEFAULT 0,
                 claude INTEGER NOT NULL DEFAULT 0,
                 codex INTEGER NOT NULL DEFAULT 0,
+                zcode INTEGER NOT NULL DEFAULT 0,
                 managed INTEGER NOT NULL DEFAULT 0
             );",
         )
         .map_err(|e| format!("初始化 AMC 数据库失败: {e}"))?;
+        // 老库补列：建表语句只对新库生效，已存在的表按需 ALTER。
+        migrate_column(&db, "mcp_servers", "zcode")?;
+        migrate_column(&db, "skills", "zcode")?;
         Ok(Self { db, root })
     }
 
@@ -154,7 +188,7 @@ impl Store {
     pub fn mcp_servers(&self) -> Result<Vec<McpRecord>> {
         let mut stmt = self
             .db
-            .prepare("SELECT name,spec,omp,claude,codex,managed FROM mcp_servers WHERE managed=1 ORDER BY name")
+            .prepare("SELECT name,spec,omp,claude,codex,zcode,managed FROM mcp_servers WHERE managed=1 ORDER BY name")
             .map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], Self::row_mcp).map_err(|e| e.to_string())?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -176,14 +210,15 @@ impl Store {
             omp: row.get::<_, i64>(2)? != 0,
             claude: row.get::<_, i64>(3)? != 0,
             codex: row.get::<_, i64>(4)? != 0,
-            managed: row.get::<_, i64>(5)? != 0,
+            zcode: row.get::<_, i64>(5)? != 0,
+            managed: row.get::<_, i64>(6)? != 0,
         })
     }
 
     pub fn mcp_server(&self, name: &str) -> Result<Option<McpRecord>> {
         self.db
             .query_row(
-                "SELECT name,spec,omp,claude,codex,managed FROM mcp_servers WHERE name=?1",
+                "SELECT name,spec,omp,claude,codex,zcode,managed FROM mcp_servers WHERE name=?1",
                 [name],
                 Self::row_mcp,
             )
@@ -195,8 +230,8 @@ impl Store {
         let spec = serde_json::to_string(&record.spec).map_err(|e| e.to_string())?;
         self.db
             .execute(
-                "INSERT OR REPLACE INTO mcp_servers(name,spec,omp,claude,codex,managed) VALUES (?1,?2,?3,?4,?5,?6)",
-                params![record.name, spec, record.omp, record.claude, record.codex, record.managed],
+                "INSERT OR REPLACE INTO mcp_servers(name,spec,omp,claude,codex,zcode,managed) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![record.name, spec, record.omp, record.claude, record.codex, record.zcode, record.managed],
             )
             .map_err(|e| e.to_string())?;
         Ok(())
@@ -214,7 +249,7 @@ impl Store {
     pub fn skills(&self) -> Result<Vec<SkillRecord>> {
         let mut stmt = self
             .db
-            .prepare("SELECT id,repository_id,skill_path,name,git_commit,content_hash,omp,codex,claude FROM skills ORDER BY name")
+            .prepare("SELECT id,repository_id,skill_path,name,git_commit,content_hash,omp,codex,claude,zcode FROM skills ORDER BY name")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| {
@@ -228,6 +263,7 @@ impl Store {
                     omp: r.get::<_, i64>(6)? != 0,
                     codex: r.get::<_, i64>(7)? != 0,
                     claude: r.get::<_, i64>(8)? != 0,
+                    zcode: r.get::<_, i64>(9)? != 0,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -237,7 +273,7 @@ impl Store {
     pub fn skill(&self, name: &str) -> Result<Option<SkillRecord>> {
         self.db
             .query_row(
-                "SELECT id,repository_id,skill_path,name,git_commit,content_hash,omp,codex,claude FROM skills WHERE name=?1",
+                "SELECT id,repository_id,skill_path,name,git_commit,content_hash,omp,codex,claude,zcode FROM skills WHERE name=?1",
                 [name],
                 |r| {
                     Ok(SkillRecord {
@@ -250,6 +286,7 @@ impl Store {
                         omp: r.get::<_, i64>(6)? != 0,
                         codex: r.get::<_, i64>(7)? != 0,
                         claude: r.get::<_, i64>(8)? != 0,
+                        zcode: r.get::<_, i64>(9)? != 0,
                     })
                 },
             )
@@ -263,7 +300,7 @@ impl Store {
         if record.id == 0 {
             self.db
                 .execute(
-                    "INSERT INTO skills(repository_id,skill_path,name,git_commit,content_hash,omp,codex,claude) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                    "INSERT INTO skills(repository_id,skill_path,name,git_commit,content_hash,omp,codex,claude,zcode) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
                     params![
                         record.repository_id,
                         record.skill_path,
@@ -273,6 +310,7 @@ impl Store {
                         record.omp as i64,
                         record.codex as i64,
                         record.claude as i64,
+                        record.zcode as i64,
                     ],
                 )
                 .map_err(|e| e.to_string())?;
@@ -280,7 +318,7 @@ impl Store {
         } else {
             self.db
                 .execute(
-                    "UPDATE skills SET repository_id=?1,skill_path=?2,git_commit=?3,content_hash=?4,omp=?5,codex=?6,claude=?7 WHERE id=?8",
+                    "UPDATE skills SET repository_id=?1,skill_path=?2,git_commit=?3,content_hash=?4,omp=?5,codex=?6,claude=?7,zcode=?8 WHERE id=?9",
                     params![
                         record.repository_id,
                         record.skill_path,
@@ -289,6 +327,7 @@ impl Store {
                         record.omp as i64,
                         record.codex as i64,
                         record.claude as i64,
+                        record.zcode as i64,
                         record.id,
                     ],
                 )
@@ -600,6 +639,7 @@ mod tests {
                 omp: true,
                 codex: false,
                 claude: false,
+                zcode: false,
             })
             .unwrap();
         assert!(store.remove_repository(repo_id).is_err());

@@ -1,6 +1,6 @@
 # AMC · Agent Manager Center
 
-macOS 桌面端(Tauri 2)Agent 管理工具:统一管理 OMP / Claude Code / Codex CLI 的 MCP 配置与 Skills 分发,归档统计三家用量,并展示订阅配额卡片。Rust 后端(`src-tauri/`)+ React 19 前端(`src/`),无其他服务端,所有数据在本机。
+macOS 桌面端(Tauri 2)Agent 管理工具:统一管理 OMP / Claude Code / Codex CLI / ZCode 的 MCP 配置与 Skills 分发,归档统计各家用量,并展示订阅配额卡片。Rust 后端(`src-tauri/`)+ React 19 前端(`src/`),无其他服务端,所有数据在本机。
 
 ## 常用命令
 
@@ -8,7 +8,7 @@ macOS 桌面端(Tauri 2)Agent 管理工具:统一管理 OMP / Claude Code / Code
 npm run dev                 # 仅前端 Vite dev server
 npm run tauri dev           # 完整应用(dev;更新器检查在 DEV 下自动跳过)
 npm run build               # tsc 类型检查 + Vite 构建(前端验证用这个,没有前端测试框架)
-cargo test                  # 后端测试(在 src-tauri/ 下;120+ 用例,全离线)
+cargo test                  # 后端测试(在 src-tauri/ 下;130+ 用例,全离线)
 cargo clippy --all-targets  # 后端 lint,保持零警告
 npm run tauri build         # 发布构建;需要 TAURI_SIGNING_PRIVATE_KEY 环境变量(见 docs/development.md)
 ```
@@ -18,7 +18,7 @@ npm run tauri build         # 发布构建;需要 TAURI_SIGNING_PRIVATE_KEY 环�
 ## 架构与数据位置
 
 - **应用数据目录**(`app.path().app_data_dir()`):`amc.sqlite3`(MCP/Skills/仓库记录)、`usage.sqlite3`(用量归档,WAL)、`subscriptions.json`(订阅凭据,0600)、`model-pricing.json`(计价缓存)、`repositories/<id>/`(Git 缓存)、`skills/<name>/`(技能中央副本)、`backups/`(apply 的备份)。
-- **用户级配置(只写这些,写入前必预览)**:OMP `~/.omp[/profiles/<p>]/agent/mcp.json` 与 `config.yml`;Claude `~/.claude.json`(或 `$CLAUDE_CONFIG_DIR/.claude.json`);Codex `$CODEX_HOME/config.toml`(默认 `~/.codex`)。技能投影目录:`~/.agents/skills`(OMP 与 Codex 共用)与 `~/.claude/skills`。
+- **用户级配置(只写这些,写入前必预览)**:OMP `~/.omp[/profiles/<p>]/agent/mcp.json` 与 `config.yml`;Claude `~/.claude.json`(或 `$CLAUDE_CONFIG_DIR/.claude.json`);Codex `$CODEX_HOME/config.toml`(默认 `~/.codex`);ZCode `~/.zcode/cli/config.json`(MCP 写嵌套键 `mcp.servers`,技能停用隔离写顶层 `skillOverrides`,按 SKILL.md 绝对路径 `{"enable": false}`)。技能投影目录:`~/.agents/skills`(OMP 与 Codex 共用)、`~/.claude/skills` 与 `~/.zcode/skills`;ZCode 另会自动发现 `~/.agents/skills`,对其停用需写 `skillOverrides` 隔离。
 - 后端模块:`operations.rs`(核心:plan/apply)+ `store.rs`(amc.sqlite3)+ `mcp/`、`skills.rs`(各 Agent 适配器与投影)+ `usage/`(适配器 + 归档 store)+ `subscription/`(供应商目录 + 各 vendor)+ `platform.rs`(共享基础设施)+ `pricing.rs`、`update.rs`、`workspace.rs`、`settings.rs`。
 - 前端:`App.tsx` 壳(导航 + 全局 state/busy/error/notice/plan 预览),`pages/` 每页一个入口,`apps/<域>/` 放业务组件与 hook,`api.ts` 是唯一的 invoke 封装与类型镜像(字段 camelCase,与 Rust `#[serde(rename_all = "camelCase")]` 对齐;改后端 IPC 类型必须同步这里)。
 
@@ -48,6 +48,7 @@ npm run tauri build         # 发布构建;需要 TAURI_SIGNING_PRIVATE_KEY 环�
 ## 已知限制(改动前先了解)
 
 - OMP `config.yml` 经 serde_yaml 整文件重序列化,**会丢注释/排版**(Codex 的 config.toml 走 toml_edit 保格式)。预览 diff 会如实展示;若要根治需引入格式保持的 YAML 编辑器。
+- ZCode 的用量库 `~/.zcode/cli/db/db.sqlite` 是其内部结构,`model_usage` 表可能随版本变化——解析失败降级为中文错误,归档里的历史统计不受影响。ZCode 是桌面应用,无 CLI 更新命令,AMC 不代查不代更。
 - Antigravity / Cursor 的额度接口是未公开的内部接口,字段形状可能随版本变化——解析端只认精确字段,缺失即降级,绝不臆造数值。
 - DMG 未做 Apple 公证(README 有 xattr 说明);更新包用 Tauri minisign 签名。
 - Windows/Linux 可编译,但产品只面向 macOS。

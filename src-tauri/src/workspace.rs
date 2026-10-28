@@ -63,6 +63,10 @@ pub fn skill_sources(root: &Path) -> Result<Vec<SkillSource>> {
             label: "Codex · OMP opt-in",
         },
         SkillSource {
+            path: root.join(".zcode/skills"),
+            label: "ZCode · detected",
+        },
+        SkillSource {
             path: home.join(".agents/skills"),
             label: "通用 · OMP/Codex 用户级",
         },
@@ -73,6 +77,10 @@ pub fn skill_sources(root: &Path) -> Result<Vec<SkillSource>> {
         SkillSource {
             path: home.join(".codex/skills"),
             label: "Codex · OMP opt-in",
+        },
+        SkillSource {
+            path: home.join(".zcode/skills"),
+            label: "ZCode · user",
         },
     ])
 }

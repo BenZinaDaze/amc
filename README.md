@@ -1,6 +1,6 @@
 # AMC · Agent Manager Center
 
-AMC 是 macOS 桌面端的 Agent 管理工具：在一个界面里统一配置 MCP、分发 Skills、归档三家 Agent 的用量统计、查看订阅配额。支持 OMP、Claude Code 与 Codex CLI，所有数据都保存在本机。
+AMC 是 macOS 桌面端的 Agent 管理工具：在一个界面里统一配置 MCP、分发 Skills、归档各家 Agent 的用量统计、查看订阅配额。支持 OMP、Claude Code、Codex CLI 与 ZCode，所有数据都保存在本机。
 
 ## 安装
 
@@ -20,8 +20,9 @@ xattr -cr /Applications/AMC.app
 
 ### 用量统计（Agents 页）
 
-- 自动检测本机 OMP、Claude Code 与 Codex CLI 的安装状态与版本；有新版本时，点击即可调用 Agent 自带的更新命令完成更新，并在更新前后核对实际版本。
-- 汇总三家的请求数、Token 用量与费用，可按模型查看明细，按时间范围（近 1 小时到全部，支持自定义区间）查看趋势。
+- 自动检测本机 OMP、Claude Code、Codex CLI 与 ZCode 的安装状态与版本；CLI 有新版本时，点击即可调用 Agent 自带的更新命令完成更新，并在更新前后核对实际版本（ZCode 是桌面应用，更新在其应用内完成）。
+- ZCode 的用量读取其本机数据库（`~/.zcode/cli/db/db.sqlite`），同样归档进 AMC；模型名按计价表的小写键归一。
+- 汇总各家的请求数、Token 用量与费用，可按模型查看明细，按时间范围（近 1 小时到全部，支持自定义区间）查看趋势。
 - 统计读取 Agent 在本机留下的会话数据后归档到 AMC 自己的数据库：之后即使 Agent 清理了历史文件，统计依然可查；费用按当前计价表即时重算，没有计价的模型会明确标出。
 
 ### 订阅与配额（概览页）
@@ -37,13 +38,13 @@ xattr -cr /Applications/AMC.app
 ### Skills 分发
 
 - 添加远程 Git 仓库或本地目录作为来源，浏览其中的技能，勾选安装。
-- 技能集中保存在 AMC 的中央副本，按需投影到各 Agent 的技能目录（`~/.agents/skills` 与 `~/.claude/skills`）；每个技能可对 OMP / Codex / Claude Code 单独启停。
+- 技能集中保存在 AMC 的中央副本，按需投影到各 Agent 的技能目录（`~/.agents/skills`、`~/.claude/skills` 与 `~/.zcode/skills`）；每个技能可对各 Agent 单独启停。ZCode 还会自动发现 `~/.agents/skills` 中的技能，对其停用时会在其 `config.json` 写入 `skillOverrides` 禁用项保持隔离。
 - 一切写入都有变更预览：先审阅差异，再确认应用。AMC 只触碰自己创建的投影——你在技能目录里的自有内容，哪怕与技能同名同内容，也不会被覆盖或删除。
 - 分发条目可从仓库更新到新版本，或整体移除。
 
 ### MCP 管理
 
-- 在一个列表里定义所有 MCP 服务，按需勾选同步到 OMP、Claude Code 或 Codex 的用户级配置；Agent 未安装时只记录选择，不创建文件。
+- 在一个列表里定义所有 MCP 服务，按需勾选同步到各 Agent 的用户级配置（ZCode 写入 `~/.zcode/cli/config.json` 的 `mcp.servers`）；Agent 未安装时只记录选择，不创建文件。
 - 每次写入前生成文件级变更预览，确认后原子替换并自动备份。
 - AMC 只管理通过它保存的服务，不读取、不合并 Agent 配置文件里已有的内容；密钥在界面与预览中始终脱敏显示。
 

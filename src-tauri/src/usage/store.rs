@@ -62,6 +62,12 @@ impl UsageStore {
         // usage — OMP records `error`/`aborted` rows with all-zero tokens —
         // and no adapter emits them anymore, so rows archived by earlier
         // versions are purged once.
+        // v2: ZCode's input semantics corrected (model_usage.input_tokens
+        // counts the whole prompt including cache hits; the adapter now
+        // converts to net input). Rows archived by the first ZCode support
+        // release over-counted totals, cache rate and cost, and the
+        // (source, external_id) dedupe would keep them forever — drop the
+        // source once; reads re-scan the still-present ZCode database.
         let version: i64 = db
             .query_row(
                 "SELECT value FROM meta WHERE key = 'schema_version'",
@@ -80,8 +86,14 @@ impl UsageStore {
                 [],
             )
             .map_err(|e| format!("清理 AMC 无用量记录失败: {e}"))?;
+        }
+        if version < 2 {
+            db.execute("DELETE FROM usage_records WHERE source = 'zcode'", [])
+                .map_err(|e| format!("清理 AMC 旧版 ZCode 用量记录失败: {e}"))?;
+        }
+        if version < 2 {
             db.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1')",
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '2')",
                 [],
             )
             .map_err(|e| format!("记录 AMC 用量数据库版本失败: {e}"))?;
@@ -369,6 +381,33 @@ mod tests {
         store.set_synced_at("omp", 300).unwrap();
         assert_eq!(store.synced_at(Some("omp")).unwrap(), 300);
         assert_eq!(store.synced_at(None).unwrap(), 300);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn v2_migration_purges_only_legacy_zcode_rows() {
+        let root = std::env::temp_dir().join(format!("amc-store-v2-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        {
+            let mut store = UsageStore::new(&root).unwrap();
+            store.ingest("zcode", &[record("z1", 1_700_000_000_000, 6)]).unwrap();
+            store.ingest("omp", &[record("o1", 1_700_000_000_000, 6)]).unwrap();
+            // 伪装成 v1 老库：旧版 ZCode 支持写入的行混在归档里。
+            store.db.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'", []).unwrap();
+        }
+        let store = UsageStore::new(&root).unwrap();
+        let stats = store
+            .query(None, UsageRange::parse("all", 1_700_000_001_000).unwrap(), &crate::usage::prices())
+            .unwrap()
+            .finish();
+        // zcode 行被清空、omp 保留；读取路径会立刻重扫 zcode 数据库重建。
+        assert_eq!(stats.total_requests, 1);
+        assert!(!store.has_records(Some("zcode")).unwrap());
+        assert!(store.has_records(Some("omp")).unwrap());
+        // 迁移只执行一次：再次打开不动数据。
+        drop(store);
+        let store = UsageStore::new(&root).unwrap();
+        assert!(store.has_records(Some("omp")).unwrap());
         std::fs::remove_dir_all(root).unwrap();
     }
 

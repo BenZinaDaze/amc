@@ -6,6 +6,7 @@
 pub(crate) mod claude;
 pub(crate) mod codex;
 pub(crate) mod omp;
+pub(crate) mod zcode;
 
 use crate::{
     platform::{self, Result},
@@ -26,9 +27,10 @@ pub enum Agent {
     Omp,
     Claude,
     Codex,
+    Zcode,
 }
 
-pub const AGENTS: [Agent; 3] = [Agent::Omp, Agent::Claude, Agent::Codex];
+pub const AGENTS: [Agent; 4] = [Agent::Omp, Agent::Claude, Agent::Codex, Agent::Zcode];
 
 impl Agent {
     pub fn title(self) -> &'static str {
@@ -36,6 +38,7 @@ impl Agent {
             Agent::Omp => "OMP",
             Agent::Claude => "Claude Code",
             Agent::Codex => "Codex",
+            Agent::Zcode => "ZCode",
         }
     }
 }
@@ -71,6 +74,7 @@ pub(crate) struct Targets {
     pub omp: Location,
     pub claude: Location,
     pub codex: Location,
+    pub zcode: Location,
 }
 
 impl Targets {
@@ -79,6 +83,7 @@ impl Targets {
             omp: omp::locate()?,
             claude: claude::locate()?,
             codex: codex::locate()?,
+            zcode: zcode::locate()?,
         })
     }
 
@@ -87,6 +92,7 @@ impl Targets {
             Agent::Omp => &self.omp,
             Agent::Claude => &self.claude,
             Agent::Codex => &self.codex,
+            Agent::Zcode => &self.zcode,
         }
     }
 }
@@ -96,6 +102,7 @@ fn upsert(agent: Agent, location: &Location, name: &str, spec: &Value) -> Result
         Agent::Omp => omp::upsert(location, name, spec),
         Agent::Claude => claude::upsert(location, name, spec),
         Agent::Codex => codex::upsert(location, name, spec),
+        Agent::Zcode => zcode::upsert(location, name, spec),
     }
 }
 
@@ -104,6 +111,7 @@ fn remove(agent: Agent, location: &Location, name: &str) -> Result<Option<McpWri
         Agent::Omp => omp::remove(location, name),
         Agent::Claude => claude::remove(location, name),
         Agent::Codex => codex::remove(location, name),
+        Agent::Zcode => zcode::remove(location, name),
     }
 }
 
@@ -249,7 +257,32 @@ fn string_map(value: &Value) -> bool {
         .is_some_and(|m| m.values().all(Value::is_string))
 }
 
-// —— JSON 形配置（OMP / Claude Code）共用读写 ——————————————————
+// —— JSON 形配置（OMP / Claude Code / ZCode）共用读写 ——————————————————
+
+/// 沿 `keys` 逐层取/建对象（缺失则创建）；任一层不是对象时报错。
+/// `keys` 为空表示文档根。
+fn ensure_object<'a>(
+    document: &'a mut Value,
+    keys: &[&str],
+    path: &Path,
+) -> Result<&'a mut serde_json::Map<String, Value>> {
+    let mut current = document;
+    for key in keys {
+        let parent = current
+            .as_object_mut()
+            .ok_or_else(|| format!("JSON {} 的根必须是对象", path.display()))?;
+        current = parent
+            .entry((*key).to_owned())
+            .or_insert_with(|| Value::Object(Default::default()));
+    }
+    current.as_object_mut().ok_or_else(|| {
+        if keys.is_empty() {
+            format!("JSON {} 的根必须是对象", path.display())
+        } else {
+            format!("JSON {} 的 {} 必须是对象", path.display(), keys.join("."))
+        }
+    })
+}
 
 pub(crate) fn json_upsert(
     path: &Path,
@@ -257,29 +290,31 @@ pub(crate) fn json_upsert(
     spec: &Value,
     add_schema: bool,
 ) -> Result<McpWrite> {
+    json_upsert_at(path, &["mcpServers"], name, spec, add_schema)
+}
+
+/// `keys` 指向 servers 映射所在的层级（OMP / Claude Code 的顶层
+/// `mcpServers`；ZCode 的 `["mcp", "servers"]`）。只动该键，文档其余部
+/// 分原样保留。`add_schema` 只由顶层变体使用（$schema 写在根上）；ZCode
+/// 的 server 条目 schema 严格，未知键会让条目被整个丢弃，必须传 false。
+pub(crate) fn json_upsert_at(
+    path: &Path,
+    keys: &[&str],
+    name: &str,
+    spec: &Value,
+    add_schema: bool,
+) -> Result<McpWrite> {
     let before = read_bytes(path)?;
     let mut document = parse_json(before.as_deref(), path)?;
-    {
+    if add_schema {
         let fields = document
             .as_object_mut()
             .ok_or_else(|| format!("JSON {} 的根必须是对象", path.display()))?;
-        if add_schema && !fields.contains_key("$schema") {
+        if !fields.contains_key("$schema") {
             fields.insert("$schema".into(), Value::String(SCHEMA.into()));
         }
-        let servers = fields
-            .entry("mcpServers")
-            .or_insert_with(|| Value::Object(Default::default()));
-        if !servers.is_object() {
-            return Err(format!(
-                "JSON {} 的 mcpServers 必须是对象",
-                path.display()
-            ));
-        }
-        servers
-            .as_object_mut()
-            .ok_or_else(|| format!("JSON {} 的 mcpServers 必须是对象", path.display()))?
-            .insert(name.to_string(), spec.clone());
     }
+    ensure_object(&mut document, keys, path)?.insert(name.to_string(), spec.clone());
     let mut after = serde_json::to_vec_pretty(&document).map_err(|e| e.to_string())?;
     after.push(b'\n');
     Ok(McpWrite {
@@ -290,14 +325,27 @@ pub(crate) fn json_upsert(
 }
 
 pub(crate) fn json_remove(path: &Path, name: &str) -> Result<Option<McpWrite>> {
+    json_remove_at(path, &["mcpServers"], name)
+}
+
+/// 与 [`json_remove`] 同语义：目标键缺失或不是对象时静默跳过，绝不创建
+/// 空结构；命中则只删单条。
+pub(crate) fn json_remove_at(path: &Path, keys: &[&str], name: &str) -> Result<Option<McpWrite>> {
     let Some(before) = read_bytes(path)? else {
         return Ok(None);
     };
     let mut document = parse_json(Some(&before), path)?;
-    let Some(servers) = document
-        .get_mut("mcpServers")
-        .and_then(Value::as_object_mut)
-    else {
+    let mut current = &mut document;
+    for key in keys {
+        let Some(parent) = current.as_object_mut() else {
+            return Ok(None);
+        };
+        match parent.get_mut(*key) {
+            Some(child) => current = child,
+            None => return Ok(None),
+        }
+    }
+    let Some(servers) = current.as_object_mut() else {
         return Ok(None);
     };
     servers.remove(name);

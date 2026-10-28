@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { version } from "../package.json";
-import { api, type ClaudeCodeStatus, type CodexStatus, type Plan, type State, type Workspace } from "./api";
+import { api, type ClaudeCodeStatus, type CodexStatus, type Plan, type State, type Workspace, type ZcodeStatus } from "./api";
 import "./App.css";
 import { Glyph } from "./components/Glyph";
 import { Empty } from "./components/Empty";
@@ -26,6 +26,7 @@ const navigation: { id: Page; title: string; icon: string; group?: boolean; chil
   { id: "omp", title: "OMP", icon: "omp", child: true },
   { id: "claude", title: "Claude Code", icon: "claude", child: true },
   { id: "codex", title: "Codex CLI", icon: "codex", child: true },
+  { id: "zcode", title: "ZCode", icon: "zcode", child: true },
   { id: "mcp", title: "MCP", icon: "plug", group: true },
   { id: "skills", title: "Skills", icon: "spark", group: true },
   { id: "repositories", title: "仓库", icon: "repo", group: true },
@@ -46,6 +47,7 @@ function App() {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [claudeCodeStatus, setClaudeCodeStatus] = useState<ClaudeCodeStatus | null>(null);
   const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
+  const [zcodeStatus, setZcodeStatus] = useState<ZcodeStatus | null>(null);
   const [appUpdate, setAppUpdate] = useState<Update | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
   const loadId = useRef(0);
@@ -96,14 +98,16 @@ function App() {
     return () => { cancelled = true; };
   }, [reloadAndLoad]);
 
-  // 重测 Claude Code / Codex 运行时：进相关页面时拉一次，更新 Agent 后复用。
+  // 重测 Claude Code / Codex / ZCode 运行时：进相关页面时拉一次，更新
+  // Agent 后复用。
   const refreshStatuses = useCallback(() => {
     api.getClaudeCodeStatus().then(setClaudeCodeStatus).catch(() => setClaudeCodeStatus({ installed: false, version: "" }));
     api.getCodexStatus().then(setCodexStatus).catch(() => setCodexStatus({ installed: false, version: "" }));
+    api.getZcodeStatus().then(setZcodeStatus).catch(() => setZcodeStatus({ installed: false, version: "" }));
   }, []);
 
   useEffect(() => {
-    if (page === "agents" || page === "claude" || page === "codex") refreshStatuses();
+    if (page === "agents" || page === "claude" || page === "codex" || page === "zcode") refreshStatuses();
   }, [page, refreshStatuses]);
 
   // 屏蔽 WebView 默认右键菜单：与应用无关（刷新/检查等）。输入框、
@@ -206,7 +210,7 @@ function App() {
     navigate: setPage,
     openExternal,
   };
-  const isUsagePage = page === "omp" || page === "claude" || page === "codex";
+  const isUsagePage = page === "omp" || page === "claude" || page === "codex" || page === "zcode";
 
   return (
     <div className="app-shell">
@@ -225,10 +229,11 @@ function App() {
       <main className="main-area">
         <div className="content">
           {page === "overview" && <OverviewPage {...shared} subscriptions={subs.subscriptions} subscriptionsLoading={subs.loading} subscriptionsError={subs.error} loadSubscriptions={subs.load} removeSubscription={subs.remove} refreshSubscription={subs.refresh} />}
-          {page === "agents" && <AgentsPage {...shared} claudeCodeStatus={claudeCodeStatus} codexStatus={codexStatus} refreshStatuses={refreshStatuses} />}
+          {page === "agents" && <AgentsPage {...shared} claudeCodeStatus={claudeCodeStatus} codexStatus={codexStatus} zcodeStatus={zcodeStatus} refreshStatuses={refreshStatuses} />}
           {page === "omp" && <AgentUsagePage agentId="omp" name="OMP" title="OMP" refreshName="OMP" error={error} notice={notice} setError={setError} setNotice={setNotice} pill={state && <span className={`omp-version-pill ${state.agent.installed && state.agent.version ? "available" : "missing"}`}>{state.agent.installed && state.agent.version ? state.agent.version.replace(/^omp\//i, "") : "未安装"}</span>} />}
           {page === "claude" && <AgentUsagePage agentId="claude-code" name="Claude Code" title="Claude Code" refreshName="Claude Code" error={error} notice={notice} setError={setError} setNotice={setNotice} pill={claudeCodeStatus && <span className={`omp-version-pill ${claudeCodeStatus.installed && claudeCodeStatus.version ? "available" : "missing"}`}>{claudeCodeStatus.installed && claudeCodeStatus.version ? claudeCodeStatus.version.split(/\s+/)[0] : "未安装"}</span>} />}
           {page === "codex" && <AgentUsagePage agentId="codex" name="Codex" title="Codex CLI" refreshName="Codex" error={error} notice={notice} setError={setError} setNotice={setNotice} pill={codexStatus && <span className={`omp-version-pill ${codexStatus.installed && codexStatus.version ? "available" : "missing"}`}>{codexStatus.installed && codexStatus.version ? codexStatus.version.split(/\s+/).pop() : "未安装"}</span>} />}
+          {page === "zcode" && <AgentUsagePage agentId="zcode" name="ZCode" title="ZCode" refreshName="ZCode" error={error} notice={notice} setError={setError} setNotice={setNotice} pill={zcodeStatus && <span className={`omp-version-pill ${zcodeStatus.installed && zcodeStatus.version ? "available" : "missing"}`}>{zcodeStatus.installed && zcodeStatus.version ? zcodeStatus.version : "未安装"}</span>} />}
           {page === "mcp" && <McpPage {...shared} />}
           {page === "skills" && <SkillsPage {...shared} repositorySkills={repoSkills.skills} repositorySkillErrors={repoSkills.errors} repositoryScanLoading={repoSkills.scanLoading} />}
           {page === "repositories" && <RepositoriesPage {...shared} repositorySkills={repoSkills.skills} repositoryScanLoading={repoSkills.scanLoading} forget={repoSkills.forget} />}

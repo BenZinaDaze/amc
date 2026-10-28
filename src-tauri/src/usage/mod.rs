@@ -57,17 +57,21 @@ mod store;
 pub(crate) use agents::claude::{claude_code_status, ClaudeCodeStatus};
 pub(crate) use agents::codex::{codex_status, CodexStatus};
 pub(crate) use agents::omp::status as omp_status;
+pub(crate) use agents::zcode::{zcode_status, ZcodeStatus};
 
 /// 运行 Agent 自带的更新子命令（`omp update` / `claude update` /
 /// `codex update`）；CLI 拥有更新机制，AMC 只负责启动它。通知文案由
 /// 更新前后实测的 `--version` 蒸馏（见 [`update_summary`]），不解析 CLI
-/// 的英文原始输出。
+/// 的英文原始输出。ZCode 是桌面应用，更新由其内置自动更新完成。
 pub fn update_agent(agent_id: &str) -> platform::Result<String> {
     use agents::{
         claude::claude_code_update,
         codex::codex_update,
         omp::update as omp_update,
     };
+    if agent_id == "zcode" {
+        return Err("ZCode 由应用内自动更新，AMC 不代为更新".into());
+    }
     let (name, run): (&str, fn() -> platform::Result<String>) = match agent_id {
         "omp" => ("OMP", omp_update),
         "claude-code" => ("Claude Code", claude_code_update),
@@ -315,9 +319,9 @@ fn collect_jsonl(source: &str, directory: &Path, files: &mut Vec<PathBuf>) -> pl
 
 /// Every agent AMC collects usage from; a new source registers here and
 /// implements [`AgentUsageAdapter`], nothing else.
-const AGENT_IDS: &[&str] = &["omp", "claude-code", "codex"];
+const AGENT_IDS: &[&str] = &["omp", "claude-code", "codex", "zcode"];
 fn adapter_for(agent_id: &str) -> platform::Result<Box<dyn AgentUsageAdapter>> {
-    use agents::{claude::ClaudeCodeUsageAdapter, codex::CodexUsageAdapter, omp::OmpUsageAdapter};
+    use agents::{claude::ClaudeCodeUsageAdapter, codex::CodexUsageAdapter, omp::OmpUsageAdapter, zcode::ZcodeUsageAdapter};
     match agent_id {
         "omp" => {
             if agents::omp::executable().is_none() {
@@ -327,6 +331,7 @@ fn adapter_for(agent_id: &str) -> platform::Result<Box<dyn AgentUsageAdapter>> {
         }
         "claude-code" => Ok(Box::new(ClaudeCodeUsageAdapter::from_environment()?)),
         "codex" => Ok(Box::new(CodexUsageAdapter::from_environment()?)),
+        "zcode" => Ok(Box::new(ZcodeUsageAdapter::from_environment()?)),
         _ => Err(format!("不支持的 Agent 用量来源: {agent_id}")),
     }
 }
@@ -335,11 +340,12 @@ fn adapter_for(agent_id: &str) -> platform::Result<Box<dyn AgentUsageAdapter>> {
 /// OMP executable, because reading may be served from the archive alone
 /// once the CLI (or its data) is gone.
 fn adapter_for_read(agent_id: &str) -> platform::Result<Box<dyn AgentUsageAdapter>> {
-    use agents::{claude::ClaudeCodeUsageAdapter, codex::CodexUsageAdapter, omp::OmpUsageAdapter};
+    use agents::{claude::ClaudeCodeUsageAdapter, codex::CodexUsageAdapter, omp::OmpUsageAdapter, zcode::ZcodeUsageAdapter};
     match agent_id {
         "omp" => Ok(Box::new(OmpUsageAdapter::from_environment()?)),
         "claude-code" => Ok(Box::new(ClaudeCodeUsageAdapter::from_environment()?)),
         "codex" => Ok(Box::new(CodexUsageAdapter::from_environment()?)),
+        "zcode" => Ok(Box::new(ZcodeUsageAdapter::from_environment()?)),
         _ => Err(format!("不支持的 Agent 用量来源: {agent_id}")),
     }
 }

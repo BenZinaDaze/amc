@@ -51,7 +51,7 @@ export function McpFormModal({ server, existingNames, installedAgents, isBusy, e
     return JSON.stringify(extras, null, 2);
   });
   const [raw, setRaw] = useState(() => JSON.stringify(server?.config ?? {}, null, 2));
-  const [agentFlags, setAgentFlags] = useState<Record<McpAgent, boolean>>(() => ({ omp: false, claude: false, codex: false, ...(server ? Object.fromEntries(server.agents.map((agent) => [agent, true])) : {}) }));
+  const [agentFlags, setAgentFlags] = useState<Record<McpAgent, boolean>>(() => ({ omp: false, claude: false, codex: false, zcode: false, ...(server ? Object.fromEntries(server.agents.map((agent) => [agent, true])) : {}) }));
   const [rawConfig, setRawConfig] = useState(() => Boolean(server?.config.type && !["stdio", "http", "sse"].includes(String(server.config.type))));
 
   // Escape 关闭与背景点击一致：仅在非忙碌时生效。
@@ -120,7 +120,7 @@ export function McpFormModal({ server, existingNames, installedAgents, isBusy, e
         {!rawConfig && <div>
           <span className="field-label">写入到哪些 Agent</span>
           <div className="mcp-agents">
-            {(["omp", "claude", "codex"] as McpAgent[]).filter((agent) => installedAgents.includes(agent) || agentFlags[agent]).map((agent) => (
+            {(["omp", "claude", "codex", "zcode"] as McpAgent[]).filter((agent) => installedAgents.includes(agent) || agentFlags[agent]).map((agent) => (
               <label key={agent} className="checkbox-row mcp-agent-option" title={installedAgents.includes(agent) ? undefined : "未检测到该 Agent 的安装"}>
                 <input type="checkbox" checked={agentFlags[agent]} onChange={(event) => setAgentFlags((flags) => ({ ...flags, [agent]: event.target.checked }))} />
                 <AgentMark agent={agent} active={agentFlags[agent] && installedAgents.includes(agent)} />

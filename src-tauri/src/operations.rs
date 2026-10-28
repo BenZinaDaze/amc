@@ -105,6 +105,7 @@ impl Core {
         let (installed, version) = crate::usage::omp_status();
         let claude = crate::usage::claude_code_status();
         let codex = crate::usage::codex_status();
+        let zcode = crate::usage::zcode_status();
         let skill_views = skills::state(&self.store)?;
         let targets = skills::Targets::from_env()?;
         // 检测列表只排除启用中的投影；停用目标上的目录（可能是用户
@@ -118,6 +119,9 @@ impl Core {
                 }
                 if view.claude {
                     dirs.push(targets.skill_dir(skills::SkillTarget::Claude, &view.name));
+                }
+                if view.zcode {
+                    dirs.push(targets.skill_dir(skills::SkillTarget::Zcode, &view.name));
                 }
                 dirs
             })
@@ -133,6 +137,7 @@ impl Core {
                 (Agent::Omp, installed),
                 (Agent::Claude, claude.installed),
                 (Agent::Codex, codex.installed),
+                (Agent::Zcode, zcode.installed),
             ]
             .into_iter()
             .filter(|&(_, present)| present)
@@ -443,6 +448,7 @@ impl Core {
             omp: previous.as_ref().is_none_or(|record| record.omp),
             codex: previous.as_ref().is_none_or(|record| record.codex),
             claude: previous.as_ref().is_none_or(|record| record.claude),
+            zcode: previous.as_ref().is_none_or(|record| record.zcode),
         };
         // 标题不枚举 Agent 名称（后续会增加新 Agent），
         // 具体写入哪些目录由变更列表展示。
@@ -633,6 +639,7 @@ impl Core {
                             SkillTarget::Omp => stored.omp = *enabled,
                             SkillTarget::Codex => stored.codex = *enabled,
                             SkillTarget::Claude => stored.claude = *enabled,
+                            SkillTarget::Zcode => stored.zcode = *enabled,
                         }
                         self.store.save_skill(&stored).map(|_| {
                             format!(

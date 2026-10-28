@@ -23,7 +23,7 @@ export function McpServerCard({ server, installedAgents, isBusy, onEdit, onToggl
     </div>
     <div className="item-actions">
       <div className="mcp-agents">
-        {(["omp", "claude", "codex"] as McpAgent[]).filter((agent) => installedAgents.includes(agent) || server.agents.includes(agent)).map((agent) => {
+        {(["omp", "claude", "codex", "zcode"] as McpAgent[]).filter((agent) => installedAgents.includes(agent) || server.agents.includes(agent)).map((agent) => {
           const enabled = server.agents.includes(agent);
           const detected = installedAgents.includes(agent);
           return <button key={agent} type="button" className={`mcp-agent-mark ${enabled && detected ? "on" : ""}`} disabled={isBusy} aria-pressed={enabled} aria-label={`${agentMeta[agent].label} ${enabled ? "停用" : "启用"}`} title={`${agentMeta[agent].label}${detected ? "" : " · 未检测到安装"} · ${enabled ? "已启用，点击停用" : "未启用，点击启用"}`} onClick={() => onToggleAgent(agent)}>

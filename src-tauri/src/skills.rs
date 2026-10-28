@@ -1,11 +1,14 @@
 // Skills 分发管理（cc-switch 模型）：amc.sqlite3 的 skills 表 + 数据目录
 // skills/<name>/ 中央副本是唯一事实来源，各 Agent 的用户级技能目录只是投影。
-// 物理目录只有两个：~/.agents/skills（OMP 的 agents 来源与 Codex 的 USER 级
-// 共用，双方默认加载）与 ~/.claude/skills（Claude Code 个人级）。
-// OMP 与 Codex 的独立开关不靠目录，而靠各自配置文件里的禁用项：
-// OMP → config.yml 的 skills.ignoredSkills（按技能名 glob）；
-// Codex → config.toml 的 [[skills.config]]（按 SKILL.md 绝对路径
-// enabled=false）。两个开关都关时共享目录才被移除。
+// 物理目录有三个：~/.agents/skills（OMP 的 agents 来源与 Codex 的 USER 级
+// 共用，双方默认加载）、~/.claude/skills（Claude Code 个人级）与
+// ~/.zcode/skills（ZCode 用户级）。OMP 与 Codex 的独立开关不靠目录，而靠
+// 各自配置文件里的禁用项：OMP → config.yml 的 skills.ignoredSkills（按技
+// 能名 glob）；Codex → config.toml 的 [[skills.config]]（按 SKILL.md 绝对
+// 路径 enabled=false）。两个开关都关时共享目录才被移除。ZCode 除自有目录
+// 外还会自动发现 ~/.agents/skills 中的技能：停用 ZCode 时若共享目录仍在，
+// 需在其 config.json 的 skillOverrides 里按 SKILL.md 绝对路径写
+// {"enable": false} 维持隔离。
 // 归属规则：只有「当前启用中的投影」（flag ON 且哈希与记录一致）可被
 // 覆盖/删除；任何非 AMC 投影的同名目录（含内容相同的用户副本）一律拒绝。
 
@@ -26,9 +29,12 @@ pub enum SkillTarget {
     Codex,
     /// `~/.claude/skills`：Claude Code 个人级技能目录（目录即开关）。
     Claude,
+    /// `~/.zcode/skills`：ZCode 用户级技能目录（目录即开关）；停用时另
+    /// 写 config.json skillOverrides 隔离共享目录中的同名副本。
+    Zcode,
 }
 
-pub const SKILL_TARGETS: [SkillTarget; 3] = [SkillTarget::Omp, SkillTarget::Codex, SkillTarget::Claude];
+pub const SKILL_TARGETS: [SkillTarget; 4] = [SkillTarget::Omp, SkillTarget::Codex, SkillTarget::Claude, SkillTarget::Zcode];
 
 impl SkillTarget {
     pub fn title(self) -> &'static str {
@@ -36,6 +42,7 @@ impl SkillTarget {
             SkillTarget::Omp => "OMP",
             SkillTarget::Codex => "Codex",
             SkillTarget::Claude => "Claude Code",
+            SkillTarget::Zcode => "ZCode",
         }
     }
 
@@ -44,6 +51,7 @@ impl SkillTarget {
         match self {
             SkillTarget::Omp | SkillTarget::Codex => home.join(".agents/skills"),
             SkillTarget::Claude => home.join(".claude/skills"),
+            SkillTarget::Zcode => home.join(".zcode/skills"),
         }
     }
 
@@ -52,6 +60,7 @@ impl SkillTarget {
             SkillTarget::Omp => record.omp,
             SkillTarget::Codex => record.codex,
             SkillTarget::Claude => record.claude,
+            SkillTarget::Zcode => record.zcode,
         }
     }
 }
@@ -93,6 +102,7 @@ pub struct SkillView {
     pub omp: bool,
     pub codex: bool,
     pub claude: bool,
+    pub zcode: bool,
 }
 
 /// 目录级投影写入：`after` 为 None 表示删除目录；`before` 用于预览
@@ -257,6 +267,13 @@ pub(crate) fn project(
                 let dir = targets.skill_dir(SkillTarget::Codex, &record.name);
                 configs.extend(codex_disable_write(&dir, false)?);
             }
+            // ZCode 自动发现共享目录：OMP/Codex 任一启用而 zcode 停用时补
+            // 禁用项保持隔离；zcode 启用或共享目录整体缺席时清除残留。
+            let shared_md = targets.skill_dir(SkillTarget::Omp, &record.name).join("SKILL.md");
+            configs.extend(zcode_override_write(
+                &shared_md,
+                (record.omp || record.codex) && !record.zcode,
+            )?);
             Ok((dirs, configs, Vec::new()))
         }
         SkillAction::Toggle {
@@ -280,8 +297,9 @@ pub(crate) fn project(
             let mut configs = Vec::new();
             let mut warnings = Vec::new();
             match target {
-                SkillTarget::Claude => {
-                    let dir = targets.skill_dir(SkillTarget::Claude, name);
+                // 自有目录即开关的两个目标：启用复制、停用删除。
+                SkillTarget::Claude | SkillTarget::Zcode => {
+                    let dir = targets.skill_dir(*target, name);
                     // owned 取当前开关（合法 toggle 必为 !enabled）：启用时
                     // 目录已存在即冲突；停用时目录是本主投影，校验后删除。
                     let before = checked_projection(&dir, !*enabled, &[record.hash.as_str()])?;
@@ -294,17 +312,23 @@ pub(crate) fn project(
                             after: Some(files),
                             source: Some(central_dir(store, name)),
                         });
-                    } else {
-                        let Some(before) = before else {
-                            // 目录已不存在：只补数据库开关。
-                            return Ok((dirs, configs, Vec::new()));
-                        };
+                    } else if let Some(before) = before {
+                        // 目录已不存在时只补数据库开关，无目录写入。
                         dirs.push(SkillWrite {
                             path: dir,
                             before: Some(before),
                             after: None,
                             source: None,
                         });
+                    }
+                    // ZCode：共享目录副本的可见性随开关翻转——停用时补禁用
+                    // 项（共享目录仍在才会被它发现），启用时清除残留。
+                    if *target == SkillTarget::Zcode {
+                        let shared_md = targets.skill_dir(SkillTarget::Omp, name).join("SKILL.md");
+                        configs.extend(zcode_override_write(
+                            &shared_md,
+                            !*enabled && (record.omp || record.codex),
+                        )?);
                     }
                 }
                 SkillTarget::Omp | SkillTarget::Codex => {
@@ -354,6 +378,12 @@ pub(crate) fn project(
                                     other.title()
                                 ));
                             }
+                            // 共享目录恢复后 ZCode 也会发现它：停用则确保
+                            // 禁用项，启用则清除残留。
+                            configs.extend(zcode_override_write(
+                                &dir.join("SKILL.md"),
+                                !record.zcode,
+                            )?);
                         }
                         (false, true) => {
                             // 停用但对方仍启用：目录不动，仅写禁用项。
@@ -362,6 +392,11 @@ pub(crate) fn project(
                                 SkillTarget::Codex => codex_disable_write(&dir, true)?,
                                 _ => Vec::new(),
                             });
+                            // 目录保留期间 ZCode 的隔离状态一并保持。
+                            configs.extend(zcode_override_write(
+                                &dir.join("SKILL.md"),
+                                !record.zcode,
+                            )?);
                             warnings.push(format!(
                                 "共享目录保留（{} 仍启用）；{} 改由其配置文件禁用",
                                 other.title(),
@@ -422,11 +457,13 @@ pub(crate) fn project(
     }
 }
 
-/// 移除/双关后清理两份配置里的残留禁用项。
+/// 移除/双关后清理各配置里的残留禁用项。
 fn cleanup_configs(targets: &Targets, name: &str) -> Vec<ConfigWrite> {
     let mut configs = omp_ignore_write(targets, name, false).unwrap_or_default();
     let dir = targets.skill_dir(SkillTarget::Codex, name);
     configs.extend(codex_disable_write(&dir, false).unwrap_or_default());
+    let shared_md = targets.skill_dir(SkillTarget::Omp, name).join("SKILL.md");
+    configs.extend(zcode_override_write(&shared_md, false).unwrap_or_default());
     configs
 }
 
@@ -583,6 +620,57 @@ fn codex_config_path() -> Result<PathBuf> {
         .join("config.toml"))
 }
 
+/// ZCode `~/.zcode/cli/config.json` 的 skillOverrides：`disable=true` 追加
+/// { "<SKILL.md 绝对路径>": { "enable": false } }，`disable=false` 移除该
+/// 路径的条目；无变化返回空。ZCode 未安装（配置目录不存在）时静默跳过
+/// ——该 Agent 无从读取，写入只会制造孤儿条目。
+fn zcode_override_write(skill_md: &std::path::Path, disable: bool) -> Result<Vec<ConfigWrite>> {
+    let Ok(home) = platform::home() else {
+        return Ok(Vec::new());
+    };
+    let config_dir = crate::mcp::zcode::config_dir(&home);
+    if !config_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let path = config_dir.join("config.json");
+    let before = fs::read(&path).ok();
+    let mut doc: serde_json::Value = match &before {
+        Some(bytes) => serde_json::from_slice(bytes)
+            .map_err(|e| format!("解析 {} 失败: {e}", path.display()))?,
+        None => serde_json::Value::Object(Default::default()),
+    };
+    let fields = doc
+        .as_object_mut()
+        .ok_or_else(|| format!("{} 顶层必须是对象", path.display()))?;
+    let overrides = fields
+        .entry("skillOverrides".to_owned())
+        .or_insert_with(|| serde_json::Value::Object(Default::default()));
+    let entries = overrides
+        .as_object_mut()
+        .ok_or_else(|| format!("{} 中 skillOverrides 必须是对象", path.display()))?;
+    let key = skill_md
+        .to_str()
+        .ok_or("ZCode 禁用路径必须是 UTF-8")?
+        .to_owned();
+    let mut changed = false;
+    if disable {
+        let disabled = serde_json::json!({ "enable": false });
+        if entries.get(&key) != Some(&disabled) {
+            entries.insert(key, disabled);
+            changed = true;
+        }
+    } else {
+        changed = entries.remove(&key).is_some();
+    }
+    if !changed {
+        return Ok(Vec::new());
+    }
+    let mut after =
+        serde_json::to_vec_pretty(&doc).map_err(|e| format!("序列化 {} 失败: {e}", path.display()))?;
+    after.push(b'\n');
+    Ok(vec![ConfigWrite { path, before, after }])
+}
+
 impl Targets {
     fn omp_config_path(&self) -> Result<PathBuf> {
         let location = crate::usage::omp_mcp_location()?;
@@ -629,6 +717,7 @@ pub fn state(store: &Store) -> Result<Vec<SkillView>> {
             omp: record.omp,
             codex: record.codex,
             claude: record.claude,
+            zcode: record.zcode,
         });
     }
     Ok(views)

@@ -20,12 +20,14 @@ pub struct AppUpdate {
 }
 
 /// 已接入 Agent 的更新来源（id 与 usage 模块一致）：OMP 走 GitHub
-/// Releases，Claude Code 与 Codex CLI 的正式发布渠道是 npm。
+/// Releases，Claude Code 与 Codex CLI 的正式发布渠道是 npm。ZCode 是
+/// 桌面应用，更新由其内置自动更新完成，不提供代查/代更新。
 pub fn check_agent(agent: &str) -> Result<AppUpdate> {
     match agent {
         "omp" => github_release("can1357/oh-my-pi"),
         "claude-code" => npm_latest("@anthropic-ai/claude-code"),
         "codex" => npm_latest("@openai/codex"),
+        "zcode" => Err("ZCode 由应用内自动更新，AMC 不代为更新".into()),
         other => Err(format!("不支持的 Agent 更新来源: {other}")),
     }
 }

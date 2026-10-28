@@ -223,6 +223,13 @@ async fn get_codex_status() -> platform::Result<usage::CodexStatus> {
 }
 
 #[tauri::command]
+async fn get_zcode_status() -> platform::Result<usage::ZcodeStatus> {
+    tauri::async_runtime::spawn_blocking(usage::zcode_status)
+        .await
+        .map_err(|e| format!("后台操作失败: {e}"))
+}
+
+#[tauri::command]
 async fn refresh_pricing(app: tauri::AppHandle) -> platform::Result<String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || pricing::refresh(&data_dir))
@@ -450,6 +457,7 @@ pub fn run() {
             get_agents_usage,
             get_claude_code_status,
             get_codex_status,
+            get_zcode_status,
             get_agent_config_paths,
             refresh_pricing,
             fetch_subscriptions,

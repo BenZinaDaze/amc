@@ -4,3 +4,4 @@
 pub(super) mod claude;
 pub(super) mod codex;
 pub(crate) mod omp;
+pub(super) mod zcode;
