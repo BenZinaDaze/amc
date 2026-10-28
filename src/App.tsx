@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { version } from "../package.json";
-import { api, type ClaudeCodeStatus, type CodexStatus, type Plan, type State, type Workspace, type ZcodeStatus } from "./api";
+import { api, type ClaudeCodeStatus, type CodexStatus, type McpAgent, type Plan, type State, type Workspace, type ZcodeStatus } from "./api";
 import "./App.css";
 import { Glyph } from "./components/Glyph";
+import { AgentMark } from "./components/AgentMark";
 import { Empty } from "./components/Empty";
 import { useSubscriptions } from "./apps/subscriptions/useSubscriptions";
 import { useRepositorySkills } from "./apps/repositories/useRepositorySkills";
@@ -32,6 +33,15 @@ const navigation: { id: Page; title: string; icon: string; group?: boolean; chil
   { id: "repositories", title: "仓库", icon: "repo", group: true },
   { id: "settings", title: "设置", icon: "gear" },
 ];
+
+/// 导航里以品牌标记呈现的 Agent 子项（与 MCP / Skills 的 AgentMark 同源，
+/// 选中时亮品牌色）；其余项仍用线框 Glyph。
+const agentNavMarks: Partial<Record<Page, McpAgent>> = {
+  omp: "omp",
+  claude: "claude",
+  codex: "codex",
+  zcode: "zcode",
+};
 
 /// 应用壳：侧边栏导航 + 路由 + 全局状态（workspace/state、busy、
 /// error/notice、变更预览）。页面与业务模块见 pages/ 与 apps/。
@@ -220,7 +230,12 @@ function App() {
         {/*<div className="sidebar-caption">通用来源</div>*/}
         <nav aria-label="主导航" className="navigation">
           {navigation.map((item) => <div key={item.id} className={`nav-section${item.group ? " group" : ""}${item.child ? " nav-child" : ""}${item.child && !agentsNavOpen ? " collapsed" : ""}`}>
-            <button className={`nav-item ${page === item.id ? "selected" : ""}`} onClick={() => setPage(item.id)} aria-current={page === item.id ? "page" : undefined}><Glyph name={item.icon} size={19} /><span>{item.title}</span></button>
+            <button className={`nav-item ${page === item.id ? "selected" : ""}`} onClick={() => setPage(item.id)} aria-current={page === item.id ? "page" : undefined}>
+              {agentNavMarks[item.id]
+                ? <AgentMark agent={agentNavMarks[item.id] as McpAgent} active={page === item.id} size={19} />
+                : <Glyph name={item.icon} size={19} />}
+              <span>{item.title}</span>
+            </button>
             {item.id === "agents" && <button type="button" className="nav-group-toggle" aria-expanded={agentsNavOpen} aria-label={agentsNavOpen ? "折叠 Agents 分组" : "展开 Agents 分组"} title={agentsNavOpen ? "折叠 Agents 分组" : "展开 Agents 分组"} onClick={() => setAgentsNavOpen((open) => !open)}><Glyph name="arrow" size={15} /></button>}
           </div>)}
         </nav>

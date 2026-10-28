@@ -270,8 +270,7 @@ textarea{resize:vertical;line-height:1.55}
 .about-note{display:flex;align-items:center;gap:8px;padding:12px 14px;font-size:12px;color:#7f8999;background:#fbfcfe;border-top:1px solid #f0f2f6}
 
 /* ---- OMP usage ---- */
-.omp-icon-tile{background:#18182c}
-.omp-icon-tile img{width:32px;height:28px;object-fit:contain}
+.omp-icon-tile{background:#0f0a14}
 .claude-icon-tile{background:#2b1f19;color:#e8a287}
 .codex-icon-tile{background:#0f2b22;color:#6fd3a5}
 .zcode-icon-tile{background:#12203a;color:#7fa6f9}

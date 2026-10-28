@@ -8,7 +8,7 @@ export function Glyph({ name, size = 20 }: { name: string; size?: number }) {
     omp: <path d="M3.5 5h17M6.5 5.2v11.3M16.5 5.2V13" />,
     claude: <path d="M12 2.5v19M2.5 12h19M5.3 5.3l13.4 13.4M18.7 5.3 5.3 18.7" />,
     codex: <><path d="M5 6.5 11 12l-6 5.5" /><path d="M13 17.5h6" /></>,
-    zcode: <path d="M8 6.5h8L8 17.5h8" />,
+    zcode: <><path d="M2.5 3.3h8.7" /><path d="M19.2 3 4.8 21" /><path d="M12.4 20.7h9.1" /></>,
     plug: <><path d="M8 3v5m8-5v5M7 8h10v3a5 5 0 0 1-10 0V8Zm5 8v5m-4 0h8" /></>,
     spark: <><path d="m12 2 1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2ZM19 17l.7 1.3L21 19l-1.3.7L19 21l-.7-1.3L17 19l1.3-.7L19 17Z" /></>,
     repo: <><rect x="3" y="3" width="18" height="18" rx="3" /><path d="M8 3v18M12 8h5m-5 4h5" /></>,
