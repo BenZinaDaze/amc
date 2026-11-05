@@ -236,16 +236,19 @@ textarea{resize:vertical;line-height:1.55}
 .skill-search-clear{width:24px;height:24px;padding:0;border:0;background:transparent;color:#8792a5}
 .skill-search-row{display:flex;margin:-7px 0 19px}
 .skill-search-row .skill-search{flex:1;min-width:0;max-width:none}
-.skill-discovery-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;align-items:stretch}
-@media(min-width:1500px){.skill-discovery-grid{grid-template-columns:repeat(5,minmax(0,1fr))}}
-.skill-discovery-card{display:flex;flex-direction:column;align-items:stretch;min-width:0;min-height:210px}
-.skill-card-heading{display:flex;align-items:center;gap:12px;min-width:0;flex-shrink:0}
+.skill-discovery-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;align-items:stretch}
+.skill-discovery-card{display:flex;flex-direction:column;align-items:stretch;min-width:0;min-height:230px;padding:18px 20px;transition:border-color .15s,box-shadow .15s}
+.skill-discovery-card:hover{border-color:#cfd6e6;box-shadow:0 6px 20px #242e4b0f}
+.skill-card-heading{display:flex;align-items:flex-start;gap:13px;min-width:0;flex-shrink:0}
 .skill-card-heading .item-icon{flex-shrink:0}
-.skill-card-heading .item-title{flex:1;min-width:0;flex-wrap:wrap;margin:0}
-.skill-card-heading .item-title h3{flex:1 1 96px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0}
+.skill-card-icon{width:48px;height:48px;border-radius:12px}
+.skill-mark{display:grid;place-items:center;width:100%;height:100%;border-radius:inherit;font-size:18px;font-weight:700;letter-spacing:0;user-select:none}
+.skill-card-heading .item-title{flex:1;min-width:0;flex-wrap:wrap;margin:0;gap:6px;padding-top:1px}
+.skill-card-heading .item-title h3{flex:1 1 140px;min-width:0;margin:0;line-height:1.3;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow-wrap:anywhere;overflow:hidden}
 .skill-card-heading .tag{flex-shrink:0}
-.skill-card-body{min-height:0}
-.skill-card-body p{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+.skill-card-source{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.skill-card-body{min-height:0;margin-top:10px}
+.skill-card-body p{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;overflow:hidden;line-height:1.65}
 .skill-discovery-card .item-actions{width:100%;max-width:none;margin-top:auto;padding-top:8px;flex-wrap:wrap}
 .skill-discovery-card .item-actions .button{padding-left:8px;padding-right:8px}
 .skill-source-link{width:28px;height:28px;padding:5px;border:1px solid #e3e7ef;background:#fff;color:#8792a5}
@@ -418,7 +421,6 @@ textarea{resize:vertical;line-height:1.55}
   .content{padding:32px 28px 65px}
   .item-card{align-items:flex-start}
   .item-actions{max-width:230px}
-  .skill-discovery-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
   .omp-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
   .agents-usage .omp-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
@@ -442,7 +444,6 @@ textarea{resize:vertical;line-height:1.55}
   .content{padding-top:26px}
   .section-actions{flex-wrap:wrap;justify-content:flex-start}
   .skill-tool-buttons{gap:8px}
-  .skill-discovery-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media(max-width:630px){
   .sidebar{align-items:flex-start;flex-direction:column;gap:10px}

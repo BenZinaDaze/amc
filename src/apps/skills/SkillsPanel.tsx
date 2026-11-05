@@ -2,8 +2,9 @@ import { useState } from "react";
 import { Glyph } from "../../components/Glyph";
 import { Empty } from "../../components/Empty";
 import { AgentMark } from "../../components/AgentMark";
+import { SkillMark } from "../../components/SkillMark";
 import { api, type Plan, type RepositorySkill, type Skill, type SkillTarget, type State } from "../../api";
-import { skillWebUrl } from "../repositories/gitUrl";
+import { repositoryLabel, skillWebUrl } from "../repositories/gitUrl";
 
 type SkillTab = "installed" | "discover";
 type DiscoveredSkill = RepositorySkill & { repositoryId: number };
@@ -78,7 +79,7 @@ export function SkillsPanel({ state, repositorySkills, repositorySkillErrors, re
       {distributedSkills.length ? <div className="card-list">
         {distributedSkills.map((skill) => {
           return <article className="item-card" key={skill.id}>
-            <div className="item-icon amber"><Glyph name="spark" /></div>
+            <div className="item-icon"><SkillMark name={skill.name} /></div>
             <div className="item-content">
               <div className="item-title"><h3>{skill.name}</h3>{skill.updateAvailable && <span className="tag tag-info">有更新</span>}</div>
               <p className="item-desc" title={skill.description}>{skill.description || "此技能未提供说明"}</p>
@@ -103,7 +104,7 @@ export function SkillsPanel({ state, repositorySkills, repositorySkillErrors, re
         <div className="section-heading"><div><h2>已检测到的其他 Skills <span className="count">{detectedOnlySkills.length}</span></h2><p>这些技能来自本地通用或兼容来源，不属于 AMC 分发管理；这里只读展示，不提供更新或卸载操作。</p></div></div>
         <div className="card-list">
           {detectedOnlySkills.map((skill) => <article className="item-card" key={`${skill.source}:${skill.path}`}>
-            <div className="item-icon amber"><Glyph name="spark" /></div>
+            <div className="item-icon"><SkillMark name={skill.name} /></div>
             <div className="item-content"><div className="item-title"><h3>{skill.name}</h3>{skill.shadowed && <span className="tag tag-warn">同名来源</span>}<span className="tag tag-muted">{skill.source}</span></div><p>{skill.description || "此技能未提供说明"}</p></div>
           </article>)}
         </div>
@@ -121,8 +122,8 @@ export function SkillsPanel({ state, repositorySkills, repositorySkillErrors, re
             const skillUrl = skillWebUrl(repository, skill.path);
             const installed = distributedSkills.find((item) => item.repositoryId === skill.repositoryId && item.skillPath === skill.path);
             return <article className="item-card skill-discovery-card" key={`${skill.repositoryId}:${skill.path}`}>
-              <div className="skill-card-heading"><div className="item-icon amber"><Glyph name="spark" /></div><div className="item-title"><h3>{skill.name}</h3>{installed && <span className="tag tag-good">已分发</span>}{installed?.updateAvailable && <span className="tag tag-info">有更新</span>}</div></div>
-              <div className="item-content skill-card-body"><p>{skill.description || "此技能未提供说明"}</p></div>
+              <div className="skill-card-heading"><div className="item-icon skill-card-icon"><SkillMark name={skill.name} /></div><div className="item-title"><h3 title={skill.name}>{skill.name}</h3>{installed && <span className="tag tag-good">已分发</span>}{installed?.updateAvailable && <span className="tag tag-info">有更新</span>}<span className="tag tag-muted skill-card-source" title={repository?.url}>{repositoryLabel(repository) || "未知来源"}</span></div></div>
+              <div className="item-content skill-card-body"><p title={skill.description}>{skill.description || "此技能未提供说明"}</p></div>
               <div className="item-actions">{skillUrl && <button type="button" className="icon-button skill-source-link" title="打开 GitHub 技能目录" aria-label={`打开 ${skill.name} 的 GitHub 技能目录`} onClick={() => openExternal(skillUrl)}><Glyph name="external" size={15} /></button>}{installed ? <>{installed.updateAvailable && <button className="button button-primary" disabled={isBusy} onClick={() => prepare("预览技能更新", () => api.planSkill(installed.repositoryId, installed.skillPath))}>更新</button>}<button className="button button-danger-ghost" disabled={isBusy} onClick={() => prepare("预览移除技能", () => api.planSkillRemove(installed.name))}>移除</button></> : <button className="button button-primary skill-install-button" disabled={isBusy} onClick={() => prepare("预览安装技能", () => api.planSkill(skill.repositoryId, skill.path))}>安装</button>}</div>
             </article>;
           })}
