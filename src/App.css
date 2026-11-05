@@ -236,6 +236,14 @@ textarea{resize:vertical;line-height:1.55}
 .skill-search-clear{width:24px;height:24px;padding:0;border:0;background:transparent;color:#8792a5}
 .skill-search-row{display:flex;margin:-7px 0 19px}
 .skill-search-row .skill-search{flex:1;min-width:0;max-width:none}
+.skill-repo-filter{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:17px}
+.skill-repo-chip{display:inline-flex;align-items:center;gap:7px;max-width:300px;border:1px solid #e3e7ef;border-radius:999px;background:#fff;padding:6px 13px;font:inherit;font-size:12px;font-weight:600;color:#5b6577;cursor:pointer;transition:border-color .15s,background .15s,color .15s}
+.skill-repo-chip:hover{border-color:#c9d2e4;color:#39435a}
+.skill-repo-chip.active{border-color:var(--accent);background:var(--accent-soft);color:var(--accent-deep)}
+.skill-repo-chip:focus-visible{outline:none;box-shadow:var(--focus-ring)}
+.skill-repo-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.skill-repo-count{flex-shrink:0;min-width:22px;padding:1px 7px;border-radius:999px;background:#f0f1f6;color:#8792a5;font-size:11px;text-align:center}
+.skill-repo-chip.active .skill-repo-count{background:#dcd9fa;color:var(--accent-deep)}
 .skill-discovery-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;align-items:stretch}
 .skill-discovery-card{display:flex;flex-direction:column;align-items:stretch;min-width:0;min-height:230px;padding:18px 20px;transition:border-color .15s,box-shadow .15s}
 .skill-discovery-card:hover{border-color:#cfd6e6;box-shadow:0 6px 20px #242e4b0f}

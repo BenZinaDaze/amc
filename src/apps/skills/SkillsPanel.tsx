@@ -33,6 +33,7 @@ export function SkillsPanel({ state, repositorySkills, repositorySkillErrors, re
   const [skillTab, setSkillTab] = useState<SkillTab>("installed");
   const [discoverSearchOpen, setDiscoverSearchOpen] = useState(false);
   const [discoverSearch, setDiscoverSearch] = useState("");
+  const [discoverRepo, setDiscoverRepo] = useState<number | "all">("all");
 
   async function refreshAllRepositories() {
     const result = await operation("刷新所有仓库", () => api.checkAllUpdates());
@@ -51,10 +52,15 @@ export function SkillsPanel({ state, repositorySkills, repositorySkillErrors, re
   const detectedOnlySkills = state.detected;
   const discoveredSkills: DiscoveredSkill[] = state.repositories.flatMap((repository) => (repositorySkills[repository.id] || []).map((skill) => ({ ...skill, repositoryId: repository.id })));
   const normalizedDiscoverSearch = discoverSearch.trim().toLocaleLowerCase();
-  const filteredDiscoveredSkills = normalizedDiscoverSearch ? discoveredSkills.filter((skill) => {
+  // 仓库筛选（全部 / 单个仓库）；仓库被移除后自动回落到全部，避免残留失效 id。
+  const activeDiscoverRepo = discoverRepo !== "all" && state.repositories.some((repository) => repository.id === discoverRepo) ? discoverRepo : "all";
+  const repoFilteredSkills = activeDiscoverRepo === "all" ? discoveredSkills : discoveredSkills.filter((skill) => skill.repositoryId === activeDiscoverRepo);
+  const filteredDiscoveredSkills = normalizedDiscoverSearch ? repoFilteredSkills.filter((skill) => {
     const repository = state.repositories.find((item) => item.id === skill.repositoryId);
     return [skill.name, skill.description, skill.path, repository?.url, repository?.reference].filter(Boolean).join(" ").toLocaleLowerCase().includes(normalizedDiscoverSearch);
-  }) : discoveredSkills;
+  }) : repoFilteredSkills;
+  const discoverRepoCounts = new Map<number, number>();
+  for (const skill of discoveredSkills) discoverRepoCounts.set(skill.repositoryId, (discoverRepoCounts.get(skill.repositoryId) ?? 0) + 1);
   const repositoryFailureCount = Object.keys(repositorySkillErrors).length;
 
   return <>
@@ -74,6 +80,10 @@ export function SkillsPanel({ state, repositorySkills, repositorySkillErrors, re
         </>}
       </div>
     </div>
+    {skillTab === "discover" && state.repositories.length > 1 && <div className="skill-repo-filter" role="group" aria-label="按仓库筛选">
+      <button type="button" className={`skill-repo-chip${activeDiscoverRepo === "all" ? " active" : ""}`} aria-pressed={activeDiscoverRepo === "all"} onClick={() => setDiscoverRepo("all")}>全部<span className="skill-repo-count">{discoveredSkills.length}</span></button>
+      {state.repositories.map((repository) => <button key={repository.id} type="button" className={`skill-repo-chip${activeDiscoverRepo === repository.id ? " active" : ""}`} aria-pressed={activeDiscoverRepo === repository.id} title={repository.url || repositoryLabel(repository)} onClick={() => setDiscoverRepo(repository.id)}><span className="skill-repo-name">{repositoryLabel(repository)}</span><span className="skill-repo-count">{discoverRepoCounts.get(repository.id) ?? 0}</span></button>)}
+    </div>}
     {skillTab === "discover" && discoverSearchOpen && <div className="skill-search-row"><div className="skill-search"><Glyph name="search" size={16} /><input autoFocus value={discoverSearch} onChange={(event) => setDiscoverSearch(event.target.value)} placeholder="搜索名称、描述或来源" aria-label="搜索发现的 Skill" /><button type="button" className="icon-button skill-search-clear" aria-label="关闭搜索" onClick={() => { setDiscoverSearch(""); setDiscoverSearchOpen(false); }}><Glyph name="close" size={15} /></button></div></div>}
     {skillTab === "installed" ? <>
       {distributedSkills.length ? <div className="card-list">
@@ -129,7 +139,7 @@ export function SkillsPanel({ state, repositorySkills, repositorySkillErrors, re
           })}
         </div>
       ) : !repositoryScanLoading ? (
-        <Empty icon="spark" title={normalizedDiscoverSearch ? "未找到匹配的技能" : "未发现可安装的技能"} description={normalizedDiscoverSearch ? `没有匹配“${discoverSearch.trim()}”的技能。` : repositoryFailureCount > 0 ? "没有成功扫描到技能；请刷新失败仓库后重试。" : state.repositories.length ? "仓库中需要包含带 name 和 description 的 SKILL.md。" : "先添加 Git 仓库，之后可以在这里发现并选择安装 Skill。"} />
+        <Empty icon="spark" title={normalizedDiscoverSearch ? "未找到匹配的技能" : "未发现可安装的技能"} description={normalizedDiscoverSearch ? `没有匹配“${discoverSearch.trim()}”的技能。` : activeDiscoverRepo !== "all" ? (repositorySkillErrors[activeDiscoverRepo] ? "该仓库扫描失败；请刷新后重试。" : "该仓库未扫描到可安装的技能；请确认其中包含带 name 和 description 的 SKILL.md。") : repositoryFailureCount > 0 ? "没有成功扫描到技能；请刷新失败仓库后重试。" : state.repositories.length ? "仓库中需要包含带 name 和 description 的 SKILL.md。" : "先添加 Git 仓库，之后可以在这里发现并选择安装 Skill。"} />
       ) : null}
     </>}
   </>;
