@@ -115,7 +115,10 @@ mod tests {
         )
         .expect("valid body parses");
         assert_eq!(update.latest, "0.5.0");
-        assert_eq!(update.url, "https://github.com/BenZinaDaze/amc/releases/tag/v0.5.0");
+        assert_eq!(
+            update.url,
+            "https://github.com/BenZinaDaze/amc/releases/tag/v0.5.0"
+        );
     }
 
     #[test]
@@ -139,12 +142,15 @@ mod tests {
 
     #[test]
     fn npm_without_homepage_falls_back_to_package_page() {
-        let update = parse_npm(r#"{"version":"0.162.1"}"#, "@openai/codex").expect("valid body parses");
+        let update =
+            parse_npm(r#"{"version":"0.162.1"}"#, "@openai/codex").expect("valid body parses");
         assert_eq!(update.latest, "0.162.1");
         assert_eq!(update.url, "https://www.npmjs.com/package/@openai/codex");
         // 非 https 的 homepage 不可信，同样回退。
         assert_eq!(
-            parse_npm(r#"{"version":"1.0","homepage":"http://x"}"#, "pkg").unwrap().url,
+            parse_npm(r#"{"version":"1.0","homepage":"http://x"}"#, "pkg")
+                .unwrap()
+                .url,
             "https://www.npmjs.com/package/pkg"
         );
     }

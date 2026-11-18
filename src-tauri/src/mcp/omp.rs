@@ -21,4 +21,3 @@ pub(crate) fn upsert(location: &Location, name: &str, spec: &Value) -> Result<Mc
 pub(crate) fn remove(location: &Location, name: &str) -> Result<Option<McpWrite>> {
     json_remove(&location.file, name)
 }
-

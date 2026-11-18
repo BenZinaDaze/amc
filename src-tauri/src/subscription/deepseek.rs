@@ -52,8 +52,7 @@ fn fetch_balance(url: &str, token: &str) -> Result<ProviderReport> {
     if status != 200 {
         return Err(format!("接口返回 HTTP {status}: {}", truncate(&body, 200)));
     }
-    let value: Value = serde_json::from_str(&body)
-        .map_err(|e| format!("解析余额响应失败: {e}"))?;
+    let value: Value = serde_json::from_str(&body).map_err(|e| format!("解析余额响应失败: {e}"))?;
     report_from(&value).ok_or_else(|| "余额响应缺少可用数据".to_owned())
 }
 
@@ -105,17 +104,14 @@ fn balance_row(info: &Value) -> Option<QuotaUsage> {
         _ => "余额（美元）",
     };
     // details 按主币种单位展示（元/美元两位小数），与卡片金额行一致。
-    let details = [
-        ("赠金", granted),
-        ("充值", topped_up),
-    ]
-    .into_iter()
-    .filter(|&(_, cents)| cents > 0)
-    .map(|(name, cents)| QuotaDetail {
-        name: name.to_owned(),
-        usage: cents / 100,
-    })
-    .collect();
+    let details = [("赠金", granted), ("充值", topped_up)]
+        .into_iter()
+        .filter(|&(_, cents)| cents > 0)
+        .map(|(name, cents)| QuotaDetail {
+            name: name.to_owned(),
+            usage: cents / 100,
+        })
+        .collect();
     Some(QuotaUsage {
         kind: "balance".to_owned(),
         label: label.to_owned(),
@@ -252,13 +248,11 @@ mod tests {
     fn missing_fields_yield_no_report() {
         assert!(report_from(&json!({ "balance_infos": [] })).is_none());
         assert!(report_from(&json!({ "is_available": true })).is_none());
-        assert!(
-            report_from(&json!({
-                "is_available": true,
-                "balance_infos": [{ "currency": "CNY", "total_balance": "abc" }]
-            }))
-            .is_none()
-        );
+        assert!(report_from(&json!({
+            "is_available": true,
+            "balance_infos": [{ "currency": "CNY", "total_balance": "abc" }]
+        }))
+        .is_none());
     }
 
     #[test]
@@ -292,12 +286,21 @@ mod tests {
                     break;
                 }
             }
-            let mut seen = vec![
-                request.split_whitespace().take(2).collect::<Vec<_>>().join(" "),
-            ];
+            let mut seen = vec![request
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ")];
             let lowered = request.to_lowercase();
             if let Some(index) = lowered.find("authorization:") {
-                seen.push(request[index..].lines().next().unwrap_or("").trim().to_owned());
+                seen.push(
+                    request[index..]
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .to_owned(),
+                );
             }
             stream.write_all(expected.as_bytes()).unwrap();
             seen
@@ -336,10 +339,7 @@ mod tests {
         let (url, handle) = serve("503 Service Unavailable", "gateway down");
         let error = fetch_balance(&url, "sk-test123456").unwrap_err();
         handle.join().unwrap();
-        assert!(
-            error.starts_with("接口返回 HTTP 503"),
-            "实际错误: {error}"
-        );
+        assert!(error.starts_with("接口返回 HTTP 503"), "实际错误: {error}");
         assert!(error.contains("gateway down"));
     }
 }

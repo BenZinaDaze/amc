@@ -2,12 +2,12 @@
 // locates it (dotenv files, profiles, XDG data migration). OMP owns the
 // per-request `messages` table with a `UNIQUE(session_file, entry_id)` key,
 // which becomes the archive's dedup identity.
+use crate::platform;
+#[cfg(test)]
+use crate::pricing::Pricing;
 #[cfg(test)]
 use crate::usage::prices;
 use crate::usage::{AgentUsageAdapter, SourceScan, UsageRecord};
-#[cfg(test)]
-use crate::pricing::Pricing;
-use crate::platform;
 use rusqlite::{params, Connection, OpenFlags};
 use std::{
     collections::HashMap,
@@ -395,17 +395,8 @@ impl OmpUsageAdapter {
                     row.get(8)?,
                 ))
             })();
-            let (
-                session_file,
-                entry_id,
-                model,
-                timestamp,
-                input,
-                output,
-                read,
-                write,
-                tokens,
-            ) = record.map_err(|e| format!("OMP 用量记录无效: {e}"))?;
+            let (session_file, entry_id, model, timestamp, input, output, read, write, tokens) =
+                record.map_err(|e| format!("OMP 用量记录无效: {e}"))?;
             // The source's own UNIQUE(session_file, entry_id) stays stable
             // when `omp stats --summary` rebuilds the database, so repeated
             // scans archive each request exactly once.
@@ -538,12 +529,7 @@ mod tests {
             mcp_json: root.join("agent/mcp.json"),
             config_root: root.clone(),
         };
-        let stats = archive_and_query(
-            &adapter,
-            &root,
-            &format!("custom:{start}:{end}"),
-            &prices(),
-        );
+        let stats = archive_and_query(&adapter, &root, &format!("custom:{start}:{end}"), &prices());
         assert_eq!(stats.total_requests, 2);
         assert_eq!(stats.total_tokens, 24);
         assert_eq!(stats.input_tokens, 2);
@@ -689,19 +675,24 @@ mod tests {
         let mut store = crate::usage::store::UsageStore::new(&root).unwrap();
         let scan = adapter.scan(0).unwrap();
         store.ingest("omp", &scan.records).unwrap();
-        let range = crate::usage::UsageRange::parse(
-            "all",
-            crate::usage::now_millis().unwrap(),
+        let range =
+            crate::usage::UsageRange::parse("all", crate::usage::now_millis().unwrap()).unwrap();
+        fs::write(
+            &price_file,
+            r#"{"models":{"model":{"input":10000,"output":20000,"cache_read":30000}}}"#,
         )
         .unwrap();
-        fs::write(&price_file, r#"{"models":{"model":{"input":10000,"output":20000,"cache_read":30000}}}"#).unwrap();
         let first = store
             .query(Some("omp"), range, &Pricing::load(&price_file).unwrap())
             .unwrap()
             .finish();
         assert!((first.total_cost.unwrap() - 0.14).abs() < 1e-12);
         assert_eq!(first.unpriced_requests, 0);
-        fs::write(&price_file, r#"{"models":{"model":{"input":20000,"output":30000,"cache_read":40000}}}"#).unwrap();
+        fs::write(
+            &price_file,
+            r#"{"models":{"model":{"input":20000,"output":30000,"cache_read":40000}}}"#,
+        )
+        .unwrap();
         let second = store
             .query(Some("omp"), range, &Pricing::load(&price_file).unwrap())
             .unwrap()

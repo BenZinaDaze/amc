@@ -1,11 +1,11 @@
 // Codex usage: one rollout JSONL per session under `$CODEX_HOME/sessions/`;
 // `token_count` events carry per-turn usage, so no CLI sync step exists.
+use crate::platform;
 #[cfg(test)]
 use crate::usage::prices;
 use crate::usage::{
     collect_jsonl, modified_millis, rfc3339_millis, AgentUsageAdapter, SourceScan, UsageRecord,
 };
-use crate::platform;
 use serde::Serialize;
 use std::{collections::HashSet, env, fs, path::PathBuf};
 
@@ -260,10 +260,9 @@ impl CodexUsageAdapter {
                         let event_key = current_turn
                             .as_ref()
                             .map(|turn_id| format!("{turn_id}\u{1}{payload_key}"));
-                        let seen_event =
-                            event_key
-                                .as_ref()
-                                .is_some_and(|key| !seen_events.insert(key.clone()));
+                        let seen_event = event_key
+                            .as_ref()
+                            .is_some_and(|key| !seen_events.insert(key.clone()));
                         if seen_event {
                             continue;
                         }
@@ -459,12 +458,7 @@ mod tests {
         .unwrap();
         let adapter = CodexUsageAdapter::from_base(root.clone()).unwrap();
         let prices = prices();
-        let stats = archive_and_query(
-            &adapter,
-            &root,
-            &format!("custom:{start}:{end}"),
-            &prices,
-        );
+        let stats = archive_and_query(&adapter, &root, &format!("custom:{start}:{end}"), &prices);
         // 6 turns: two gpt-5.6-terra, two glm-5.3 (the switched model keeps
         // pricing following turns), one gpt-5-codex, one unknown-model.
         assert_eq!(stats.total_requests, 6);
@@ -481,9 +475,7 @@ mod tests {
                 .unwrap()
         };
         let glm = |input: i64, cached: i64, output: i64| {
-            prices
-                .cost("glm-5.3", input, cached, 0, output)
-                .unwrap()
+            prices.cost("glm-5.3", input, cached, 0, output).unwrap()
         };
         let codex = prices.cost("gpt-5-codex", 30, 0, 0, 6).unwrap();
         // The unknown-model turn is unpriced; the blended total sums only

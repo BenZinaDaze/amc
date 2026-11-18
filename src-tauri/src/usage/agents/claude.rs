@@ -1,11 +1,11 @@
 // Claude Code usage: one JSONL transcript per session under
 // `$CLAUDE_CONFIG_DIR/projects/`; no CLI sync step exists.
+use crate::platform;
 #[cfg(test)]
 use crate::usage::prices;
 use crate::usage::{
     collect_jsonl, modified_millis, rfc3339_millis, AgentUsageAdapter, SourceScan, UsageRecord,
 };
-use crate::platform;
 use serde::Serialize;
 use std::{collections::HashSet, env, fs, path::PathBuf};
 
@@ -318,11 +318,7 @@ mod tests {
         let haiku = (110. * 1. + 70. * 5.) / 1_000_000.;
         let glm = (5000. * 0.15 + 1000. * 0.5 + 2000. * 0.03) / 1_000_000.;
         assert!((stats.total_cost.unwrap() - sonnet - haiku - glm).abs() < 1e-12);
-        let models: Vec<String> = stats
-            .by_model
-            .iter()
-            .map(|m| m.model.clone())
-            .collect();
+        let models: Vec<String> = stats.by_model.iter().map(|m| m.model.clone()).collect();
         assert_eq!(
             models,
             vec![

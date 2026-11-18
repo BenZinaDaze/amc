@@ -190,7 +190,9 @@ impl Store {
             .db
             .prepare("SELECT name,spec,omp,claude,codex,zcode,managed FROM mcp_servers WHERE managed=1 ORDER BY name")
             .map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], Self::row_mcp).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], Self::row_mcp)
+            .map_err(|e| e.to_string())?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| e.to_string())
     }
@@ -199,14 +201,13 @@ impl Store {
         let spec: String = row.get(1)?;
         Ok(McpRecord {
             name: row.get(0)?,
-            spec: serde_json::from_str(&spec)
-                .map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        1,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?,
+            spec: serde_json::from_str(&spec).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?,
             omp: row.get::<_, i64>(2)? != 0,
             claude: row.get::<_, i64>(3)? != 0,
             codex: row.get::<_, i64>(4)? != 0,
@@ -241,7 +242,10 @@ impl Store {
     pub fn delete_mcp_server(&self, name: &str) -> Result<bool> {
         let removed = self
             .db
-            .execute("DELETE FROM mcp_servers WHERE name=?1 AND managed=1", [name])
+            .execute(
+                "DELETE FROM mcp_servers WHERE name=?1 AND managed=1",
+                [name],
+            )
             .map_err(|e| e.to_string())?;
         Ok(removed > 0)
     }
@@ -267,7 +271,8 @@ impl Store {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn skill(&self, name: &str) -> Result<Option<SkillRecord>> {

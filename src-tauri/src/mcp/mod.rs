@@ -58,9 +58,17 @@ pub(crate) struct McpWrite {
 }
 
 pub(crate) enum McpAction {
-    Save { record: McpRecord },
-    Delete { name: String },
-    Toggle { name: String, agent: Agent, enabled: bool },
+    Save {
+        record: McpRecord,
+    },
+    Delete {
+        name: String,
+    },
+    Toggle {
+        name: String,
+        agent: Agent,
+        enabled: bool,
+    },
 }
 
 /// 各 Agent 用户级配置文件的定位结果。`present` 表示该 Agent 已初始化
@@ -117,9 +125,10 @@ fn remove(agent: Agent, location: &Location, name: &str) -> Result<Option<McpWri
 
 /// 只取 AMC 管理的记录；历史遗留/无法证明来源的行按不存在处理。
 fn managed_record(store: &Store, name: &str) -> Result<McpRecord> {
-    store.mcp_server(name)?.filter(|record| record.managed).ok_or_else(|| {
-        format!("MCP 服务 {name} 不存在或非 AMC 管理")
-    })
+    store
+        .mcp_server(name)?
+        .filter(|record| record.managed)
+        .ok_or_else(|| format!("MCP 服务 {name} 不存在或非 AMC 管理"))
 }
 
 /// 把一条统一记录投影到各 Agent 配置文件，返回待写入文件与提示。
@@ -169,7 +178,11 @@ pub(crate) fn project(
                 }
             }
         }
-        McpAction::Toggle { name, agent, enabled } => {
+        McpAction::Toggle {
+            name,
+            agent,
+            enabled,
+        } => {
             let record = managed_record(store, name)?;
             let location = targets.location(*agent);
             if *enabled {
@@ -208,7 +221,11 @@ pub fn state(store: &Store) -> Result<Vec<McpView>> {
 /// 统一 spec 校验（与旧版一致：stdio 需 command，远程需 HTTP(S) URL）。
 pub(crate) fn validate_spec(spec: &Value) -> Result<()> {
     let fields = spec.as_object().ok_or("MCP 配置必须是 JSON 对象")?;
-    match fields.get("type").and_then(Value::as_str).unwrap_or("stdio") {
+    match fields
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("stdio")
+    {
         "stdio" => {
             if fields
                 .get("command")
@@ -370,8 +387,7 @@ fn parse_json(bytes: Option<&[u8]>, path: &Path) -> Result<Value> {
     bytes.map_or_else(
         || Ok(Value::Object(Default::default())),
         |bytes| {
-            serde_json::from_slice(bytes)
-                .map_err(|e| format!("JSON {} 无效: {e}", path.display()))
+            serde_json::from_slice(bytes).map_err(|e| format!("JSON {} 无效: {e}", path.display()))
         },
     )
 }

@@ -61,8 +61,7 @@ fn login_url(challenge: &str, uuid: &str) -> String {
 }
 
 fn open_browser(url: &str) -> Result<()> {
-    tauri_plugin_opener::open_url(url, None::<&str>)
-        .map_err(|e| format!("打开浏览器失败: {e}"))
+    tauri_plugin_opener::open_url(url, None::<&str>).map_err(|e| format!("打开浏览器失败: {e}"))
 }
 
 /// 轮询 `/auth/poll`：404 表示浏览器侧还没完成，继续等并重置失败计数；
@@ -159,11 +158,18 @@ fn parse_usage(value: &Value) -> Vec<QuotaUsage> {
     {
         return Vec::new();
     }
-    let bounded =
-        |value: Option<f64>| value.unwrap_or(0.0).clamp(0.0, 100.0);
+    let bounded = |value: Option<f64>| value.unwrap_or(0.0).clamp(0.0, 100.0);
     vec![
-        quota("Cursor Models", bounded(percent("autoPercentUsed")), resets_at),
-        quota("Other Models", bounded(percent("apiPercentUsed")), resets_at),
+        quota(
+            "Cursor Models",
+            bounded(percent("autoPercentUsed")),
+            resets_at,
+        ),
+        quota(
+            "Other Models",
+            bounded(percent("apiPercentUsed")),
+            resets_at,
+        ),
         quota("Total", bounded(percent("totalPercentUsed")), resets_at),
     ]
 }
@@ -186,8 +192,7 @@ fn quota(label: &str, used_percent: f64, resets_at: Option<i64>) -> QuotaUsage {
 
 /// 账号邮箱（登录后落库进 account）；失败只降级为空，不阻断登录。
 fn get_me(agent: &ureq::Agent, access_token: &str) -> Option<String> {
-    let value = connect_unary(agent, "aiserver.v1.DashboardService/GetMe", access_token)
-        .ok()?;
+    let value = connect_unary(agent, "aiserver.v1.DashboardService/GetMe", access_token).ok()?;
     string_field(&value, "email")
 }
 
@@ -225,9 +230,7 @@ fn connect_unary(agent: &ureq::Agent, path: &str, access_token: &str) -> Result<
         .header("x-ghost-mode", "true")
         .send_json(json!({}))
         .map_err(|error| match error {
-            ureq::Error::StatusCode(401) => {
-                "Cursor 登录已过期，请删除该套餐后重新登录".to_owned()
-            }
+            ureq::Error::StatusCode(401) => "Cursor 登录已过期，请删除该套餐后重新登录".to_owned(),
             ureq::Error::StatusCode(status) => format!("请求 {path} 返回 HTTP {status}"),
             other => sanitize(format!("请求 {path} 失败: {other}"), &[access_token]),
         })?;
@@ -340,11 +343,7 @@ fn base64url_decode(text: &str) -> Result<Vec<u8>, String> {
 
 /// 两个 simple UUID 拼接：64 个 hex 字符，落在 RFC 7636 的 43–128 区间。
 fn random_verifier() -> String {
-    format!(
-        "{}{}",
-        Uuid::new_v4().simple(),
-        Uuid::new_v4().simple()
-    )
+    format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 
 #[cfg(test)]
@@ -383,7 +382,10 @@ mod tests {
     #[test]
     fn login_url_carries_pkce_and_cli_params() {
         let url = login_url("chal", "uuid-1");
-        assert!(url.starts_with("https://cursor.com/loginDeepControl?"), "{url}");
+        assert!(
+            url.starts_with("https://cursor.com/loginDeepControl?"),
+            "{url}"
+        );
         assert!(url.contains("challenge=chal"), "{url}");
         assert!(url.contains("uuid=uuid-1"), "{url}");
         assert!(url.contains("mode=login"), "{url}");
@@ -413,9 +415,9 @@ mod tests {
             .iter()
             .all(|quota| quota.resets_at == Some(1_790_000_000_000)));
         // 只报比例：金额字段不存在，绝不臆造。
-        assert!(quotas
-            .iter()
-            .all(|quota| quota.used.is_none() && quota.total.is_none() && quota.remaining.is_none()));
+        assert!(quotas.iter().all(|quota| quota.used.is_none()
+            && quota.total.is_none()
+            && quota.remaining.is_none()));
     }
 
     #[test]

@@ -262,23 +262,13 @@ mod tests {
             .unwrap();
         assert!((short - 1.345).abs() < 1e-10);
         let long = prices
-            .cost(
-                "gpt-6-sol",
-                1_000_000,
-                1_000_000,
-                1_000_000,
-                1_000_000,
-            )
+            .cost("gpt-6-sol", 1_000_000, 1_000_000, 1_000_000, 1_000_000)
             .unwrap();
         assert!((long - 24.4).abs() < 1e-10);
         // The threshold is exclusive.
-        let threshold = prices
-            .cost("gpt-6-luna", 271_999, 1, 0, 1_000_000)
-            .unwrap();
+        let threshold = prices.cost("gpt-6-luna", 271_999, 1, 0, 1_000_000).unwrap();
         assert!((threshold - (271_999. * 0.1 + 0.01 + 500_000.) / 1_000_000.).abs() < 1e-9);
-        let above = prices
-            .cost("gpt-6-luna", 272_000, 1, 0, 1_000_000)
-            .unwrap();
+        let above = prices.cost("gpt-6-luna", 272_000, 1, 0, 1_000_000).unwrap();
         assert!((above - (272_000. * 0.2 + 0.02 + 750_000.) / 1_000_000.).abs() < 1e-9);
         // Overrides apply per rate once the combined prompt passes 200k.
         let anthropic = prices
@@ -286,47 +276,18 @@ mod tests {
             .unwrap();
         assert!((anthropic - (200_000. * 6e-6 + 6e-7 + 7.5e-6 + 100. * 2.25e-5)).abs() < 1e-9);
         assert!(
-            (prices
-                .cost("gemini-2.5-pro", 1_000, 0, 0, 1_000)
-                .unwrap()
-                - 0.01125)
-                .abs()
-                < 1e-9
+            (prices.cost("gemini-2.5-pro", 1_000, 0, 0, 1_000).unwrap() - 0.01125).abs() < 1e-9
         );
-        assert!(
-            (prices
-                .cost("glm-5.3", 1_000_000, 0, 0, 1_000_000)
-                .unwrap()
-                - 5.8)
-                .abs()
-                < 1e-9
-        );
+        assert!((prices.cost("glm-5.3", 1_000_000, 0, 0, 1_000_000).unwrap() - 5.8).abs() < 1e-9);
         // gpt-6.1-sol switches to its long-context tier past 272k prompt tokens.
         let sol61 = prices
             .cost("gpt-6.1-sol", 272_000, 1, 1, 1_000_000)
             .unwrap();
         assert!((sol61 - (272_000. * 4e-6 + 0.2e-6 + 5e-6 + 15.)).abs() < 1e-9);
-        assert!(
-            (prices
-                .cost("gpt-6.1-sol", 1_000, 0, 0, 1_000)
-                .unwrap()
-                - 0.012)
-                .abs()
-                < 1e-12
-        );
+        assert!((prices.cost("gpt-6.1-sol", 1_000, 0, 0, 1_000).unwrap() - 0.012).abs() < 1e-12);
         // Jev prices input at $42 per billion and output is free, not unpriced.
-        assert!(
-            (prices
-                .cost("jev-latest", 1_000_000_000, 0, 0, 0)
-                .unwrap()
-                - 42.)
-                .abs()
-                < 1e-9
-        );
-        assert_eq!(
-            prices.cost("jev-latest", 0, 0, 0, 1_000_000),
-            Some(0.)
-        );
+        assert!((prices.cost("jev-latest", 1_000_000_000, 0, 0, 0).unwrap() - 42.).abs() < 1e-9);
+        assert_eq!(prices.cost("jev-latest", 0, 0, 0, 1_000_000), Some(0.));
         assert_eq!(prices.cost("unknown-model", 100, 0, 0, 0), None);
         assert_eq!(prices.cost("gpt-6-sol", -1, 0, 0, 0), None);
     }
@@ -335,10 +296,8 @@ mod tests {
     /// serde must ignore it so a refresh failure never strands old caches.
     #[test]
     fn legacy_provider_fields_are_ignored() {
-        let prices = Pricing::parse(
-            r#"{"models":{"m":{"providers":["p"],"input":1,"output":2}}}"#,
-        )
-        .unwrap();
+        let prices =
+            Pricing::parse(r#"{"models":{"m":{"providers":["p"],"input":1,"output":2}}}"#).unwrap();
         assert_eq!(prices.cost("m", 1_000_000, 0, 0, 0), Some(1.));
     }
 
@@ -417,9 +376,7 @@ mod tests {
             for index in 0..4 {
                 let dir = &dir;
                 scope.spawn(move || {
-                    let text = format!(
-                        r#"{{"models":{{"m{index}":{{"input":1,"output":2}}}}}}"#
-                    );
+                    let text = format!(r#"{{"models":{{"m{index}":{{"input":1,"output":2}}}}}}"#);
                     store(dir, &text).unwrap();
                 });
             }

@@ -108,8 +108,7 @@ fn bind_callback_listener() -> Result<TcpListener> {
 }
 
 fn open_browser(url: &str) -> Result<()> {
-    tauri_plugin_opener::open_url(url, None::<&str>)
-        .map_err(|e| format!("打开浏览器失败: {e}"))
+    tauri_plugin_opener::open_url(url, None::<&str>).map_err(|e| format!("打开浏览器失败: {e}"))
 }
 
 struct Tokens {
@@ -147,7 +146,10 @@ fn wait_for_code(listener: &TcpListener, expected_state: &str) -> Result<String>
 }
 
 enum Callback {
-    Code { code: String, state: String },
+    Code {
+        code: String,
+        state: String,
+    },
     Error(String),
     /// 无关请求（favicon 等）：已应答，继续等待。
     Ignore,
@@ -168,9 +170,12 @@ Content-Length: {}\r\n\r\n{body}",
         let _ = stream.flush();
     };
     let request_line = request.lines().next().unwrap_or_default().to_owned();
-    let query = request_line
-        .split_once('?')
-        .map(|(_, rest)| rest.split_whitespace().next().unwrap_or_default().to_owned());
+    let query = request_line.split_once('?').map(|(_, rest)| {
+        rest.split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    });
     let query = match query {
         Some(query) if !query.is_empty() => query,
         _ => {
@@ -270,12 +275,14 @@ fn refresh_access(refresh_token: &str) -> Result<String> {
     match result {
         Ok(value) => string_field(&value, "access_token")
             .ok_or_else(|| "刷新 Google 授权响应缺少 access_token".to_owned()),
-        Err(FormError::Status { status: 400 | 401 | 403, .. }) => {
-            Err("Google 授权已失效，请删除卡片后重新登录".to_owned())
-        }
-        Err(FormError::Status { status, body }) => {
-            Err(format!("刷新 Google 授权失败 HTTP {status}: {}", truncate(&body, 200)))
-        }
+        Err(FormError::Status {
+            status: 400 | 401 | 403,
+            ..
+        }) => Err("Google 授权已失效，请删除卡片后重新登录".to_owned()),
+        Err(FormError::Status { status, body }) => Err(format!(
+            "刷新 Google 授权失败 HTTP {status}: {}",
+            truncate(&body, 200)
+        )),
         Err(FormError::Transport(error)) => Err(format!("刷新 Google 授权失败: {error}")),
     }
 }
@@ -303,7 +310,11 @@ fn fetch_report(access_token: &str) -> Result<ProviderReport> {
 
 /// `loadCodeAssist` → `(套餐名, cloudaicompanion 项目)`；失败只降级为空，不阻断额度。
 fn load_code_assist(access_token: &str) -> (Option<String>, Option<String>) {
-    let value = match cloud_code(access_token, "/v1internal:loadCodeAssist", &serde_json::json!({})) {
+    let value = match cloud_code(
+        access_token,
+        "/v1internal:loadCodeAssist",
+        &serde_json::json!({}),
+    ) {
         Ok(value) => value,
         Err(_) => return (None, None),
     };
@@ -320,7 +331,12 @@ fn load_code_assist(access_token: &str) -> (Option<String>, Option<String>) {
 /// `retrieveUserQuotaSummary` → 最多四个池计量条；`None` 表示该域名没有这个接口
 /// 或响应不是 summary（调用方可降级）。解析出的空列表是权威答案，不再降级。
 fn quota_summary(access_token: &str) -> Option<Vec<QuotaUsage>> {
-    let value = cloud_code(access_token, "/v1internal:retrieveUserQuotaSummary", &serde_json::json!({})).ok()?;
+    let value = cloud_code(
+        access_token,
+        "/v1internal:retrieveUserQuotaSummary",
+        &serde_json::json!({}),
+    )
+    .ok()?;
     parse_summary(&value)
 }
 
@@ -459,7 +475,9 @@ fn parse_model_buckets(body: &Value) -> Option<Vec<QuotaUsage>> {
 /// Claude、GPT、OpenAI 系都走非 Gemini 共享池。
 fn is_third_party_model(model: &str) -> bool {
     let model = model.to_lowercase();
-    ["claude", "gpt", "o3", "openai"].iter().any(|name| model.contains(name))
+    ["claude", "gpt", "o3", "openai"]
+        .iter()
+        .any(|name| model.contains(name))
 }
 
 fn pool_quota(spec: &BucketSpec, remaining: f64, resets_at: Option<i64>) -> QuotaUsage {
@@ -510,9 +528,10 @@ enum FormError {
 fn post_form(url: &str, form: &[(&str, &str)]) -> Result<Value> {
     match post_form_status(url, form) {
         Ok(value) => Ok(value),
-        Err(FormError::Status { status, body }) => {
-            Err(format!("请求 {url} 返回 HTTP {status}: {}", truncate(&body, 200)))
-        }
+        Err(FormError::Status { status, body }) => Err(format!(
+            "请求 {url} 返回 HTTP {status}: {}",
+            truncate(&body, 200)
+        )),
         Err(FormError::Transport(error)) => Err(format!("请求 {url} 失败: {error}")),
     }
 }
@@ -528,8 +547,7 @@ fn post_form_status(url: &str, form: &[(&str, &str)]) -> std::result::Result<Val
     if !(200..300).contains(&status) {
         return Err(FormError::Status { status, body });
     }
-    serde_json::from_str(&body)
-        .map_err(|e| FormError::Transport(format!("解析响应失败: {e}")))
+    serde_json::from_str(&body).map_err(|e| FormError::Transport(format!("解析响应失败: {e}")))
 }
 
 /// 逐个域名调用 Cloud Code 内部接口，第一个 2xx 即为答案。
@@ -554,8 +572,7 @@ fn cloud_code(access_token: &str, path: &str, body: &Value) -> Result<Value> {
         let status = response.status().as_u16();
         let text = response.into_body().read_to_string().unwrap_or_default();
         if (200..300).contains(&status) {
-            return serde_json::from_str(&text)
-                .map_err(|e| format!("解析 {url} 响应失败: {e}"));
+            return serde_json::from_str(&text).map_err(|e| format!("解析 {url} 响应失败: {e}"));
         }
         last = format!("{url} 返回 HTTP {status}: {}", truncate(&text, 200));
     }
@@ -653,12 +670,14 @@ fn percent_decode(input: &str) -> String {
     while index < bytes.len() {
         match bytes[index] {
             b'%' if index + 2 < bytes.len() => {
-                let hex = |byte: u8| (byte as char).is_ascii_hexdigit().then_some(match byte {
-                    b'0'..=b'9' => byte - b'0',
-                    b'a'..=b'f' => byte - b'a' + 10,
-                    b'A'..=b'F' => byte - b'A' + 10,
-                    _ => 0,
-                });
+                let hex = |byte: u8| {
+                    (byte as char).is_ascii_hexdigit().then_some(match byte {
+                        b'0'..=b'9' => byte - b'0',
+                        b'a'..=b'f' => byte - b'a' + 10,
+                        b'A'..=b'F' => byte - b'A' + 10,
+                        _ => 0,
+                    })
+                };
                 if let (Some(high), Some(low)) = (hex(bytes[index + 1]), hex(bytes[index + 2])) {
                     out.push(high << 4 | low);
                     index += 3;
@@ -773,7 +792,10 @@ mod tests {
     #[test]
     fn plan_names_collapse_to_tier_word() {
         assert_eq!(format_plan("Google AI Pro"), "Pro");
-        assert_eq!(format_plan("Gemini Code Assist in Google One AI Ultra"), "Ultra");
+        assert_eq!(
+            format_plan("Gemini Code Assist in Google One AI Ultra"),
+            "Ultra"
+        );
         assert_eq!(format_plan("Free"), "Free");
         assert_eq!(format_plan("Custom Tier"), "Custom Tier");
     }
@@ -793,5 +815,4 @@ mod tests {
         assert!(cut.ends_with('…'));
         assert!(!cut.trim_end_matches('…').chars().any(|c| c == '\u{FFFD}'));
     }
-
 }

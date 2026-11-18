@@ -40,7 +40,12 @@ pub(super) struct StoredSubscription {
 impl StoredSubscription {
     /// 登录型条目直接展示账号；key 型条目展示 key 尾部。
     pub(super) fn hint(&self) -> String {
-        if let Some(account) = self.account.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+        if let Some(account) = self
+            .account
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+        {
             return account.to_owned();
         }
         let tail: String = self.key.chars().rev().take(4).collect();
@@ -65,7 +70,9 @@ pub(super) fn read_stored(data_dir: &Path) -> Result<StoredSubscriptions> {
     let path = data_dir.join(SUBSCRIPTIONS_FILE);
     let contents = match fs::read_to_string(&path) {
         Ok(contents) => contents,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(StoredSubscriptions::default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(StoredSubscriptions::default())
+        }
         Err(e) => return Err(format!("读取订阅数据 {} 失败: {e}", path.display())),
     };
     let mut stored: StoredSubscriptions = serde_json::from_str(&contents).map_err(|e| {
@@ -202,9 +209,9 @@ fn next_entry_id(stored: &mut StoredSubscriptions) -> String {
 mod tests {
     use super::*;
     use crate::subscription::{fetch_all, fetch_all_streaming, fetch_one, FetchEvent};
+    use parking_lot::Mutex;
     use serde_json::json;
     use std::path::PathBuf;
-    use parking_lot::Mutex;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("amc-stored-{name}"));
@@ -244,8 +251,26 @@ mod tests {
         assert!(fetch_all(&dir).unwrap().is_empty());
 
         // The same vendor can be added twice with different keys.
-        add_plan(&dir, "glm", "  主号  ", "zai", "  12345678abcdef  ", None, None).unwrap();
-        add_plan(&dir, "glm", "备用", "bigmodel", "fedcba9876543210", None, None).unwrap();
+        add_plan(
+            &dir,
+            "glm",
+            "  主号  ",
+            "zai",
+            "  12345678abcdef  ",
+            None,
+            None,
+        )
+        .unwrap();
+        add_plan(
+            &dir,
+            "glm",
+            "备用",
+            "bigmodel",
+            "fedcba9876543210",
+            None,
+            None,
+        )
+        .unwrap();
         add_plan(
             &dir,
             "sub2api",
@@ -417,7 +442,9 @@ mod tests {
             panic!("first event must be Begin");
         };
         assert_eq!(placeholders.len(), 2);
-        assert!(placeholders.iter().all(|s| s.pending && s.quotas.is_empty()));
+        assert!(placeholders
+            .iter()
+            .all(|s| s.pending && s.quotas.is_empty()));
         let ready: Vec<&str> = events[1..]
             .iter()
             .map(|event| match event {

@@ -413,10 +413,16 @@ fn strip_ansi(text: &str) -> String {
         // 完整的 CSI 序列：ESC [ 参数字节(0x20–0x3F) 最终字节(0x40–0x7E)。
         if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'[') {
             let mut cursor = index + 2;
-            while bytes.get(cursor).is_some_and(|byte| (0x20..=0x3f).contains(byte)) {
+            while bytes
+                .get(cursor)
+                .is_some_and(|byte| (0x20..=0x3f).contains(byte))
+            {
                 cursor += 1;
             }
-            if bytes.get(cursor).is_some_and(|byte| (0x40..=0x7e).contains(byte)) {
+            if bytes
+                .get(cursor)
+                .is_some_and(|byte| (0x40..=0x7e).contains(byte))
+            {
                 index = cursor + 1;
                 continue;
             }
@@ -432,7 +438,11 @@ fn strip_ansi(text: &str) -> String {
 /// 转义序列后修剪的合并输出。候选无法启动（权限/架构不符）时尝试
 /// 下一个；命令本身以非零退出则优先把 stderr 作为失败原因带回。
 pub fn cli_update(executable: &str, home_extra_dirs: &[&str], args: &[&str]) -> Result<String> {
-    let text = |bytes: &[u8]| strip_ansi(&String::from_utf8_lossy(bytes)).trim().to_owned();
+    let text = |bytes: &[u8]| {
+        strip_ansi(&String::from_utf8_lossy(bytes))
+            .trim()
+            .to_owned()
+    };
     for program in cli_directories(executable, home().ok(), home_extra_dirs) {
         if !program.is_file() {
             continue;
@@ -560,8 +570,6 @@ pub fn restore_mcp_secrets(config: &mut Value, original: Option<&Value>) -> Resu
     let masked = original.map(redacted_mcp);
     restore(config, original, masked.as_ref())
 }
-
-
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

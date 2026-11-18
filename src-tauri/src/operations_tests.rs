@@ -1,7 +1,11 @@
 use super::*;
 use crate::store::McpRecord;
 use serde_json::json;
-use std::{fs, path::{Path, PathBuf}, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 struct Fixture {
     root: PathBuf,
@@ -160,7 +164,11 @@ fn state_uses_canonical_workspace_and_only_lists_amc_managed_mcp() {
         serialized["workspace"]["path"],
         canonical.to_string_lossy().as_ref()
     );
-    let names: Vec<&str> = state.mcp.iter().map(|server| server.name.as_str()).collect();
+    let names: Vec<&str> = state
+        .mcp
+        .iter()
+        .map(|server| server.name.as_str())
+        .collect();
     assert_eq!(names, vec!["demo"]);
     assert_eq!(state.detected[0].source, "Claude · detected");
     assert!(state.skills.is_empty());
@@ -187,35 +195,51 @@ fn mcp_save_projects_to_agent_configs_with_stale_check_and_secret_restore() {
         )
         .unwrap();
     // 预览不泄露密钥；OMP JSON 保留无关键并写入 $schema。
-    assert!(!plan.changes.iter().any(|change| change.after.contains("private-token")));
-    let omp_change = plan.changes.iter().find(|c| c.path.ends_with("mcp.json")).unwrap();
+    assert!(!plan
+        .changes
+        .iter()
+        .any(|change| change.after.contains("private-token")));
+    let omp_change = plan
+        .changes
+        .iter()
+        .find(|c| c.path.ends_with("mcp.json"))
+        .unwrap();
     assert!(omp_change.after.contains("$schema"));
-    let codex_change = plan.changes.iter().find(|c| c.path.ends_with("config.toml")).unwrap();
+    let codex_change = plan
+        .changes
+        .iter()
+        .find(|c| c.path.ends_with("config.toml"))
+        .unwrap();
     assert!(codex_change.after.contains("model = \"test\""));
     core.apply(plan.id).unwrap();
 
     // Claude/Codex/OMP 文件都被投影；Codex 保留注释与其它表。
-    let claude: Value = serde_json::from_slice(
-        &fs::read(home.join("claude/.claude.json")).unwrap(),
-    )
-    .unwrap();
+    let claude: Value =
+        serde_json::from_slice(&fs::read(home.join("claude/.claude.json")).unwrap()).unwrap();
     assert_eq!(claude["foo"], 1);
-    assert_eq!(claude["mcpServers"]["demo"]["headers"]["Authorization"], "Bearer private-token");
+    assert_eq!(
+        claude["mcpServers"]["demo"]["headers"]["Authorization"],
+        "Bearer private-token"
+    );
     assert_eq!(claude["mcpServers"]["old"]["command"], "keep");
     let codex = fs::read_to_string(home.join("codex/config.toml")).unwrap();
     assert!(codex.contains("model = \"test\""));
     assert!(codex.contains("[mcp_servers.legacy]"));
     assert!(codex.contains("[mcp_servers.demo]"));
     assert!(codex.contains("url = \"https://example.com/mcp\""));
-    let omp: Value = serde_json::from_slice(&fs::read(home.join("omp/agent/mcp.json")).unwrap())
-        .unwrap();
+    let omp: Value =
+        serde_json::from_slice(&fs::read(home.join("omp/agent/mcp.json")).unwrap()).unwrap();
     assert_eq!(omp["mcpServers"]["demo"]["url"], "https://example.com/mcp");
     let record = core.store.mcp_server("demo").unwrap().unwrap();
     assert!(record.omp && record.claude && record.codex);
 
     // 预览后文件被外部修改 → apply 拒绝写入。
     let stale = core
-        .plan_mcp("demo".into(), Some(json!({"type":"stdio","command":"true"})), vec![mcp::Agent::Claude])
+        .plan_mcp(
+            "demo".into(),
+            Some(json!({"type":"stdio","command":"true"})),
+            vec![mcp::Agent::Claude],
+        )
         .unwrap();
     fs::write(home.join("claude/.claude.json"), r#"{"mcpServers":{}}"#).unwrap();
     assert!(core.apply(stale.id).is_err());
@@ -228,15 +252,23 @@ fn mcp_save_projects_to_agent_configs_with_stale_check_and_secret_restore() {
         "auth": {"type": "oauth", "clientId": "public-id", "clientSecret": platform::HIDDEN_MCP_VALUE}
     });
     let plan = core
-        .plan_mcp("demo".into(), Some(redacted), vec![mcp::Agent::Claude, mcp::Agent::Codex])
+        .plan_mcp(
+            "demo".into(),
+            Some(redacted),
+            vec![mcp::Agent::Claude, mcp::Agent::Codex],
+        )
         .unwrap();
     core.apply(plan.id).unwrap();
-    let claude: Value = serde_json::from_slice(
-        &fs::read(home.join("claude/.claude.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(claude["mcpServers"]["demo"]["headers"]["Authorization"], "Bearer private-token");
-    assert_eq!(claude["mcpServers"]["demo"]["auth"]["clientSecret"], "private-client");
+    let claude: Value =
+        serde_json::from_slice(&fs::read(home.join("claude/.claude.json")).unwrap()).unwrap();
+    assert_eq!(
+        claude["mcpServers"]["demo"]["headers"]["Authorization"],
+        "Bearer private-token"
+    );
+    assert_eq!(
+        claude["mcpServers"]["demo"]["auth"]["clientSecret"],
+        "private-client"
+    );
     let codex = fs::read_to_string(home.join("codex/config.toml")).unwrap();
     assert!(codex.contains("[mcp_servers.demo]"));
     assert!(!codex.contains("[mcp_servers.demo.headers]"));
@@ -247,16 +279,17 @@ fn mcp_save_projects_to_agent_configs_with_stale_check_and_secret_restore() {
     // state 视图对密钥脱敏。
     let state = core.state(fixture.workspace()).unwrap();
     let view = state.mcp.iter().find(|s| s.name == "demo").unwrap();
-    assert_eq!(view.config["headers"]["Authorization"], platform::HIDDEN_MCP_VALUE);
+    assert_eq!(
+        view.config["headers"]["Authorization"],
+        platform::HIDDEN_MCP_VALUE
+    );
     assert_eq!(view.agents.len(), 2);
 
     // 删除：从所有已启用 Agent 的配置中移除，数据库记录消失。
     let plan = core.plan_mcp("demo".into(), None, vec![]).unwrap();
     core.apply(plan.id).unwrap();
-    let claude: Value = serde_json::from_slice(
-        &fs::read(home.join("claude/.claude.json")).unwrap(),
-    )
-    .unwrap();
+    let claude: Value =
+        serde_json::from_slice(&fs::read(home.join("claude/.claude.json")).unwrap()).unwrap();
     assert!(claude["mcpServers"].get("demo").is_none());
     let codex = fs::read_to_string(home.join("codex/config.toml")).unwrap();
     assert!(!codex.contains("[mcp_servers.demo]"));
@@ -293,34 +326,42 @@ fn mcp_redacted_save_keeps_real_secrets_in_db_and_files_after_toggle() {
         "headers": {"Authorization": platform::HIDDEN_MCP_VALUE}
     });
     let plan = core
-        .plan_mcp("demo".into(), Some(redacted), vec![mcp::Agent::Claude, mcp::Agent::Codex])
+        .plan_mcp(
+            "demo".into(),
+            Some(redacted),
+            vec![mcp::Agent::Claude, mcp::Agent::Codex],
+        )
         .unwrap();
     core.apply(plan.id).unwrap();
     let stored = core.store.mcp_server("demo").unwrap().unwrap();
     assert_eq!(
-        stored.spec["headers"]["Authorization"],
-        "Bearer private-token",
+        stored.spec["headers"]["Authorization"], "Bearer private-token",
         "占位符不得进入数据库"
     );
-    let claude: Value = serde_json::from_slice(
-        &fs::read(home.join("claude/.claude.json")).unwrap(),
-    )
-    .unwrap();
+    let claude: Value =
+        serde_json::from_slice(&fs::read(home.join("claude/.claude.json")).unwrap()).unwrap();
     assert_eq!(
         claude["mcpServers"]["demo"]["headers"]["Authorization"],
         "Bearer private-token"
     );
     // 3) 停用 Codex → 再启用：投影用的 DB spec 是真值，文件不得出现占位符。
-    let plan = core.plan_mcp_toggle("demo".into(), mcp::Agent::Codex, false).unwrap();
+    let plan = core
+        .plan_mcp_toggle("demo".into(), mcp::Agent::Codex, false)
+        .unwrap();
     core.apply(plan.id).unwrap();
-    let plan = core.plan_mcp_toggle("demo".into(), mcp::Agent::Codex, true).unwrap();
+    let plan = core
+        .plan_mcp_toggle("demo".into(), mcp::Agent::Codex, true)
+        .unwrap();
     core.apply(plan.id).unwrap();
     let codex = fs::read_to_string(home.join("codex/config.toml")).unwrap();
     assert!(codex.contains("http_headers"));
     assert!(codex.contains("\"Bearer private-token\""));
     assert!(!codex.contains(platform::HIDDEN_MCP_VALUE));
     let stored = core.store.mcp_server("demo").unwrap().unwrap();
-    assert_eq!(stored.spec["headers"]["Authorization"], "Bearer private-token");
+    assert_eq!(
+        stored.spec["headers"]["Authorization"],
+        "Bearer private-token"
+    );
 }
 
 /// 回归：未勾选 OMP（记录仅存 DB）时，OMP 的坏 JSON 不得阻断 Codex 的
@@ -471,7 +512,11 @@ fn unmanaged_records_are_invisible_and_protected() {
     let row = core.store.mcp_server("computer-use").unwrap().unwrap();
     assert!(row.managed);
     let state = core.state(fixture.workspace()).unwrap();
-    let names: Vec<&str> = state.mcp.iter().map(|server| server.name.as_str()).collect();
+    let names: Vec<&str> = state
+        .mcp
+        .iter()
+        .map(|server| server.name.as_str())
+        .collect();
     assert!(names.contains(&"computer-use"));
     // 接管后切换/删除恢复可用。
     let plan = core
@@ -514,8 +559,12 @@ fn mcp_save_rejects_mcp_servers_envelope_with_clear_message() {
         "args": ["-y", "@z_ai/mcp-server"],
         "env": {"Z_AI_API_KEY": "key", "Z_AI_MODE": "ZHIPU"}
     });
-    core.plan_mcp("zai-mcp-server".into(), Some(inner), vec![mcp::Agent::Claude])
-        .unwrap();
+    core.plan_mcp(
+        "zai-mcp-server".into(),
+        Some(inner),
+        vec![mcp::Agent::Claude],
+    )
+    .unwrap();
 }
 
 /// 回归：Agent 文件中的密钥被手改漂移时，脱敏保存回填的是 DB 真值，
@@ -558,17 +607,13 @@ fn mcp_masked_save_restores_from_db_not_drifted_file() {
     core.apply(plan.id).unwrap();
     let stored = core.store.mcp_server("demo").unwrap().unwrap();
     assert_eq!(
-        stored.spec["headers"]["Authorization"],
-        "Bearer db-token",
+        stored.spec["headers"]["Authorization"], "Bearer db-token",
         "文件漂移值不得覆盖库值"
     );
-    let claude: Value = serde_json::from_slice(
-        &fs::read(home.join("claude/.claude.json")).unwrap(),
-    )
-    .unwrap();
+    let claude: Value =
+        serde_json::from_slice(&fs::read(home.join("claude/.claude.json")).unwrap()).unwrap();
     assert_eq!(
-        claude["mcpServers"]["demo"]["headers"]["Authorization"],
-        "Bearer db-token",
+        claude["mcpServers"]["demo"]["headers"]["Authorization"], "Bearer db-token",
         "投影应以库值为准覆盖漂移文件"
     );
 }
@@ -589,14 +634,18 @@ fn mcp_toggle_only_touches_target_agent_and_skips_uninstalled() {
         .unwrap();
     core.apply(plan.id).unwrap();
     // Codex 目录存在但未勾选；切换 Codex 开关只写 config.toml。
-    let plan = core.plan_mcp_toggle("demo".into(), mcp::Agent::Codex, true).unwrap();
+    let plan = core
+        .plan_mcp_toggle("demo".into(), mcp::Agent::Codex, true)
+        .unwrap();
     core.apply(plan.id).unwrap();
     let codex = fs::read_to_string(home.join("codex/config.toml")).unwrap();
     assert!(codex.contains("[mcp_servers.demo]"));
     let record = core.store.mcp_server("demo").unwrap().unwrap();
     assert!(!record.claude && record.codex);
     // 停用 Codex：单条目被移除，legacy 保留。
-    let plan = core.plan_mcp_toggle("demo".into(), mcp::Agent::Codex, false).unwrap();
+    let plan = core
+        .plan_mcp_toggle("demo".into(), mcp::Agent::Codex, false)
+        .unwrap();
     core.apply(plan.id).unwrap();
     let codex = fs::read_to_string(home.join("codex/config.toml")).unwrap();
     assert!(!codex.contains("[mcp_servers.demo]"));
@@ -617,7 +666,6 @@ fn mcp_toggle_only_touches_target_agent_and_skips_uninstalled() {
     assert!(plan.changes.is_empty());
     assert!(plan.warnings.iter().any(|w| w.contains("Codex")));
 }
-
 
 /// 建一个含单个技能 example 的本地仓库并注册到 core，返回 (仓库路径, 仓库 id)。
 fn distribution_repo(fixture: &Fixture, core: &mut Core, body: &str) -> (PathBuf, i64) {
@@ -656,9 +704,14 @@ fn skill_apply_rolls_back_directory_writes_when_config_write_fails() {
         .plan_skill(repository_id, "skills/example".into())
         .unwrap();
     assert!(
-        plan.changes.iter().any(|change| change.path.ends_with("config.yml")),
+        plan.changes
+            .iter()
+            .any(|change| change.path.ends_with("config.yml")),
         "安装计划应包含 config.yml 变更: {:?}",
-        plan.changes.iter().map(|change| &change.path).collect::<Vec<_>>()
+        plan.changes
+            .iter()
+            .map(|change| &change.path)
+            .collect::<Vec<_>>()
     );
     // 预览后、应用前改动 OMP 配置 → 配置写入因漂移校验失败。
     fs::write(
@@ -688,7 +741,11 @@ fn skill_apply_rolls_back_directory_writes_when_config_write_fails() {
             .contains("First")
     );
     // 回滚不留备份残骸。
-    assert!(!fixture.root.join("data/backups/skills").join(&plan_id).exists());
+    assert!(!fixture
+        .root
+        .join("data/backups/skills")
+        .join(&plan_id)
+        .exists());
 }
 
 #[test]
@@ -707,8 +764,12 @@ fn skill_distribution_installs_toggles_updates_and_removes() {
         .plan_skill(repository_id, "skills/example".into())
         .unwrap();
     core.apply(plan.id).unwrap();
-    assert!(fs::read_to_string(agents_dir.join("SKILL.md")).unwrap().contains("First"));
-    assert!(fs::read_to_string(claude_dir.join("SKILL.md")).unwrap().contains("First"));
+    assert!(fs::read_to_string(agents_dir.join("SKILL.md"))
+        .unwrap()
+        .contains("First"));
+    assert!(fs::read_to_string(claude_dir.join("SKILL.md"))
+        .unwrap()
+        .contains("First"));
     assert!(central.join("SKILL.md").is_file());
     let record = core.store.skill("example").unwrap().unwrap();
     assert!(record.omp && record.codex && record.claude);
@@ -741,12 +802,22 @@ fn skill_distribution_installs_toggles_updates_and_removes() {
     assert!(!config_change.after.contains("sk-test-bearer-123"));
     assert!(!config_change.after.contains("sk-test-env-456"));
     assert!(config_change.after.contains("[[skills.config]]"));
-    assert!(plan.warnings.iter().any(|w| w.contains("共享目录保留")), "{:?}", plan.warnings);
+    assert!(
+        plan.warnings.iter().any(|w| w.contains("共享目录保留")),
+        "{:?}",
+        plan.warnings
+    );
     core.apply(plan.id).unwrap();
     assert!(agents_dir.exists() && !claude_dir.exists());
     let codex_text = fs::read_to_string(&codex_config).unwrap();
-    assert!(codex_text.contains("[[skills.config]]") && codex_text.contains("enabled = false"), "{codex_text}");
-    assert!(codex_text.contains(agents_dir.join("SKILL.md").to_string_lossy().as_ref()), "{codex_text}");
+    assert!(
+        codex_text.contains("[[skills.config]]") && codex_text.contains("enabled = false"),
+        "{codex_text}"
+    );
+    assert!(
+        codex_text.contains(agents_dir.join("SKILL.md").to_string_lossy().as_ref()),
+        "{codex_text}"
+    );
     let record = core.store.skill("example").unwrap().unwrap();
     assert!(record.omp && !record.codex && !record.claude);
     let omp_config = home.join("omp/config.yml");
@@ -767,7 +838,9 @@ fn skill_distribution_installs_toggles_updates_and_removes() {
         .unwrap();
     core.apply(plan.id).unwrap();
     assert!(agents_dir.join("SKILL.md").is_file());
-    assert!(!fs::read_to_string(&codex_config).unwrap().contains("skills.config"));
+    assert!(!fs::read_to_string(&codex_config)
+        .unwrap()
+        .contains("skills.config"));
     assert!(central.join("SKILL.md").is_file());
     let record = core.store.skill("example").unwrap().unwrap();
     assert!(!record.omp && record.codex && !record.claude);
@@ -776,7 +849,9 @@ fn skill_distribution_installs_toggles_updates_and_removes() {
         .plan_skill_toggle("example".into(), skills::SkillTarget::Omp, true)
         .unwrap();
     core.apply(plan.id).unwrap();
-    assert!(fs::read_to_string(agents_dir.join("SKILL.md")).unwrap().contains("First"));
+    assert!(fs::read_to_string(agents_dir.join("SKILL.md"))
+        .unwrap()
+        .contains("First"));
 
     // 手动修改过的共享目录拒绝双关移除（OMP 先关成功——目录归 Codex，
     // 改动不影响；Codex 关闭触发移除时校验失败）。
@@ -788,7 +863,9 @@ fn skill_distribution_installs_toggles_updates_and_removes() {
     assert!(core
         .plan_skill_toggle("example".into(), skills::SkillTarget::Codex, false)
         .is_err());
-    assert!(fs::read_to_string(agents_dir.join("SKILL.md")).unwrap().contains("tampered"));
+    assert!(fs::read_to_string(agents_dir.join("SKILL.md"))
+        .unwrap()
+        .contains("tampered"));
     fs::write(
         agents_dir.join("SKILL.md"),
         "---\nname: example\ndescription: Demo\n---\nFirst\n",
@@ -808,7 +885,9 @@ fn skill_distribution_installs_toggles_updates_and_removes() {
         .plan_skill(repository_id, "skills/example".into())
         .unwrap();
     core.apply(plan.id).unwrap();
-    assert!(fs::read_to_string(agents_dir.join("SKILL.md")).unwrap().contains("Second"));
+    assert!(fs::read_to_string(agents_dir.join("SKILL.md"))
+        .unwrap()
+        .contains("Second"));
     assert!(!claude_dir.exists());
 
     // 移除：清掉启用中的投影与中央副本，记录删除。
@@ -828,7 +907,11 @@ fn skill_distribution_refuses_unmanaged_and_foreign_sources() {
     // ~/.claude 下已有同名非 AMC 技能：安装必须整体失败，不写入任何目标。
     let claude_dir = home.join(".claude/skills/example");
     fs::create_dir_all(&claude_dir).unwrap();
-    fs::write(claude_dir.join("SKILL.md"), "---\nname: example\ndescription: Mine\n---\n").unwrap();
+    fs::write(
+        claude_dir.join("SKILL.md"),
+        "---\nname: example\ndescription: Mine\n---\n",
+    )
+    .unwrap();
     let (_, repository_id) = distribution_repo(&fixture, &mut core, "First");
     let error = core
         .plan_skill(repository_id, "skills/example".into())
@@ -953,12 +1036,18 @@ fn enabling_one_from_both_off_restores_other_isolation() {
     core.apply(plan.id).unwrap();
     // 双关：目录移除、两份配置清空。
     for target in [skills::SkillTarget::Codex, skills::SkillTarget::Omp] {
-        let plan = core.plan_skill_toggle("example".into(), target, false).unwrap();
+        let plan = core
+            .plan_skill_toggle("example".into(), target, false)
+            .unwrap();
         core.apply(plan.id).unwrap();
     }
     assert!(!agents_dir.exists());
-    assert!(!fs::read_to_string(&codex_config).unwrap_or_default().contains("example"));
-    assert!(!fs::read_to_string(&omp_config).unwrap_or_default().contains("example"));
+    assert!(!fs::read_to_string(&codex_config)
+        .unwrap_or_default()
+        .contains("example"));
+    assert!(!fs::read_to_string(&omp_config)
+        .unwrap_or_default()
+        .contains("example"));
 
     // 双关 → 仅 Codex：目录恢复，Codex 禁用项清空，同时必须写 OMP 忽略项
     // 维持隔离（否则 OMP 也会加载）。
@@ -967,9 +1056,14 @@ fn enabling_one_from_both_off_restores_other_isolation() {
         .unwrap();
     core.apply(plan.id).unwrap();
     assert!(agents_dir.join("SKILL.md").is_file());
-    assert!(!fs::read_to_string(&codex_config).unwrap().contains("example"));
+    assert!(!fs::read_to_string(&codex_config)
+        .unwrap()
+        .contains("example"));
     let omp_text = fs::read_to_string(&omp_config).unwrap();
-    assert!(omp_text.contains("ignoredSkills") && omp_text.contains("example"), "{omp_text}");
+    assert!(
+        omp_text.contains("ignoredSkills") && omp_text.contains("example"),
+        "{omp_text}"
+    );
     let record = core.store.skill("example").unwrap().unwrap();
     assert!(!record.omp && record.codex);
 
@@ -986,8 +1080,14 @@ fn enabling_one_from_both_off_restores_other_isolation() {
     let omp_text = fs::read_to_string(&omp_config).unwrap();
     assert!(!omp_text.contains("example"), "{omp_text}");
     let codex_text = fs::read_to_string(&codex_config).unwrap();
-    assert!(codex_text.contains("[[skills.config]]") && codex_text.contains("enabled = false"), "{codex_text}");
-    assert!(codex_text.contains(agents_dir.join("SKILL.md").to_string_lossy().as_ref()), "{codex_text}");
+    assert!(
+        codex_text.contains("[[skills.config]]") && codex_text.contains("enabled = false"),
+        "{codex_text}"
+    );
+    assert!(
+        codex_text.contains(agents_dir.join("SKILL.md").to_string_lossy().as_ref()),
+        "{codex_text}"
+    );
     let record = core.store.skill("example").unwrap().unwrap();
     assert!(record.omp && !record.codex);
 }
@@ -1012,7 +1112,10 @@ fn omp_disable_writes_ignored_skills_and_enable_cleans_it() {
     assert!(agents_dir.join("SKILL.md").is_file());
     let omp_config = home.join("omp/config.yml");
     let text = fs::read_to_string(&omp_config).unwrap();
-    assert!(text.contains("ignoredSkills") && text.contains("example"), "{text}");
+    assert!(
+        text.contains("ignoredSkills") && text.contains("example"),
+        "{text}"
+    );
     let record = core.store.skill("example").unwrap().unwrap();
     assert!(!record.omp && record.codex);
     // 重新启用：忽略项移除。
@@ -1044,10 +1147,16 @@ fn apply_skill_writes_rolls_back_all_steps_when_later_parent_is_file() {
     assert!(error.contains("创建目录"), "{error}");
     let data = fixture.root.join("data");
     assert!(!data.join("skills/example").exists(), "中央副本应回滚");
-    assert!(!home.join(".agents/skills/example").exists(), "agents 投影应回滚");
+    assert!(
+        !home.join(".agents/skills/example").exists(),
+        "agents 投影应回滚"
+    );
     assert!(core.store.skill("example").unwrap().is_none());
     let backups = data.join("backups/skills");
-    assert!(!backups.exists() || fs::read_dir(&backups).unwrap().next().is_none(), "备份应清理");
+    assert!(
+        !backups.exists() || fs::read_dir(&backups).unwrap().next().is_none(),
+        "备份应清理"
+    );
 }
 
 #[test]
@@ -1076,7 +1185,6 @@ fn undo_skill_writes_keeps_backup_and_reports_path_on_failed_restore() {
     assert!(!backup_dir.exists());
 }
 
-
 #[test]
 fn mcp_zcode_projects_into_nested_servers_and_preserves_other_keys() {
     let fixture = Fixture::new();
@@ -1099,8 +1207,7 @@ fn mcp_zcode_projects_into_nested_servers_and_preserves_other_keys() {
         )
         .unwrap();
     core.apply(plan.id).unwrap();
-    let document: Value =
-        serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let document: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
     assert_eq!(document["hooks"]["enabled"], true);
     assert_eq!(document["mcp"]["servers"]["old"]["command"], "keep");
     assert_eq!(document["mcp"]["servers"]["demo"]["command"], "true");
@@ -1112,8 +1219,7 @@ fn mcp_zcode_projects_into_nested_servers_and_preserves_other_keys() {
         .plan_mcp_toggle("demo".into(), mcp::Agent::Zcode, false)
         .unwrap();
     core.apply(plan.id).unwrap();
-    let document: Value =
-        serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let document: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
     assert!(document["mcp"]["servers"].get("demo").is_none());
     assert_eq!(document["mcp"]["servers"]["old"]["command"], "keep");
     assert_eq!(document["hooks"]["enabled"], true);
@@ -1140,8 +1246,7 @@ fn skill_zcode_toggle_isolates_shared_copy_via_config_override() {
         .unwrap();
     core.apply(plan.id).unwrap();
     assert!(zcode_dir.join("SKILL.md").is_file());
-    let document: Value =
-        serde_json::from_slice(&fs::read(&zcode_config).unwrap()).unwrap();
+    let document: Value = serde_json::from_slice(&fs::read(&zcode_config).unwrap()).unwrap();
     assert!(document.get("skillOverrides").is_none(), "全开时无需禁用项");
 
     // 停用 ZCode（OMP/Codex 仍启用）：自有目录删除，共享副本被
@@ -1151,8 +1256,7 @@ fn skill_zcode_toggle_isolates_shared_copy_via_config_override() {
         .unwrap();
     core.apply(plan.id).unwrap();
     assert!(!zcode_dir.exists() && shared_dir.exists());
-    let document: Value =
-        serde_json::from_slice(&fs::read(&zcode_config).unwrap()).unwrap();
+    let document: Value = serde_json::from_slice(&fs::read(&zcode_config).unwrap()).unwrap();
     assert_eq!(
         document["skillOverrides"][shared_md.to_string_lossy().as_ref()],
         json!({"enable": false})
@@ -1165,14 +1269,11 @@ fn skill_zcode_toggle_isolates_shared_copy_via_config_override() {
         .unwrap();
     core.apply(plan.id).unwrap();
     assert!(zcode_dir.join("SKILL.md").is_file());
-    let document: Value =
-        serde_json::from_slice(&fs::read(&zcode_config).unwrap()).unwrap();
-    assert!(
-        document
-            .get("skillOverrides")
-            .and_then(|v| v.as_object())
-            .is_none_or(|m| m.is_empty())
-    );
+    let document: Value = serde_json::from_slice(&fs::read(&zcode_config).unwrap()).unwrap();
+    assert!(document
+        .get("skillOverrides")
+        .and_then(|v| v.as_object())
+        .is_none_or(|m| m.is_empty()));
 
     // 共享目录整体移除（OMP/Codex 双关）后：zcode 停用不再补禁用项，
     // 残留条目随目录一并清理。
@@ -1187,12 +1288,9 @@ fn skill_zcode_toggle_isolates_shared_copy_via_config_override() {
         core.apply(plan.id).unwrap();
     }
     assert!(!shared_dir.exists() && !zcode_dir.exists());
-    let document: Value =
-        serde_json::from_slice(&fs::read(&zcode_config).unwrap()).unwrap();
-    assert!(
-        document
-            .get("skillOverrides")
-            .and_then(|v| v.as_object())
-            .is_none_or(|m| m.is_empty())
-    );
+    let document: Value = serde_json::from_slice(&fs::read(&zcode_config).unwrap()).unwrap();
+    assert!(document
+        .get("skillOverrides")
+        .and_then(|v| v.as_object())
+        .is_none_or(|m| m.is_empty()));
 }

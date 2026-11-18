@@ -197,10 +197,7 @@ impl Core {
                     .store
                     .mcp_server(&name)?
                     .filter(|record| record.managed);
-                platform::restore_mcp_secrets(
-                    spec,
-                    previous.as_ref().map(|record| &record.spec),
-                )?;
+                platform::restore_mcp_secrets(spec, previous.as_ref().map(|record| &record.spec))?;
                 let mut record = McpRecord::new(name.clone(), spec.clone());
                 for agent in agents {
                     record.set_enabled(agent, true);
@@ -212,12 +209,7 @@ impl Core {
         self.enqueue_mcp(action, &targets)
     }
 
-    pub fn plan_mcp_toggle(
-        &mut self,
-        name: String,
-        agent: Agent,
-        enabled: bool,
-    ) -> Result<Plan> {
+    pub fn plan_mcp_toggle(&mut self, name: String, agent: Agent, enabled: bool) -> Result<Plan> {
         let targets = mcp::Targets::from_env()?;
         self.enqueue_mcp(
             McpAction::Toggle {
@@ -431,7 +423,8 @@ impl Core {
     /// 投影。新装默认同时启用两个用户级目标；同名记录若来自其他来源
     /// 则拒绝覆盖。
     pub fn plan_skill(&mut self, repository_id: i64, skill_path: String) -> Result<Plan> {
-        let (name, files, hash, commit) = self.validated_skill_source(repository_id, &skill_path)?;
+        let (name, files, hash, commit) =
+            self.validated_skill_source(repository_id, &skill_path)?;
         let previous = self.store.skill(&name)?;
         if let Some(previous) = &previous {
             if previous.repository_id != repository_id || previous.skill_path != skill_path {
@@ -454,7 +447,11 @@ impl Core {
         // 具体写入哪些目录由变更列表展示。
         let summary = format!(
             "{}技能 {name}",
-            if previous.is_some() { "更新" } else { "安装" }
+            if previous.is_some() {
+                "更新"
+            } else {
+                "安装"
+            }
         );
         let source = self.store.repo_dir(repository_id).join(&skill_path);
         let action = skills::SkillAction::Save {
@@ -559,11 +556,10 @@ impl Core {
                             .save_mcp_server(&record)
                             .map(|_| format!("MCP {name} 已保存并写入所选 Agent 的用户级配置"))
                     }
-                    McpAction::Delete { name } => {
-                        self.store
-                            .delete_mcp_server(&name)
-                            .map(|_| format!("MCP {name} 已从数据库与各 Agent 配置中移除"))
-                    }
+                    McpAction::Delete { name } => self
+                        .store
+                        .delete_mcp_server(&name)
+                        .map(|_| format!("MCP {name} 已从数据库与各 Agent 配置中移除")),
                     McpAction::Toggle {
                         name,
                         agent,
@@ -571,7 +567,9 @@ impl Core {
                     } => self
                         .store
                         .mcp_server(&name)
-                        .and_then(|record| record.ok_or_else(|| "方案已失效，请重新预览".to_string()))
+                        .and_then(|record| {
+                            record.ok_or_else(|| "方案已失效，请重新预览".to_string())
+                        })
                         .and_then(|mut record| {
                             record.set_enabled(agent, enabled);
                             self.store.save_mcp_server(&record).map(|_| {
@@ -597,12 +595,7 @@ impl Core {
                     config_writes,
                     action,
                 } = *pending;
-                if let skills::SkillAction::Save {
-                    record,
-                    source,
-                    ..
-                } = &action
-                {
+                if let skills::SkillAction::Save { record, source, .. } = &action {
                     if self.store.commit(record.repository_id)? != record.commit
                         || platform::tree_hash(&platform::source_snapshot(
                             source,
@@ -612,8 +605,7 @@ impl Core {
                         return Err("仓库提交或技能文件自预览后已变化".into());
                     }
                 }
-                let (backup_dir, undo_steps) =
-                    apply_skill_writes(&self.store.root, &id, &writes)?;
+                let (backup_dir, undo_steps) = apply_skill_writes(&self.store.root, &id, &writes)?;
                 if let Err(error) = apply_config_writes(&id, &config_writes) {
                     // 配置写入失败（已执行的部分由 apply_config_writes 就地
                     // 还原，未执行的不触碰用户当前内容）：目录写入已生效，
@@ -633,8 +625,7 @@ impl Core {
                         target,
                         enabled,
                     } => {
-                        let mut stored =
-                            self.store.skill(name)?.ok_or("方案已失效，请重新预览")?;
+                        let mut stored = self.store.skill(name)?.ok_or("方案已失效，请重新预览")?;
                         match target {
                             SkillTarget::Omp => stored.omp = *enabled,
                             SkillTarget::Codex => stored.codex = *enabled,
@@ -671,7 +662,6 @@ impl Core {
             }
         }
     }
-
 }
 
 /// 预览一个目录级写入：对比 before/after 快照生成变更列表。
@@ -816,10 +806,16 @@ fn apply_skill_writes(
         let exists = write.path.exists();
         match (&write.before, exists) {
             (None, true) => {
-                return Err(format!("{} 自预览后已出现，请重新预览", write.path.display()))
+                return Err(format!(
+                    "{} 自预览后已出现，请重新预览",
+                    write.path.display()
+                ))
             }
             (Some(_), false) => {
-                return Err(format!("{} 自预览后已消失，请重新预览", write.path.display()))
+                return Err(format!(
+                    "{} 自预览后已消失，请重新预览",
+                    write.path.display()
+                ))
             }
             (Some(before), true) => {
                 platform::no_links(&write.path, parent)?;
@@ -1006,7 +1002,10 @@ fn preview_mcp(path: &Path, data: &[u8]) -> String {
     if data.len() > 128 * 1024 {
         return "[MCP 配置超出预览大小；敏感字段未显示]".into();
     }
-    if path.extension().is_some_and(|extension| extension == "toml") {
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "toml")
+    {
         return mcp::codex::preview_redacted(data);
     }
     let Ok(mut doc) = serde_json::from_slice::<Value>(data) else {

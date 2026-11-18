@@ -57,7 +57,11 @@ pub fn agent_config_paths() -> Result<Vec<AgentConfigPaths>> {
             entries: vec![
                 entry("配置目录", omp.config_root.clone(), PathKind::Dir),
                 entry("Skills 目录", SkillTarget::Omp.dir(&home), PathKind::Dir),
-                entry("配置文件", omp.config_root.join("config.yml"), PathKind::File),
+                entry(
+                    "配置文件",
+                    omp.config_root.join("config.yml"),
+                    PathKind::File,
+                ),
             ],
         },
         AgentConfigPaths {

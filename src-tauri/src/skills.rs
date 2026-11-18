@@ -34,7 +34,12 @@ pub enum SkillTarget {
     Zcode,
 }
 
-pub const SKILL_TARGETS: [SkillTarget; 4] = [SkillTarget::Omp, SkillTarget::Codex, SkillTarget::Claude, SkillTarget::Zcode];
+pub const SKILL_TARGETS: [SkillTarget; 4] = [
+    SkillTarget::Omp,
+    SkillTarget::Codex,
+    SkillTarget::Claude,
+    SkillTarget::Zcode,
+];
 
 impl SkillTarget {
     pub fn title(self) -> &'static str {
@@ -177,7 +182,9 @@ fn checked_projection(
         return Ok(None);
     };
     if !owned {
-        return Err("目标已存在同名技能目录，且不属于 AMC 当前启用的投影，拒绝覆盖；请先手动移除".into());
+        return Err(
+            "目标已存在同名技能目录，且不属于 AMC 当前启用的投影，拒绝覆盖；请先手动移除".into(),
+        );
     }
     let hash = platform::tree_hash(&files);
     if accepted.contains(&hash.as_str()) {
@@ -269,7 +276,9 @@ pub(crate) fn project(
             }
             // ZCode 自动发现共享目录：OMP/Codex 任一启用而 zcode 停用时补
             // 禁用项保持隔离；zcode 启用或共享目录整体缺席时清除残留。
-            let shared_md = targets.skill_dir(SkillTarget::Omp, &record.name).join("SKILL.md");
+            let shared_md = targets
+                .skill_dir(SkillTarget::Omp, &record.name)
+                .join("SKILL.md");
             configs.extend(zcode_override_write(
                 &shared_md,
                 (record.omp || record.codex) && !record.zcode,
@@ -281,9 +290,7 @@ pub(crate) fn project(
             target,
             enabled,
         } => {
-            let record = store
-                .skill(name)?
-                .ok_or("技能记录不存在，请刷新后重试")?;
+            let record = store.skill(name)?.ok_or("技能记录不存在，请刷新后重试")?;
             if target.flag(&record) == *enabled {
                 return Err(if *enabled {
                     "该目标本就已启用"
@@ -347,11 +354,10 @@ pub(crate) fn project(
                         (true, _) => {
                             // 启用：目录缺失则复制；已存在时校验归属
                             // （对方启用 → 对方视角所有，内容一致即可）。
-                            let before =
-                                checked_projection(&dir, other_on, &accepted)?;
+                            let before = checked_projection(&dir, other_on, &accepted)?;
                             if before.is_none() {
-                                let files = central_files
-                                    .ok_or("AMC 中央副本丢失，请重新安装该技能")?;
+                                let files =
+                                    central_files.ok_or("AMC 中央副本丢失，请重新安装该技能")?;
                                 dirs.push(SkillWrite {
                                     path: dir.clone(),
                                     before: None,
@@ -423,9 +429,7 @@ pub(crate) fn project(
             Ok((dirs, configs, warnings))
         }
         SkillAction::Remove { name } => {
-            let record = store
-                .skill(name)?
-                .ok_or("技能记录不存在，请刷新后重试")?;
+            let record = store.skill(name)?.ok_or("技能记录不存在，请刷新后重试")?;
             let central_files = checked_central(store, &record)?;
             let mut dirs = Vec::new();
             // 只清理启用中的投影；停用目标上的目录即便内容相同也不是 AMC 的，
@@ -469,17 +473,12 @@ fn cleanup_configs(targets: &Targets, name: &str) -> Vec<ConfigWrite> {
 
 /// OMP config.yml 的 skills.ignoredSkills：`ignore=true` 追加技能名，
 /// `ignore=false` 移除该名称的全部条目；无变化返回 None。
-fn omp_ignore_write(
-    targets: &Targets,
-    name: &str,
-    ignore: bool,
-) -> Result<Vec<ConfigWrite>> {
+fn omp_ignore_write(targets: &Targets, name: &str, ignore: bool) -> Result<Vec<ConfigWrite>> {
     let path = targets.omp_config_path()?;
     let before = fs::read(&path).ok();
     let mut doc: serde_yaml::Value = match &before {
-        Some(bytes) => {
-            serde_yaml::from_slice(bytes).map_err(|e| format!("解析 {} 失败: {e}", path.display()))?
-        }
+        Some(bytes) => serde_yaml::from_slice(bytes)
+            .map_err(|e| format!("解析 {} 失败: {e}", path.display()))?,
         None => serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
     };
     if !doc.is_mapping() {
@@ -497,7 +496,10 @@ fn omp_ignore_write(
         .entry(serde_yaml::Value::String("ignoredSkills".into()))
         .or_insert(serde_yaml::Value::Sequence(Vec::new()));
     if !ignored.is_sequence() {
-        return Err(format!("{} 中 skills.ignoredSkills 不是列表", path.display()));
+        return Err(format!(
+            "{} 中 skills.ignoredSkills 不是列表",
+            path.display()
+        ));
     }
     let list = ignored.as_sequence_mut().ok_or("ignoredSkills 不是列表")?;
     let name_value = serde_yaml::Value::String(name.into());
@@ -516,7 +518,8 @@ fn omp_ignore_write(
     if !changed {
         return Ok(Vec::new());
     }
-    let after = serde_yaml::to_string(&doc).map_err(|e| format!("序列化 {} 失败: {e}", path.display()))?;
+    let after =
+        serde_yaml::to_string(&doc).map_err(|e| format!("序列化 {} 失败: {e}", path.display()))?;
     Ok(vec![ConfigWrite {
         path,
         before,
@@ -556,9 +559,9 @@ fn codex_disable_write(skill_dir: &std::path::Path, disable: bool) -> Result<Vec
                 .get("config")
                 .and_then(|item| item.as_array_of_tables())
                 .is_some_and(|entries| {
-                    entries
-                        .iter()
-                        .any(|entry| entry.get("path").and_then(|p| p.as_str()) == Some(path_str.as_str()))
+                    entries.iter().any(|entry| {
+                        entry.get("path").and_then(|p| p.as_str()) == Some(path_str.as_str())
+                    })
                 });
             if !already {
                 let entry = {
@@ -577,7 +580,10 @@ fn codex_disable_write(skill_dir: &std::path::Path, disable: bool) -> Result<Vec
                         if let Some(array) = occupied.get_mut().as_array_of_tables_mut() {
                             array.push(entry);
                         } else {
-                            return Err(format!("{} 中 skills.config 不是 [[skills.config]] 数组", path.display()));
+                            return Err(format!(
+                                "{} 中 skills.config 不是 [[skills.config]] 数组",
+                                path.display()
+                            ));
                         }
                     }
                 }
@@ -585,11 +591,16 @@ fn codex_disable_write(skill_dir: &std::path::Path, disable: bool) -> Result<Vec
             }
         }
         false => {
-            if let Some(array) = skills_table.get_mut("config").and_then(|i| i.as_array_of_tables_mut()) {
+            if let Some(array) = skills_table
+                .get_mut("config")
+                .and_then(|i| i.as_array_of_tables_mut())
+            {
                 let before_len = array.len();
                 let kept: Vec<_> = array
                     .iter()
-                    .filter(|entry| entry.get("path").and_then(|p| p.as_str()) != Some(path_str.as_str()))
+                    .filter(|entry| {
+                        entry.get("path").and_then(|p| p.as_str()) != Some(path_str.as_str())
+                    })
                     .cloned()
                     .collect();
                 array.clear();
@@ -665,10 +676,14 @@ fn zcode_override_write(skill_md: &std::path::Path, disable: bool) -> Result<Vec
     if !changed {
         return Ok(Vec::new());
     }
-    let mut after =
-        serde_json::to_vec_pretty(&doc).map_err(|e| format!("序列化 {} 失败: {e}", path.display()))?;
+    let mut after = serde_json::to_vec_pretty(&doc)
+        .map_err(|e| format!("序列化 {} 失败: {e}", path.display()))?;
     after.push(b'\n');
-    Ok(vec![ConfigWrite { path, before, after }])
+    Ok(vec![ConfigWrite {
+        path,
+        before,
+        after,
+    }])
 }
 
 impl Targets {
@@ -693,9 +708,10 @@ pub fn state(store: &Store) -> Result<Vec<SkillView>> {
     }
     let mut views = Vec::new();
     for record in records {
-        let description = platform::skill_metadata(&central_dir(store, &record.name).join("SKILL.md"))
-            .map(|(_, description)| description)
-            .unwrap_or_default();
+        let description =
+            platform::skill_metadata(&central_dir(store, &record.name).join("SKILL.md"))
+                .map(|(_, description)| description)
+                .unwrap_or_default();
         let repo_root = store.repo_dir(record.repository_id);
         let source = repo_root.join(&record.skill_path);
         let update_available = match repo_commits.get(&record.repository_id) {
