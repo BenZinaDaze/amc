@@ -2,13 +2,15 @@ import { useState } from "react";
 import { Alerts } from "../components/Alerts";
 import { PageHeading } from "../components/PageHeading";
 import { ConfigPathsPanel } from "../apps/settings/ConfigPathsPanel";
+import { RemoteDevicesPanel } from "../apps/settings/RemoteDevicesPanel";
 import { AboutPanel } from "../apps/settings/AboutPanel";
 import type { PageProps } from "./PageProps";
 
-type SettingsTab = "config" | "about";
+type SettingsTab = "config" | "devices" | "about";
 
 const settingsTabs: { id: SettingsTab; label: string }[] = [
   { id: "config", label: "配置文件" },
+  { id: "devices", label: "远程设备" },
   { id: "about", label: "关于" },
 ];
 
@@ -22,6 +24,7 @@ export function SettingsPage({ error, notice, setError, setNotice, state, onChec
       {settingsTabs.map((item) => <button key={item.id} role="tab" aria-selected={tab === item.id} className={`tab${tab === item.id ? " active" : ""}`} onClick={() => setTab(item.id)}>{item.label}</button>)}
     </div>
     {tab === "config" && <ConfigPathsPanel />}
+    {tab === "devices" && <RemoteDevicesPanel />}
     {tab === "about" && <AboutPanel workspacePath={state?.workspace.path} onCheckForUpdates={onCheckForUpdates} />}
   </>;
 }

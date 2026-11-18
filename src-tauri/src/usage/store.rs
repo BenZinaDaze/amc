@@ -7,11 +7,7 @@
 use super::{RawUsage, Totals, UsageRange, UsageRecord};
 use crate::{platform, pricing::Pricing};
 use rusqlite::{params, OptionalExtension};
-use std::{
-    collections::BTreeMap,
-    path::Path,
-    time::Duration,
-};
+use std::{collections::BTreeMap, path::Path, time::Duration};
 
 /// `usage_records` 查询一行的原始列值。
 type UsageRow = (String, i64, i64, i64, i64, i64, i64);
@@ -104,7 +100,11 @@ impl UsageStore {
     /// Inserts unseen records and returns how many were new. The primary
     /// key makes repeated scans of the same source idempotent: resumes,
     /// forks and re-broadcasts collapse into the record they duplicate.
-    pub(super) fn ingest(&mut self, source: &str, records: &[UsageRecord]) -> platform::Result<usize> {
+    pub(super) fn ingest(
+        &mut self,
+        source: &str,
+        records: &[UsageRecord],
+    ) -> platform::Result<usize> {
         if records.is_empty() {
             return Ok(0);
         }
@@ -156,7 +156,9 @@ impl UsageStore {
 
     /// Aggregates archived raw records for one source (or every source when
     /// `source` is `None`) over the range: cutoff inclusive, end exclusive,
-    /// trend bucketed by the range's bucket size.
+    /// trend bucketed by the range's bucket size. A `source` also pulls in
+    /// its remote-synced children `source@…` (e.g. `zcode` merges the
+    /// `zcode@<device>` rows pulled from remote machines).
     pub(super) fn query(
         &self,
         source: Option<&str>,
@@ -172,28 +174,26 @@ impl UsageStore {
                 "SELECT model, timestamp, input_tokens, output_tokens, \
                  cache_read_tokens, cache_write_tokens, total_tokens \
                  FROM usage_records \
-                 WHERE (?1 IS NULL OR source = ?1) AND timestamp >= ?2 \
+                 WHERE (?1 IS NULL OR source = ?1 OR source LIKE ?1 || '@%') \
+                   AND timestamp >= ?2 \
                    AND (?3 IS NULL OR timestamp < ?3)",
             )
             .map_err(|e| format!("读取 AMC 用量数据库失败: {e}"))?;
         let mut rows = stmt
             .query(params![source, range.cutoff, range.end_exclusive])
             .map_err(|e| format!("读取 AMC 用量失败: {e}"))?;
-        while let Some(row) = rows
-            .next()
-            .map_err(|e| format!("读取 AMC 用量失败: {e}"))?
-        {
+        while let Some(row) = rows.next().map_err(|e| format!("读取 AMC 用量失败: {e}"))? {
             let record: rusqlite::Result<UsageRow> = (|| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                    ))
-                })();
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            })();
             let (model, timestamp, input, output, read, write, tokens) =
                 record.map_err(|e| format!("AMC 用量记录无效: {e}"))?;
             let cost = prices.cost(&model, input, read, write, output);
@@ -238,11 +238,13 @@ impl UsageStore {
     }
 
     /// Whether the archive holds any records for a source (or for any
-    /// source when `source` is `None`).
+    /// source when `source` is `None`); remote-synced children `source@…`
+    /// count towards their parent, mirroring [`Self::query`].
     pub(super) fn has_records(&self, source: Option<&str>) -> platform::Result<bool> {
         self.db
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM usage_records WHERE ?1 IS NULL OR source = ?1)",
+                "SELECT EXISTS(SELECT 1 FROM usage_records \
+                 WHERE ?1 IS NULL OR source = ?1 OR source LIKE ?1 || '@%')",
                 params![source],
                 |row| row.get::<_, bool>(0),
             )
@@ -311,7 +313,10 @@ mod tests {
     fn repeated_ingests_are_idempotent_per_source_and_external_id() {
         let root = std::env::temp_dir().join(format!("amc-store-dedupe-{}", uuid::Uuid::new_v4()));
         let mut store = UsageStore::new(&root).unwrap();
-        let records = [record("a", 1_700_000_000_000, 6), record("b", 1_700_000_001_000, 6)];
+        let records = [
+            record("a", 1_700_000_000_000, 6),
+            record("b", 1_700_000_001_000, 6),
+        ];
         assert_eq!(store.ingest("omp", &records).unwrap(), 2);
         // The same records again — a fresh scan of an unchanged source.
         assert_eq!(store.ingest("omp", &records).unwrap(), 0);
@@ -332,6 +337,65 @@ mod tests {
         assert!(store.has_records(Some("claude-code")).unwrap());
         assert!(!store.has_records(Some("codex")).unwrap());
         assert!(store.has_records(None).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn queries_merge_remote_child_sources_into_their_parent() {
+        let root = std::env::temp_dir().join(format!("amc-store-prefix-{}", uuid::Uuid::new_v4()));
+        let mut store = UsageStore::new(&root).unwrap();
+        let now = 1_700_000_000_000;
+        store.ingest("zcode", &[record("local", now, 6)]).unwrap();
+        store
+            .ingest("zcode@srv-1", &[record("remote-1", now + 1, 6)])
+            .unwrap();
+        store
+            .ingest("zcode@srv-2", &[record("remote-2", now + 2, 6)])
+            .unwrap();
+        store
+            .ingest("omp", &[record("omp-row", now + 3, 6)])
+            .unwrap();
+        // zcode 视图把本机与远程子来源一并计入。
+        let stats = store
+            .query(
+                Some("zcode"),
+                UsageRange::parse("all", now).unwrap(),
+                &crate::usage::prices(),
+            )
+            .unwrap()
+            .finish();
+        assert_eq!(stats.total_requests, 3);
+        // 别的 agent 不受前缀合并影响；all 仍是全量。
+        assert_eq!(
+            store
+                .query(
+                    Some("omp"),
+                    UsageRange::parse("all", now).unwrap(),
+                    &crate::usage::prices()
+                )
+                .unwrap()
+                .finish()
+                .total_requests,
+            1
+        );
+        assert_eq!(
+            store
+                .query(
+                    None,
+                    UsageRange::parse("all", now).unwrap(),
+                    &crate::usage::prices()
+                )
+                .unwrap()
+                .finish()
+                .total_requests,
+            4
+        );
+        // has_records 同一语义：zcode@… 撑得起 zcode 的降级路径。
+        assert!(store.has_records(Some("zcode")).unwrap());
+        assert!(!store.has_records(Some("codex")).unwrap());
+        // 水位仍按精确 source 各自维护。
+        assert_eq!(store.high_water("zcode").unwrap(), now);
+        assert_eq!(store.high_water("zcode@srv-2").unwrap(), now + 2);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -390,14 +454,28 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         {
             let mut store = UsageStore::new(&root).unwrap();
-            store.ingest("zcode", &[record("z1", 1_700_000_000_000, 6)]).unwrap();
-            store.ingest("omp", &[record("o1", 1_700_000_000_000, 6)]).unwrap();
+            store
+                .ingest("zcode", &[record("z1", 1_700_000_000_000, 6)])
+                .unwrap();
+            store
+                .ingest("omp", &[record("o1", 1_700_000_000_000, 6)])
+                .unwrap();
             // 伪装成 v1 老库：旧版 ZCode 支持写入的行混在归档里。
-            store.db.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'", []).unwrap();
+            store
+                .db
+                .execute(
+                    "UPDATE meta SET value = '1' WHERE key = 'schema_version'",
+                    [],
+                )
+                .unwrap();
         }
         let store = UsageStore::new(&root).unwrap();
         let stats = store
-            .query(None, UsageRange::parse("all", 1_700_000_001_000).unwrap(), &crate::usage::prices())
+            .query(
+                None,
+                UsageRange::parse("all", 1_700_000_001_000).unwrap(),
+                &crate::usage::prices(),
+            )
             .unwrap()
             .finish();
         // zcode 行被清空、omp 保留；读取路径会立刻重扫 zcode 数据库重建。

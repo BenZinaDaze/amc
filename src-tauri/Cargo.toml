@@ -30,6 +30,11 @@ serde_yaml = "0.9"
 ureq = { version = "3", features = ["json"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 toml_edit = "0.22"
+russh = { version = "0.65.2", default-features = false, features = ["ring", "rsa", "flate2"] }
+russh-sftp = "3.0.1"
+# tauri::async_runtime 即 tokio；这里补齐远程同步用到的 time/fs/io-util，
+# rt 供 e2e 测试自建 runtime 驱动 async。
+tokio = { version = "1", features = ["time", "fs", "io-util", "rt"] }
 
 
 [dev-dependencies]

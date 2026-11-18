@@ -63,6 +63,26 @@ export type AgentConfigPaths = { agent: McpAgent; entries: ConfigPathEntry[] };
 export type AppUpdate = { latest: string; url: string };
 /// 已接入 Agent 的更新来源 id（对应后端 check_agent_update / update_agent）。
 export type AgentUpdateSource = "omp" | "claude-code" | "codex";
+/// zcode 配置过的远程 SSH 设备（探测自 ~/.zcode/v2/setting.json，连接
+/// 参数可被用户在 AMC 里的保存值覆盖；密码只回掩码提示）。
+export type RemoteDevice = {
+  id: string;
+  displayName: string;
+  osUser: string;
+  hostname: string;
+  installState: string;
+  lastSeenVersion: string;
+  lastOnlineAt: number;
+  host: string;
+  port: number;
+  username: string;
+  passwordHint: string | null;
+  hostKeyPinned: boolean;
+  lastSyncMs: number;
+  lastInserted: number;
+  gone: boolean;
+};
+export type RemoteSyncResult = { inserted: number; lastSyncMs: number };
 export const api = {
   getDefaultWorkspace: () => invoke<Workspace>("get_default_workspace"),
   getState: (workspace: Workspace) => invoke<State>("get_state", { workspace }),
@@ -96,4 +116,8 @@ export const api = {
   removeSubscriptionPlan: (id: string) => invoke<Message>("remove_subscription_plan", { id }),
   checkAgentUpdate: (agent: AgentUpdateSource) => invoke<AppUpdate>("check_agent_update", { agent }),
   updateAgent: (agent: AgentUpdateSource) => invoke<string>("update_agent", { agent }),
+  listRemoteDevices: () => invoke<RemoteDevice[]>("list_remote_devices"),
+  saveRemoteDevice: (id: string, host: string, port: number, username: string, password: string) => invoke<Message>("save_remote_device", { id, host, port, username, password: password || null }),
+  syncRemoteDevice: (id: string) => invoke<RemoteSyncResult>("sync_remote_device", { id }),
+  removeRemoteDevice: (id: string) => invoke<Message>("remove_remote_device", { id }),
 };

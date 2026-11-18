@@ -64,11 +64,7 @@ pub(crate) use agents::zcode::{zcode_status, ZcodeStatus};
 /// 更新前后实测的 `--version` 蒸馏（见 [`update_summary`]），不解析 CLI
 /// 的英文原始输出。ZCode 是桌面应用，更新由其内置自动更新完成。
 pub fn update_agent(agent_id: &str) -> platform::Result<String> {
-    use agents::{
-        claude::claude_code_update,
-        codex::codex_update,
-        omp::update as omp_update,
-    };
+    use agents::{claude::claude_code_update, codex::codex_update, omp::update as omp_update};
     if agent_id == "zcode" {
         return Err("ZCode 由应用内自动更新，AMC 不代为更新".into());
     }
@@ -321,7 +317,10 @@ fn collect_jsonl(source: &str, directory: &Path, files: &mut Vec<PathBuf>) -> pl
 /// implements [`AgentUsageAdapter`], nothing else.
 const AGENT_IDS: &[&str] = &["omp", "claude-code", "codex", "zcode"];
 fn adapter_for(agent_id: &str) -> platform::Result<Box<dyn AgentUsageAdapter>> {
-    use agents::{claude::ClaudeCodeUsageAdapter, codex::CodexUsageAdapter, omp::OmpUsageAdapter, zcode::ZcodeUsageAdapter};
+    use agents::{
+        claude::ClaudeCodeUsageAdapter, codex::CodexUsageAdapter, omp::OmpUsageAdapter,
+        zcode::ZcodeUsageAdapter,
+    };
     match agent_id {
         "omp" => {
             if agents::omp::executable().is_none() {
@@ -340,7 +339,10 @@ fn adapter_for(agent_id: &str) -> platform::Result<Box<dyn AgentUsageAdapter>> {
 /// OMP executable, because reading may be served from the archive alone
 /// once the CLI (or its data) is gone.
 fn adapter_for_read(agent_id: &str) -> platform::Result<Box<dyn AgentUsageAdapter>> {
-    use agents::{claude::ClaudeCodeUsageAdapter, codex::CodexUsageAdapter, omp::OmpUsageAdapter, zcode::ZcodeUsageAdapter};
+    use agents::{
+        claude::ClaudeCodeUsageAdapter, codex::CodexUsageAdapter, omp::OmpUsageAdapter,
+        zcode::ZcodeUsageAdapter,
+    };
     match agent_id {
         "omp" => Ok(Box::new(OmpUsageAdapter::from_environment()?)),
         "claude-code" => Ok(Box::new(ClaudeCodeUsageAdapter::from_environment()?)),
@@ -375,6 +377,36 @@ fn require_archive(
     } else {
         Err(error)
     }
+}
+
+/// 远程 ZCode 快照归档结果：本次新入库的条数。
+pub struct RemoteZcodeArchive {
+    pub inserted: usize,
+}
+
+/// 归档一份远程 ZCode 数据库快照：与本机库走同一套扫描与净输入换算，
+/// 入库 source 为 `zcode@<device_id>`，与本地 `zcode` 分开去重；查询侧
+/// 由 store 的前缀过滤并入 ZCode 总计。device_id 只允许字母数字与连字
+/// 符，防止它参与快照目录拼接时注入路径。
+pub fn archive_remote_zcode_snapshot(
+    data_dir: &Path,
+    device_id: &str,
+    db: &Path,
+) -> platform::Result<RemoteZcodeArchive> {
+    if device_id.is_empty()
+        || !device_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(format!("无效的远程设备标识: {device_id}"));
+    }
+    let adapter = agents::zcode::ZcodeUsageAdapter::from_db(db.to_path_buf())?;
+    let source = format!("zcode@{device_id}");
+    let mut store = store::UsageStore::new(data_dir)?;
+    let scan = adapter.scan(store.high_water(&source)?)?;
+    let inserted = store.ingest(&source, &scan.records)?;
+    store.set_synced_at(&source, now_millis()?)?;
+    Ok(RemoteZcodeArchive { inserted })
 }
 
 /// OMP 生效的用户级 MCP 配置位置（含 profile 与 PI_CONFIG_DIR /
@@ -599,25 +631,12 @@ mod tests {
         let mut store = store::UsageStore::new(&root).unwrap();
         let timestamp = 1_700_000_000_000;
         store
-            .ingest(
-                "omp",
-                &[archived_record(
-                    "omp-1",
-                    "glm-5.3",
-                    timestamp,
-                    6,
-                )],
-            )
+            .ingest("omp", &[archived_record("omp-1", "glm-5.3", timestamp, 6)])
             .unwrap();
         store
             .ingest(
                 "codex",
-                &[archived_record(
-                    "codex-1",
-                    "gpt-6-sol",
-                    timestamp,
-                    40,
-                )],
+                &[archived_record("codex-1", "gpt-6-sol", timestamp, 40)],
             )
             .unwrap();
         let prices = prices();
@@ -662,23 +681,13 @@ mod tests {
         store
             .ingest(
                 "omp",
-                &[archived_record(
-                    "omp-1",
-                    "gpt-6-sol",
-                    timestamp,
-                    6,
-                )],
+                &[archived_record("omp-1", "gpt-6-sol", timestamp, 6)],
             )
             .unwrap();
         store
             .ingest(
                 "claude-code",
-                &[archived_record(
-                    "cc-1",
-                    "gpt-6-sol",
-                    timestamp,
-                    6,
-                )],
+                &[archived_record("cc-1", "gpt-6-sol", timestamp, 6)],
             )
             .unwrap();
         let all = store
@@ -730,8 +739,7 @@ mod tests {
         assert_eq!(second.total_requests, 1);
         assert_eq!(second.total_tokens, 1050);
         // A fresh archive without the source is still an error.
-        let empty_dir =
-            env::temp_dir().join(format!("amc-survive-empty-{}", uuid::Uuid::new_v4()));
+        let empty_dir = env::temp_dir().join(format!("amc-survive-empty-{}", uuid::Uuid::new_v4()));
         let error = match get_agent_usage("codex", "all", &empty_dir, price_file) {
             Err(error) => error,
             Ok(_) => panic!("没有源也没有归档时应当报错"),
@@ -770,6 +778,9 @@ mod tests {
             "Claude Code 已是最新版本 2.1.296"
         );
         // 更新后探测不到版本：回退原始输出，保留换行、去掉首尾空白。
-        assert_eq!(update_summary("OMP", "18.8.7", "", " line1\nline2 "), "line1\nline2");
+        assert_eq!(
+            update_summary("OMP", "18.8.7", "", " line1\nline2 "),
+            "line1\nline2"
+        );
     }
 }

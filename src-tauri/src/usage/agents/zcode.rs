@@ -3,10 +3,10 @@
 // no CLI sync step exists. The table is ZCode-internal and may change across
 // versions, so a failing scan only degrades to an error message — already
 // archived statistics survive in the AMC store.
+use crate::platform;
 #[cfg(test)]
 use crate::usage::prices;
 use crate::usage::{AgentUsageAdapter, SourceScan, UsageRecord};
-use crate::platform;
 use rusqlite::OpenFlags;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -22,7 +22,12 @@ impl ZcodeUsageAdapter {
     }
 
     fn from_base(base: PathBuf) -> platform::Result<Self> {
-        let db = base.join("cli").join("db").join("db.sqlite");
+        Self::from_db(base.join("cli").join("db").join("db.sqlite"))
+    }
+
+    /// 指向一个既有的 ZCode 数据库（本机路径或远程同步拉下来的快照都
+    /// 可以）；扫描与净输入换算与本机库完全同一套。
+    pub(crate) fn from_db(db: PathBuf) -> platform::Result<Self> {
         if !db.is_file() {
             return Err(format!(
                 "找不到 ZCode 数据库 {}；请确认已安装并使用过 ZCode",
@@ -37,8 +42,7 @@ impl ZcodeUsageAdapter {
 /// 可并发读取；只读打开失败（如崩溃后遗留 -wal 而无 -shm）时回退读写
 /// 打开，让 SQLite 自行完成 WAL 恢复。AMC 绝不写入业务数据。
 fn open_read(path: &Path) -> platform::Result<rusqlite::Connection> {
-    if let Ok(db) = rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-    {
+    if let Ok(db) = rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
         return Ok(db);
     }
     let db = rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)
@@ -221,15 +225,17 @@ mod tests {
         let start = 1_760_000_000_000_i64;
         // 库里 input 列是 prompt 合计（净输入 + 缓存读 + 缓存写）；
         // 行字段：(id, model, started_at, input[合计], output, cache_read, cache_write, status)。
-        let row = |id, model, started_at, stored_input, output, cache_read, cache_write, status| UsageRow {
-            id,
-            model,
-            started_at,
-            stored_input,
-            output,
-            cache_read,
-            cache_write,
-            status,
+        let row = |id, model, started_at, stored_input, output, cache_read, cache_write, status| {
+            UsageRow {
+                id,
+                model,
+                started_at,
+                stored_input,
+                output,
+                cache_read,
+                cache_write,
+                status,
+            }
         };
         zcode_db(
             &root.join("cli/db/db.sqlite"),
@@ -281,14 +287,20 @@ mod tests {
         assert_eq!(stats.input_tokens, 1000 + 10 + 1);
         assert_eq!(stats.output_tokens, 200 + 20 + 2 + 7);
         assert_eq!(stats.cache_read_tokens, 4000 + 3 + 500);
-        assert_eq!(stats.total_tokens, (1000 + 10 + 1) + (200 + 20 + 2 + 7) + (4000 + 3 + 500) + 300);
+        assert_eq!(
+            stats.total_tokens,
+            (1000 + 10 + 1) + (200 + 20 + 2 + 7) + (4000 + 3 + 500) + 300
+        );
         // 缓存命中率 = 读 /（净输入 + 读）：4503 / 5514。
         assert!((stats.cache_rate - 4503.0 / 5514.0).abs() < 1e-12);
         // 大小写归一到计价表键后全部可计价。
         assert_eq!(stats.unpriced_requests, 0);
         assert!(stats.total_cost.is_some());
         let models: Vec<String> = stats.by_model.iter().map(|m| m.model.clone()).collect();
-        assert_eq!(models, vec!["glm-5.3".to_owned(), "glm-5.3-flash".to_owned()]);
+        assert_eq!(
+            models,
+            vec!["glm-5.3".to_owned(), "glm-5.3-flash".to_owned()]
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -298,6 +310,96 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let error = ZcodeUsageAdapter::from_base(root.clone()).err().unwrap();
         assert!(error.contains("找不到 ZCode 数据库"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn remote_snapshot_archives_under_device_source_and_merges_into_zcode() {
+        let root = std::env::temp_dir().join(format!("amc-zcode-remote-{}", uuid::Uuid::new_v4()));
+        let start = 1_760_000_000_000_i64;
+        let row = |id, model, started_at, stored_input, output, cache_read, cache_write, status| {
+            UsageRow {
+                id,
+                model,
+                started_at,
+                stored_input,
+                output,
+                cache_read,
+                cache_write,
+                status,
+            }
+        };
+        // 本机库与远程快照各有自己的行；远程 input 列同样是含缓存的合计。
+        zcode_db(
+            &root.join("cli/db/db.sqlite"),
+            &[row(
+                "l1",
+                "GLM-5.3",
+                start,
+                5300,
+                200,
+                4000,
+                300,
+                "completed",
+            )],
+        );
+        zcode_db(
+            &root.join("snapshot/db.sqlite"),
+            &[row(
+                "r1",
+                "GLM-5.3",
+                start + 1000,
+                210,
+                90,
+                200,
+                0,
+                "completed",
+            )],
+        );
+        // device_id 只允许字母数字与连字符。
+        assert!(crate::usage::archive_remote_zcode_snapshot(
+            &root,
+            "srv/1",
+            &root.join("snapshot/db.sqlite")
+        )
+        .is_err());
+        let archive = crate::usage::archive_remote_zcode_snapshot(
+            &root,
+            "srv-1",
+            &root.join("snapshot/db.sqlite"),
+        )
+        .unwrap();
+        assert_eq!(archive.inserted, 1);
+        // 再归档一次：水位 + 主键幂等，零新增。
+        let rescan = crate::usage::archive_remote_zcode_snapshot(
+            &root,
+            "srv-1",
+            &root.join("snapshot/db.sqlite"),
+        )
+        .unwrap();
+        assert_eq!(rescan.inserted, 0);
+
+        // 本机扫描照常；zcode 视图把远程行并入总计。
+        let adapter = ZcodeUsageAdapter::from_base(root.clone()).unwrap();
+        let mut store = crate::usage::store::UsageStore::new(&root).unwrap();
+        let scan = adapter.scan(0).unwrap();
+        store.ingest("zcode", &scan.records).unwrap();
+        let stats = store
+            .query(
+                Some("zcode"),
+                crate::usage::UsageRange::parse(
+                    &format!("custom:{start}:{}", start + 86_400_000),
+                    start + 1,
+                )
+                .unwrap(),
+                &prices(),
+            )
+            .unwrap()
+            .finish();
+        assert_eq!(stats.total_requests, 2);
+        // 净输入 = 远程 210−200−0 = 10，本机 5300−4000−300 = 1000。
+        assert_eq!(stats.input_tokens, 1000 + 10);
+        assert_eq!(stats.cache_read_tokens, 4000 + 200);
         fs::remove_dir_all(root).unwrap();
     }
 }

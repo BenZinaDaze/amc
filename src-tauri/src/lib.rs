@@ -2,6 +2,7 @@ mod mcp;
 mod operations;
 mod platform;
 mod pricing;
+mod remote_devices;
 mod settings;
 mod skills;
 mod store;
@@ -237,6 +238,59 @@ async fn refresh_pricing(app: tauri::AppHandle) -> platform::Result<String> {
         .map_err(|e| format!("后台操作失败: {e}"))?
 }
 
+#[tauri::command]
+async fn list_remote_devices(
+    app: tauri::AppHandle,
+) -> platform::Result<Vec<remote_devices::RemoteDeviceView>> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || remote_devices::list(&data_dir))
+        .await
+        .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
+/// 保存设备的 SSH 连接参数；`password` 为 None 表示保留已存密码。
+#[tauri::command]
+async fn save_remote_device(
+    app: tauri::AppHandle,
+    id: String,
+    host: String,
+    port: u16,
+    username: String,
+    password: Option<String>,
+) -> platform::Result<String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        remote_devices::save(&data_dir, &id, &host, port, &username, password.as_deref())?;
+        Ok("已保存远程设备连接信息".to_owned())
+    })
+    .await
+    .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
+/// 手动同步一台远程设备：拉取远程 ZCode 用量库快照并归档（详见
+/// `remote_devices::sync_device`）。SSH 是真异步 IO，直接在命令体里
+/// await（tauri::async_runtime 即 tokio 运行时）。
+#[tauri::command]
+async fn sync_remote_device(
+    app: tauri::AppHandle,
+    id: String,
+) -> platform::Result<remote_devices::RemoteSyncResult> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    remote_devices::sync_device(&data_dir, &id).await
+}
+
+/// 移除一台已从 zcode 消失的设备（凭据、指纹与快照；用量统计保留）。
+#[tauri::command]
+async fn remove_remote_device(app: tauri::AppHandle, id: String) -> platform::Result<String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        remote_devices::remove(&data_dir, &id)?;
+        Ok("已移除远程设备；已归档的用量统计保留".to_owned())
+    })
+    .await
+    .map_err(|e| format!("后台操作失败: {e}"))?
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct SubscriptionLoadEvent<'a> {
@@ -261,29 +315,26 @@ async fn fetch_subscriptions(
     // `subscription-status` per finished query) so the UI never waits for the
     // slowest vendor; `nonce` lets the frontend drop stale requests' events.
     tauri::async_runtime::spawn_blocking(move || {
-        subscription::fetch_all_streaming(
-            &data_dir,
-            |event| match &event {
-                subscription::FetchEvent::Begin(statuses) => {
-                    let _ = app.emit(
-                        "subscription-load",
-                        SubscriptionLoadEvent {
-                            nonce,
-                            statuses: statuses.as_slice(),
-                        },
-                    );
-                }
-                subscription::FetchEvent::Ready(status) => {
-                    let _ = app.emit(
-                        "subscription-status",
-                        SubscriptionStatusEvent {
-                            nonce,
-                            status: status.as_ref(),
-                        },
-                    );
-                }
-            },
-        )
+        subscription::fetch_all_streaming(&data_dir, |event| match &event {
+            subscription::FetchEvent::Begin(statuses) => {
+                let _ = app.emit(
+                    "subscription-load",
+                    SubscriptionLoadEvent {
+                        nonce,
+                        statuses: statuses.as_slice(),
+                    },
+                );
+            }
+            subscription::FetchEvent::Ready(status) => {
+                let _ = app.emit(
+                    "subscription-status",
+                    SubscriptionStatusEvent {
+                        nonce,
+                        status: status.as_ref(),
+                    },
+                );
+            }
+        })
     })
     .await
     .map_err(|e| format!("后台操作失败: {e}"))?
@@ -459,6 +510,10 @@ pub fn run() {
             get_codex_status,
             get_zcode_status,
             get_agent_config_paths,
+            list_remote_devices,
+            save_remote_device,
+            sync_remote_device,
+            remove_remote_device,
             refresh_pricing,
             fetch_subscriptions,
             fetch_subscription,
